@@ -46,6 +46,12 @@ def test_accumulator_uses_vector_memory_cell() -> None:
     assert memory.right.networks == (WireColor.GREEN,)
     assert memory.output_each
 
+    descriptions = {
+        getattr(entity, "description", None)
+        for entity in result.physical_circuit.entities
+    }
+    assert "AccumulatorReg memory: add[0] enabled" not in descriptions
+
 
 def test_accumulator_blueprint_exposes_vector_io() -> None:
     result = compile_circuit(_accumulator(), optimize=False)

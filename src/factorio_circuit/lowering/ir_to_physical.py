@@ -183,20 +183,26 @@ class PhysicalLowerer:
         gated_outputs: list[WireEndpoint] = []
         for index, add in enumerate(adds):
             source = self.delay_vector_to(self.realize_vector(add.value), target_phase)
-            add_active = self._realize_nonzero_control(
-                add.when,
-                description=f"AccumulatorReg {register.name}: add[{index}] enabled",
-            )
-            if clear_active is not None:
-                if isinstance(add.when, Constant) and add.when.value != 0:
-                    gate_active = self.delay_to(clear_active, target_phase)
-                else:
+            if (
+                clear_active is not None
+                and isinstance(add.when, Constant)
+                and add.when.value != 0
+            ):
+                # The default ``when=1`` adds no independent control. Reuse clear-active
+                # directly instead of materializing a constant signal that would be dead.
+                gate_active = self.delay_to(clear_active, target_phase)
+            else:
+                add_active = self._realize_nonzero_control(
+                    add.when,
+                    description=f"AccumulatorReg {register.name}: add[{index}] enabled",
+                )
+                if clear_active is not None:
                     # Combining a dynamic add-enable with clear is supported, but costs a scalar
                     # combinator before the vector gate.
                     combined = self._emit_binary_from_realized("*", add_active, clear_active)
                     gate_active = self.delay_to(combined, target_phase)
-            else:
-                gate_active = self.delay_to(add_active, target_phase)
+                else:
+                    gate_active = self.delay_to(add_active, target_phase)
 
             gate = self._add_entity(
                 ArithmeticCombinator(

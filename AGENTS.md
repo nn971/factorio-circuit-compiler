@@ -8,7 +8,7 @@ reduction.
 
 ## Architectural invariants
 
-1. Keep the pipeline small: symbolic Python elaboration -> logical circuit -> physical Factorio circuit -> blueprint.
+1. Keep the pipeline small: symbolic Python elaboration -> logical circuit -> abstract physical IR -> physical synthesis/Layout -> blueprint serialization.
 2. Python outside symbolic operations is ordinary elaboration/metaprogramming Python.
 3. `Circuit`, source objects, `Expr`, and built-in state objects are the public frontend; do not revive
    AST parsing as the primary language model.
@@ -16,7 +16,8 @@ reduction.
 5. Raw input sources may be sampled at explicit freshness offsets; derived expressions have opaque
    execution timing and are not sampleable sources.
 6. Keep useful state primitives recognizable until Factorio-specific realization.
-7. Concrete signal identities, red/green wiring, and entity coordinates are late resources.
+7. Compiler-chosen signal identities, red/green wiring, and entity coordinates are late resources;
+   user-selected target signals remain fixed semantic inputs to physical synthesis.
 8. Validate physical behavior with tick-level simulation and in-game blueprints.
 9. Treat naïve physical latency as a property of that realization rather than an intrinsic semantic
    lower bound.
@@ -82,17 +83,39 @@ Preserve this semantic/physical separation when extending the scheduler.
 The malfunctioning generic scalar `Reg` remains removed. `Delay`, interleaving, queues/stacks/heaps,
 and processor-like synthesis remain postponed.
 
+## Abstract physical IR boundary
+
+`AbstractPhysicalCircuit` is the target-specific pre-layout representation. It contains exact target
+combinators, abstract signal variables, abstract electrical nets, and compatibility/conflict metadata.
+Signals do not belong to one net. Concrete signal identities, red/green assignment, net merging,
+coordinates, and relay placement remain unresolved.
+
+Physical synthesis owns those late choices jointly and returns the final `Layout`. Blueprint generation
+only serializes and encodes that layout. Read `docs/abstract-physical-ir.md` before changing this
+boundary.
+
+## Current abstract-physical migration
+
+`compile_abstract_circuit(...)` provides an executable migration path through
+`AbstractPhysicalCircuit -> physical synthesis -> Layout -> blueprint serialization`. It supports
+scalar and whole-vector I/O, fresh scalar/vector samples, vector constants, isolating `.signal(...)`
+extraction, scalar logic, conservative `Each` packing, `AccumulatorReg`, and `FreezeReg`. Runtime-open
+vector nets and fixed target signals are explicit in the abstract IR. Both register feedback loops are
+runtime-open abstract nets; vector/control separation is expressed with `NetConflict`, not concrete wire
+colors. The synthesizer reserves fixed signals, allocates unique compiler virtual signals, bipartitions hard
+red/green conflicts, and flips whole conflict components when that increases compatible coalescing at
+shared connectors. `Layout` records the resulting physical net groups. Do not globally connect disjoint
+compatible nets without a layout/routing cost argument. Switchable Fibonacci is the coupled-state
+regression. The old `compile_circuit(...)` backend remains the default comparison path while synthesis
+is refined.
+
 ## Immediate next route
 
-1. add explicit semantic write-time anchoring for timer-like state updates on top of the existing
-   commit-offset solver;
-2. drive that API with a reusable stateful timer/pulse representative test;
-3. define startup/warm-up semantics for future-sampled sources entering feedback state;
-4. only then investigate a public partial-order/update-event API;
-5. study commutative accumulator update merging;
-6. add further state types only from concrete use cases.
-
-Read `docs/state-design.md` before changing state semantics.
+1. keep broadening legacy-vs-abstract parity coverage across examples/state tests;
+2. build the next synthesis optimization on explicit physical net groups: concrete signal reuse or
+   placement-aware shared routing are the strongest candidates;
+3. retain tick-level simulation plus structural checks for dead/orphan blueprint artifacts;
+4. only then revisit semantic write-time anchoring and more aggressive state optimization.
 
 ## Representative timing tests
 
