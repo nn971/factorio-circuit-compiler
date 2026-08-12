@@ -1,3 +1,6 @@
+import base64
+import json
+import zlib
 from collections.abc import Callable
 
 import pytest
@@ -71,3 +74,31 @@ def test_layout_benchmark_examples_require_positive_power(
 ) -> None:
     with pytest.raises(ValueError, match="positive integer"):
         builder(0)
+
+
+def _decode_blueprint_string(value: str) -> dict[str, object]:
+    assert value.startswith("0")
+    decoded = zlib.decompress(base64.b64decode(value[1:]))
+    result = json.loads(decoded)
+    assert isinstance(result, dict)
+    return result
+
+
+@pytest.mark.parametrize(
+    ("builder", "power"),
+    [
+        (build_sorting_circuit, 3),
+        (build_wht_circuit, 5),
+    ],
+)
+def test_real_layout_benchmarks_emit_decodable_blueprint_strings(
+    builder: Callable[[int], Circuit],
+    power: int,
+) -> None:
+    result = compile_circuit(builder(power))
+
+    assert len(result.blueprint_string) > 1
+    assert _decode_blueprint_string(result.blueprint_string) == result.blueprint_json
+    blueprint = result.blueprint_json["blueprint"]
+    assert isinstance(blueprint, dict)
+    assert blueprint["entities"]

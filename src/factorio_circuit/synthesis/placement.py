@@ -24,42 +24,52 @@ from factorio_circuit.ir.physical import (
 
 Position = tuple[float, float]
 PlacementStrategy = Literal["net-aware", "row"]
+_DISCONNECTED_NET_PENALTY = 2000.0
 
 
 @dataclass(frozen=True, slots=True)
 class PlacementOptions:
     """Configuration for physical placement.
 
-    ``anchors`` fixes concrete entity ids at exact positions.  This is intentionally an
-    entity-level hook: future frontend/API support for anchored input/output ports can lower
-    to these anchors without changing the placement algorithm.
+    ``anchors`` fixes concrete entity ids at exact positions.  By default the placer also
+    anchors public input/output marker entities in ordered columns on the left/right perimeter;
+    an explicit entity anchor overrides the corresponding automatic I/O position.
 
-    Reserved corridors insert empty horizontal and vertical bands between dense chunks.  The
-    bands are not special entities; they simply remove candidate placement slots so routing has
-    predictable free space when relay entities are still needed.
+    Reserved corridors are physical empty space, not routing lanes.  ``block_width_tiles`` and
+    ``block_height_tiles`` describe the dense computation block in Factorio tiles.  Horizontal
+    arithmetic/decider combinators occupy two tiles, so the default 16x16 block contains eight
+    combinator columns and sixteen rows.  ``corridor_width`` is inserted between adjacent blocks.
+    The default fill leaves in-block whitespace for relay entities because corridors themselves are
+    reserved, while ``restarts`` gives routing one additional deterministic placement basin.
     """
 
     strategy: PlacementStrategy = "net-aware"
     anchors: dict[int, Position] = field(default_factory=dict)
+    anchor_io: bool = True
     reserve_corridors: bool = True
-    chunk_columns: int = 8
-    chunk_rows: int = 8
-    corridor_width: float = 3.0
-    target_fill: float = 0.78
+    block_width_tiles: int = 16
+    block_height_tiles: int = 16
+    corridor_width: float = 2.0
+    target_fill: float = 0.72
     iterations: int | None = None
     random_seed: int = 0
+    restarts: int = 2
 
     def validate(self) -> None:
         if self.strategy not in {"net-aware", "row"}:
             raise ValueError(f"unknown placement strategy {self.strategy!r}")
-        if self.chunk_columns <= 0 or self.chunk_rows <= 0:
-            raise ValueError("placement chunk dimensions must be positive")
+        if self.block_width_tiles <= 0 or self.block_width_tiles % 2 != 0:
+            raise ValueError("placement block_width_tiles must be a positive even tile count")
+        if self.block_height_tiles <= 0:
+            raise ValueError("placement block_height_tiles must be positive")
         if self.corridor_width < 0:
             raise ValueError("corridor width cannot be negative")
         if not 0 < self.target_fill <= 1:
             raise ValueError("placement target_fill must be in (0, 1]")
         if self.iterations is not None and self.iterations < 0:
             raise ValueError("placement iterations cannot be negative")
+        if self.restarts <= 0:
+            raise ValueError("placement restarts must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +80,24 @@ class PlacementMetrics:
     estimated_relays: int
     mst_wire_length: float
     energy: float
+
+
+RelayForbiddenArea = tuple[float, float, float, float]
+
+
+@dataclass(frozen=True, slots=True)
+class PlacementPlan:
+    """Internal placement result including geometry reserved from relay entities."""
+
+    positions: dict[int, Position]
+    relay_forbidden_areas: tuple[RelayForbiddenArea, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _GridGeometry:
+    slots: tuple[Position, ...]
+    bounds: RelayForbiddenArea
+    relay_forbidden_areas: tuple[RelayForbiddenArea, ...]
 
 
 def row_positions(circuit: PhysicalCircuit) -> dict[int, Position]:
@@ -109,6 +137,25 @@ def place_physical_circuit(
 ) -> dict[int, Position]:
     """Place all physical entities using the requested synthesis policy."""
 
+    return plan_physical_circuit(
+        circuit,
+        abstract_circuit,
+        net_groups,
+        safe_wire_span=safe_wire_span,
+        options=options,
+    ).positions
+
+
+def plan_physical_circuit(
+    circuit: PhysicalCircuit,
+    abstract_circuit: abstract.AbstractPhysicalCircuit,
+    net_groups: dict[int, int],
+    *,
+    safe_wire_span: float,
+    options: PlacementOptions | None = None,
+) -> PlacementPlan:
+    """Place entities and return any physical areas reserved from relay placement."""
+
     selected = options or PlacementOptions()
     selected.validate()
     if safe_wire_span <= 0:
@@ -119,9 +166,9 @@ def place_physical_circuit(
         positions = row_positions(circuit)
         positions.update(selected.anchors)
         _validate_entity_positions(circuit, positions)
-        return positions
+        return PlacementPlan(positions)
 
-    return _net_aware_positions(
+    return _net_aware_plan(
         circuit,
         abstract_circuit,
         net_groups,
@@ -153,82 +200,95 @@ def placement_metrics(
     return PlacementMetrics(disconnected, relays, length, energy)
 
 
-def _net_aware_positions(
+def _net_aware_plan(
     circuit: PhysicalCircuit,
     abstract_circuit: abstract.AbstractPhysicalCircuit,
     net_groups: dict[int, int],
     *,
     safe_wire_span: float,
     options: PlacementOptions,
-) -> dict[int, Position]:
+) -> PlacementPlan:
     entity_ids = [entity.id for entity in circuit.entities]
-    anchored = set(options.anchors)
-    movable = [entity_id for entity_id in entity_ids if entity_id not in anchored]
-    positions: dict[int, Position] = dict(options.anchors)
-    if not movable:
-        _validate_entity_positions(circuit, positions)
-        return positions
+    input_ids = {port.marker_entity for port in circuit.inputs}
+    output_ids = {port.marker_entity for port in circuit.outputs}
+    io_ids = input_ids | output_ids
+    body_ids = (
+        entity_ids if not options.anchor_io else [item for item in entity_ids if item not in io_ids]
+    )
+    minimum_io_rows = max(len(circuit.inputs), len(circuit.outputs), 1) if options.anchor_io else 1
 
     groups = _physical_net_entities(abstract_circuit, net_groups)
     incident = _incident_groups(entity_ids, groups)
-    # The uniform slot lattice is sized for the largest emitted footprint.  Filtering against
-    # anchors can remove slots, so grow the candidate rectangle until enough legal slots remain.
-    requested_slots = len(movable)
+
+    # Keep the computation rectangle stable when explicit anchors are added: size it from the
+    # complete body rather than only the currently movable subset.  Grow only if an explicit
+    # anchor consumes too many candidate slots.
+    requested_body_count = max(1, len(body_ids))
     while True:
-        slots = _candidate_slots(circuit, requested_slots, options)
-        slots = [slot for slot in slots if _slot_clear_of_anchors(circuit, slot, options.anchors)]
+        grid = _candidate_grid(requested_body_count, minimum_io_rows, options)
+        auto_io = _automatic_io_anchors(circuit, grid.bounds) if options.anchor_io else {}
+        effective_anchors = {**auto_io, **options.anchors}
+        _validate_anchors(circuit, effective_anchors)
+
+        movable = [entity_id for entity_id in entity_ids if entity_id not in effective_anchors]
+        slots = [
+            slot for slot in grid.slots if _slot_clear_of_anchors(circuit, slot, effective_anchors)
+        ]
         if len(slots) >= len(movable):
             break
-        requested_slots += max(8, len(movable) - len(slots))
-        if requested_slots > len(movable) + len(options.anchors) * 16 + 1024:
+        requested_body_count += max(8, len(movable) - len(slots))
+        if requested_body_count > max(1, len(body_ids)) + len(effective_anchors) * 16 + 1024:
             raise ValueError("placement anchors leave too few legal grid slots")
 
-    center = _centroid(slots)
-    free_slots = set(slots)
-    order = sorted(
-        movable,
-        key=lambda entity_id: (
-            -sum(max(1, len(groups[group]) - 1) for group in incident[entity_id]),
-            entity_id,
-        ),
-    )
-
-    # Deterministic greedy seed: highly connected entities go first; later entities are placed
-    # near already-placed peers of each incident hyperedge.
-    for entity_id in order:
-        preferred = _preferred_position(entity_id, positions, groups, incident, center)
-        slot = min(free_slots, key=lambda item: (_distance_sq(item, preferred), item))
-        positions[entity_id] = slot
-        free_slots.remove(slot)
-
-    iterations = options.iterations
-    if iterations is None:
-        iterations = 0 if len(movable) < 6 else min(20_000, 30 * len(movable))
-    if iterations:
-        _anneal(
+    positions: dict[int, Position] = dict(effective_anchors)
+    if movable:
+        center = _centroid(slots)
+        free_slots = set(slots)
+        order = sorted(
             movable,
-            positions,
-            slots,
-            groups,
-            incident,
-            safe_wire_span=safe_wire_span,
-            center=center,
-            iterations=iterations,
-            seed=options.random_seed,
+            key=lambda entity_id: (
+                -sum(max(1, len(groups[group]) - 1) for group in incident[entity_id]),
+                entity_id,
+            ),
         )
-        _relax(
-            movable,
-            positions,
-            slots,
-            groups,
-            incident,
-            safe_wire_span=safe_wire_span,
-            center=center,
-            sweeps=3,
-        )
+
+        # Deterministic greedy seed: highly connected entities go first; later entities are
+        # placed near already-placed peers of each incident hyperedge.  Anchored I/O markers
+        # therefore pull their directly connected logic toward the correct perimeter.
+        for entity_id in order:
+            preferred = _preferred_position(entity_id, positions, groups, incident, center)
+            slot = min(free_slots, key=lambda item: (_distance_sq(item, preferred), item))
+            positions[entity_id] = slot
+            free_slots.remove(slot)
+
+        iterations = options.iterations
+        if iterations is None:
+            iterations = 0 if len(movable) < 6 else min(20_000, 30 * len(movable))
+        if iterations:
+            _anneal(
+                movable,
+                positions,
+                slots,
+                groups,
+                incident,
+                safe_wire_span=safe_wire_span,
+                center=center,
+                iterations=iterations,
+                seed=options.random_seed,
+            )
+            _relax(
+                movable,
+                positions,
+                slots,
+                groups,
+                incident,
+                safe_wire_span=safe_wire_span,
+                center=center,
+                sweeps=3,
+            )
 
     _validate_entity_positions(circuit, positions)
-    return positions
+    return PlacementPlan(positions, grid.relay_forbidden_areas)
 
 
 def _anneal(
@@ -392,33 +452,82 @@ def _relax(
             break
 
 
-def _candidate_slots(
-    circuit: PhysicalCircuit,
-    movable_count: int,
+def _candidate_grid(
+    body_count: int,
+    minimum_rows: int,
     options: PlacementOptions,
-) -> list[Position]:
-    _ = circuit
-    target_slots = max(movable_count, ceil(movable_count / options.target_fill))
-    columns = max(1, ceil(sqrt(target_slots / 2.0)))
-    rows = max(1, ceil(target_slots / columns))
-    while columns * rows < target_slots:
-        rows += 1
+) -> _GridGeometry:
+    target_slots = max(1, ceil(body_count / options.target_fill))
+    natural_rows = max(1, ceil(sqrt(target_slots * 2.0)))
+    rows = max(minimum_rows, natural_rows)
+    columns = max(1, ceil(target_slots / rows), ceil(rows / 2.0))
+
+    columns_per_block = options.block_width_tiles // 2
+    rows_per_block = options.block_height_tiles
 
     def x_position(column: int) -> float:
         gap = 0.0
         if options.reserve_corridors:
-            gap = (column // options.chunk_columns) * options.corridor_width
+            gap = (column // columns_per_block) * options.corridor_width
         return float(column * 2) + gap
 
     def y_position(row: int) -> float:
         gap = 0.0
         if options.reserve_corridors:
-            gap = (row // options.chunk_rows) * options.corridor_width
+            gap = (row // rows_per_block) * options.corridor_width
         return float(row) + gap
 
-    return [
-        (x_position(column), y_position(row)) for row in range(rows) for column in range(columns)
-    ]
+    x_positions = [x_position(column) for column in range(columns)]
+    y_positions = [y_position(row) for row in range(rows)]
+    slots = tuple((x, y) for y in y_positions for x in x_positions)
+    bounds: RelayForbiddenArea = (
+        x_positions[0] - 1.0,
+        x_positions[-1] + 1.0,
+        y_positions[0] - 0.5,
+        y_positions[-1] + 0.5,
+    )
+
+    forbidden: list[RelayForbiddenArea] = []
+    if options.reserve_corridors and options.corridor_width > 0:
+        for column in range(columns_per_block, columns, columns_per_block):
+            left_edge = x_positions[column - 1] + 1.0
+            right_edge = x_positions[column] - 1.0
+            forbidden.append((left_edge, right_edge, bounds[2], bounds[3]))
+        for row in range(rows_per_block, rows, rows_per_block):
+            top_edge = y_positions[row - 1] + 0.5
+            bottom_edge = y_positions[row] - 0.5
+            forbidden.append((bounds[0], bounds[1], top_edge, bottom_edge))
+
+    return _GridGeometry(slots, bounds, tuple(forbidden))
+
+
+def _automatic_io_anchors(
+    circuit: PhysicalCircuit,
+    bounds: RelayForbiddenArea,
+) -> dict[int, Position]:
+    """Anchor public interfaces in stable ordered columns on the layout perimeter."""
+
+    left, right, top, bottom = bounds
+    center_y = (top + bottom) / 2.0
+    anchors: dict[int, Position] = {}
+
+    def column_y_positions(count: int) -> list[float]:
+        if count == 0:
+            return []
+        start = round(center_y - (count - 1) / 2.0)
+        return [float(start + index) for index in range(count)]
+
+    input_x = left - 1.0
+    for input_port, y in zip(circuit.inputs, column_y_positions(len(circuit.inputs)), strict=True):
+        anchors[input_port.marker_entity] = (input_x, y)
+
+    output_x = right + 1.0
+    for output_port, y in zip(
+        circuit.outputs, column_y_positions(len(circuit.outputs)), strict=True
+    ):
+        anchors[output_port.marker_entity] = (output_x, y)
+
+    return anchors
 
 
 def _physical_net_entities(
@@ -501,7 +610,7 @@ def _group_metrics(
         smooth_overreach += (max(0.0, distance - safe_wire_span) / safe_wire_span) ** 2
 
     energy = (
-        100.0 * excess_components
+        _DISCONNECTED_NET_PENALTY * excess_components
         + 20.0 * relays
         + 6.0 * smooth_overreach
         + 0.12 * total_length / safe_wire_span

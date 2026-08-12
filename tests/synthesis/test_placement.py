@@ -109,8 +109,8 @@ def test_reserved_corridors_expand_the_placement_lattice() -> None:
         safe_wire_span=7.0,
         options=PlacementOptions(
             reserve_corridors=True,
-            chunk_columns=2,
-            chunk_rows=2,
+            block_width_tiles=4,
+            block_height_tiles=2,
             corridor_width=3.0,
             iterations=0,
         ),
@@ -135,3 +135,49 @@ def test_synthesis_chooses_post_placement_spanning_tree_for_physical_net() -> No
 
     assert layout.relays == ()
     assert len(layout.wires) == 19
+
+
+def test_default_io_markers_are_ordered_on_left_and_right_perimeters() -> None:
+    from factorio_circuit import Circuit, compile_circuit
+
+    circuit = Circuit("anchored_io")
+    inputs = [circuit.input(f"x{index}") for index in range(4)]
+    for index, value in enumerate(inputs):
+        circuit.output(f"y{index}", value + 1)
+
+    result = compile_circuit(circuit)
+    positions = result.layout.positions
+    physical = result.physical_circuit
+    input_positions = [positions[port.marker_entity] for port in physical.inputs]
+    output_positions = [positions[port.marker_entity] for port in physical.outputs]
+    io_ids = {port.marker_entity for port in (*physical.inputs, *physical.outputs)}
+    implementation_x = [
+        positions[entity.id][0] for entity in physical.entities if entity.id not in io_ids
+    ]
+
+    assert [position[1] for position in input_positions] == [0.0, 1.0, 2.0, 3.0]
+    assert [position[1] for position in output_positions] == [0.0, 1.0, 2.0, 3.0]
+    assert len({position[0] for position in input_positions}) == 1
+    assert len({position[0] for position in output_positions}) == 1
+    assert input_positions[0][0] < min(implementation_x)
+    assert output_positions[0][0] > max(implementation_x)
+
+
+def test_default_corridor_geometry_is_substation_pitch_aligned() -> None:
+    from factorio_circuit.synthesis.placement import _candidate_grid
+
+    options = PlacementOptions(iterations=0)
+    grid = _candidate_grid(300, 1, options)
+    slots = set(grid.slots)
+
+    # Horizontal 2x1 combinator centres: 0..14, then a two-tile gap, then 18.
+    assert (14.0, 0.0) in slots
+    assert (18.0, 0.0) in slots
+    # Vertical 1-tile rows: 0..15, then a two-tile gap, then 18.
+    assert (0.0, 15.0) in slots
+    assert (0.0, 18.0) in slots
+    assert options.block_width_tiles == 16
+    assert options.block_height_tiles == 16
+    assert options.corridor_width == 2.0
+    assert any(right - left == 2.0 for left, right, _top, _bottom in grid.relay_forbidden_areas)
+    assert any(bottom - top == 2.0 for _left, _right, top, bottom in grid.relay_forbidden_areas)

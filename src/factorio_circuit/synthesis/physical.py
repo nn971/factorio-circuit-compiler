@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import combinations
 from math import ceil, hypot
 
@@ -28,7 +28,7 @@ from factorio_circuit.ir.physical import (
     WireEndpoint,
 )
 from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
-from factorio_circuit.synthesis.placement import PlacementOptions, place_physical_circuit
+from factorio_circuit.synthesis.placement import PlacementOptions, plan_physical_circuit
 from factorio_circuit.target.factorio.signals import DEFAULT_VIRTUAL_SIGNAL_POOL
 
 
@@ -68,37 +68,71 @@ class PhysicalSynthesizer:
         net_groups = self._coalesce_shared_connector_nets(net_colors)
         signal_allocation = self._allocate_signals(net_groups)
         physical = self._materialize_circuit(signal_allocation, net_colors)
-        positions = place_physical_circuit(
-            physical,
-            self.circuit,
-            net_groups,
-            safe_wire_span=self.safe_wire_span,
-            options=self.placement_options,
-        )
-        self._materialize_connections(physical, net_colors, net_groups, positions)
-        routing = route_wires(physical, positions, safe_span=self.safe_wire_span)
-        final_positions = routed_positions(physical, positions, routing)
-        return Layout(
-            circuit=physical,
-            positions=final_positions,
-            relays=tuple(
-                LayoutRelay(relay.entity_id, relay.position, relay.description)
-                for relay in routing.relays
-            ),
-            wires=tuple(
-                LayoutWire(
-                    wire.source_entity,
-                    wire.source_connector_id,
-                    wire.target_entity,
-                    wire.target_connector_id,
-                    wire.color,
+
+        selected = self.placement_options or PlacementOptions()
+        selected.validate()
+        attempts = selected.restarts
+        if selected.strategy == "row" or selected.iterations == 0:
+            attempts = 1
+
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = replace(
+                selected,
+                random_seed=selected.random_seed + restart,
+                restarts=1,
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+                routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
                 )
-                for wire in routing.wires
-            ),
-            signal_allocation=tuple(sorted(signal_allocation.items())),
-            net_colors=tuple(sorted(net_colors.items())),
-            net_groups=tuple(sorted(net_groups.items())),
-        )
+            except ValueError as exc:
+                if "parallel lanes and grid search were both exhausted" not in str(exc):
+                    raise
+                last_routing_error = exc
+                continue
+
+            final_positions = routed_positions(physical, positions, routing)
+            return Layout(
+                circuit=physical,
+                positions=final_positions,
+                relays=tuple(
+                    LayoutRelay(relay.entity_id, relay.position, relay.description)
+                    for relay in routing.relays
+                ),
+                wires=tuple(
+                    LayoutWire(
+                        wire.source_entity,
+                        wire.source_connector_id,
+                        wire.target_entity,
+                        wire.target_connector_id,
+                        wire.color,
+                    )
+                    for wire in routing.wires
+                ),
+                signal_allocation=tuple(sorted(signal_allocation.items())),
+                net_colors=tuple(sorted(net_colors.items())),
+                net_groups=tuple(sorted(net_groups.items())),
+            )
+
+        assert last_routing_error is not None
+        raise ValueError(
+            f"physical synthesis exhausted {attempts} deterministic placement attempt(s) "
+            "without finding a collision-free, reach-safe route that keeps reserved "
+            "corridors clear of relay entities"
+        ) from last_routing_error
 
     def _allocate_signals(self, net_groups: dict[int, int]) -> dict[int, SignalId]:
         """Greedily reuse concrete lanes across electrically disjoint net groups.

@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from heapq import heappop, heappush
 from itertools import count
-from math import ceil, cos, hypot, pi, sin, sqrt
+from math import ceil, hypot, sqrt
 
 from factorio_circuit.ir.physical import (
     ArithmeticCombinator,
@@ -39,6 +39,9 @@ DEFAULT_SAFE_WIRE_SPAN = 7.0
 # from exact collision-box boundaries.
 _COLLISION_MARGIN = 0.10
 _RELAY_HALF_EXTENT = (0.5, 0.5)
+
+
+RelayForbiddenArea = tuple[float, float, float, float]
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +82,7 @@ def route_wires(
     positions: dict[int, tuple[float, float]],
     *,
     safe_span: float = DEFAULT_SAFE_WIRE_SPAN,
+    relay_forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
 ) -> RoutingPlan:
     """Route all logical wires with collision-free blank constant-combinator relays.
 
@@ -114,6 +118,7 @@ def route_wires(
                 safe_span=safe_span,
                 occupied=occupied,
                 edge_index=index,
+                forbidden_areas=relay_forbidden_areas,
             )
 
         relay_ids: list[int] = []
@@ -154,7 +159,12 @@ def route_wires(
     plan = RoutingPlan(relays=tuple(relays), wires=tuple(wires))
     all_positions = routed_positions(circuit, positions, plan)
     validate_wire_spans(plan.wires, all_positions, maximum_span=safe_span)
-    validate_entity_clearance(circuit, positions, plan)
+    validate_entity_clearance(
+        circuit,
+        positions,
+        plan,
+        relay_forbidden_areas=relay_forbidden_areas,
+    )
     return plan
 
 
@@ -165,6 +175,7 @@ def _find_relay_positions(
     safe_span: float,
     occupied: list[tuple[tuple[float, float], tuple[float, float], int]],
     edge_index: int,
+    forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
 ) -> list[tuple[float, float]]:
     distance = _distance(source, target)
     dx = target[0] - source[0]
@@ -207,7 +218,7 @@ def _find_relay_positions(
 
             if not _chain_is_in_reach(source, candidates, target, safe_span):
                 continue
-            if _relay_candidates_are_clear(candidates, occupied):
+            if _relay_candidates_are_clear(candidates, occupied, forbidden_areas=forbidden_areas):
                 return candidates
 
     fallback = _find_grid_relay_positions(
@@ -215,6 +226,7 @@ def _find_relay_positions(
         target,
         safe_span=safe_span,
         occupied=occupied,
+        forbidden_areas=forbidden_areas,
     )
     if fallback is not None:
         return fallback
@@ -231,13 +243,14 @@ def _find_grid_relay_positions(
     *,
     safe_span: float,
     occupied: list[tuple[tuple[float, float], tuple[float, float], int]],
+    forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
 ) -> list[tuple[float, float]] | None:
     """Find a relay chain on a half-tile lattice when straight parallel lanes fail.
 
     Circuit wires may cross entities and other wires; only relay entities themselves need free
     collision boxes.  This makes the residual routing problem a graph search over legal relay
-    centres rather than a conventional obstacle-avoiding trace.  The half-tile lattice is fine
-    enough to use the reserved placement corridors, including the centre of a two-tile gap.
+    centres rather than a conventional obstacle-avoiding trace.  Placement may additionally
+    reserve physical areas from relay entities; wires are still free to cross those areas.
     """
 
     offsets = _grid_route_offsets(safe_span)
@@ -259,7 +272,7 @@ def _find_grid_relay_positions(
         clear = not any(
             _boxes_overlap(position, _RELAY_HALF_EXTENT, other_position, half_extent)
             for other_position, half_extent, _entity_id in occupied
-        )
+        ) and not _relay_overlaps_forbidden(position, forbidden_areas)
         clear_cache[position] = clear
         return clear
 
@@ -290,7 +303,7 @@ def _find_grid_relay_positions(
                 path.reverse()
                 if _chain_is_in_reach(
                     source, path, target, safe_span
-                ) and _relay_candidates_are_clear(path, occupied):
+                ) and _relay_candidates_are_clear(path, occupied, forbidden_areas=forbidden_areas):
                     return path
 
             for dx, dy in offsets:
@@ -324,32 +337,24 @@ def _find_grid_relay_positions(
 
 
 def _grid_route_offsets(safe_span: float) -> tuple[tuple[float, float], ...]:
-    """Return deterministic half-tile moves biased toward near-maximum wire spans."""
+    """Return every half-tile relay hop that fits inside the configured wire reach.
 
-    maximum_half_steps = int((safe_span - 0.25) * 2)
-    if maximum_half_steps < 3:
-        return ()
+    The previous fallback sampled only a few angular directions.  In a dense placement that can
+    disconnect the *search graph* even when the real half-tile relay graph is connected: the only
+    collision-free first hop may have an unsampled slope.  Enumerating the complete local lattice
+    makes failure mean no route was found within the searched area, rather than no sampled route.
+    """
 
-    offsets: set[tuple[float, float]] = set()
-    for half_steps in range(3, maximum_half_steps + 1):
-        radius = half_steps / 2
-        for direction in range(16):
-            angle = direction * pi / 8
-            candidate = _snap_half_tile((radius * cos(angle), radius * sin(angle)))
+    maximum_half_steps = int((safe_span + 1e-9) * 2)
+    offsets: list[tuple[float, float]] = []
+    for dx_steps in range(-maximum_half_steps, maximum_half_steps + 1):
+        for dy_steps in range(-maximum_half_steps, maximum_half_steps + 1):
+            if dx_steps == 0 and dy_steps == 0:
+                continue
+            candidate = (dx_steps / 2.0, dy_steps / 2.0)
             distance = _distance((0.0, 0.0), candidate)
             if 1.25 <= distance <= safe_span + 1e-9:
-                offsets.add(candidate)
-
-        # Keep exact axis-aligned moves at every half-tile radius.  These are especially useful
-        # inside the regular horizontal/vertical corridors produced by the placer.
-        offsets.update(
-            {
-                (radius, 0.0),
-                (-radius, 0.0),
-                (0.0, radius),
-                (0.0, -radius),
-            }
-        )
+                offsets.append(candidate)
 
     return tuple(
         sorted(
@@ -383,9 +388,13 @@ def _chain_is_in_reach(
 def _relay_candidates_are_clear(
     candidates: list[tuple[float, float]],
     occupied: list[tuple[tuple[float, float], tuple[float, float], int]],
+    *,
+    forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
 ) -> bool:
     local: list[tuple[tuple[float, float], tuple[float, float], int]] = list(occupied)
     for index, candidate in enumerate(candidates):
+        if _relay_overlaps_forbidden(candidate, forbidden_areas):
+            return False
         if any(
             _boxes_overlap(candidate, _RELAY_HALF_EXTENT, pos, half)
             for pos, half, _entity_id in local
@@ -393,6 +402,23 @@ def _relay_candidates_are_clear(
             return False
         local.append((candidate, _RELAY_HALF_EXTENT, -(index + 1)))
     return True
+
+
+def _relay_overlaps_forbidden(
+    position: tuple[float, float],
+    forbidden_areas: tuple[RelayForbiddenArea, ...],
+) -> bool:
+    """Return whether a 1x1 relay would intrude into any reserved physical area."""
+
+    x, y = position
+    half_x, half_y = _RELAY_HALF_EXTENT
+    return any(
+        x + half_x > left + 1e-9
+        and x - half_x < right - 1e-9
+        and y + half_y > top + 1e-9
+        and y - half_y < bottom - 1e-9
+        for left, right, top, bottom in forbidden_areas
+    )
 
 
 def routed_positions(
@@ -427,6 +453,8 @@ def validate_entity_clearance(
     circuit: PhysicalCircuit,
     positions: dict[int, tuple[float, float]],
     plan: RoutingPlan,
+    *,
+    relay_forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
 ) -> None:
     """Raise if a generated relay overlaps a compiler entity or another relay."""
 
@@ -437,6 +465,8 @@ def validate_entity_clearance(
     relays = [(relay.position, _RELAY_HALF_EXTENT, relay.entity_id) for relay in plan.relays]
 
     for relay_pos, relay_half, relay_id in relays:
+        if _relay_overlaps_forbidden(relay_pos, relay_forbidden_areas):
+            raise ValueError(f"wire relay {relay_id} overlaps a reserved placement corridor")
         for pos, half, entity_id in originals:
             if _boxes_overlap(relay_pos, relay_half, pos, half):
                 raise ValueError(f"wire relay {relay_id} overlaps entity {entity_id}")
