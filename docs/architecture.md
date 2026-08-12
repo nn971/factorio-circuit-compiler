@@ -103,10 +103,12 @@ lanes coexist on one net. `NetConflict` forbids electrical net merges. Compatibl
 deliberately unresolved.
 
 The executable lowerer now covers scalar and whole-vector stateless circuits plus both trusted vector
-registers: fresh scalar/vector sampling, vector constants, isolating `.signal(...)` extraction,
+registers: fresh scalar/vector sampling, vector constants, direct fixed-lane `.signal(...)` views,
 phase-alignment delays, arithmetic, comparisons, selects, conservative `Each` packing,
-`AccumulatorReg`, and `FreezeReg`. Register vector/control separation is expressed with abstract net
-conflicts rather than wire colors. See `docs/abstract-physical-ir.md` for the detailed contract.
+`AccumulatorReg`, and `FreezeReg`. A lane read itself creates no extractor; a real delay/isolation
+combinator is introduced only when timing requires one. Register vector/control separation is expressed
+with abstract net conflicts rather than wire colors. See `docs/abstract-physical-ir.md` for the detailed
+contract.
 
 ## Physical synthesis and Layout
 
@@ -118,15 +120,14 @@ Blueprint generation is downstream serialization: it translates `Layout` to Fact
 then performs the standard compression/base64 encoding. Layout is an output data object of physical
 synthesis, rather than another processing layer.
 
-`compile_abstract_circuit(...)` is the executable reference path for this architecture. Its physical
-synthesizer allocates unique virtual signals, two-colors explicit net conflicts, and may flip whole
-conflict components to favor compatible same-color coalescing at connectors already shared by multiple
-abstract nets. Those unavoidable electrical merges are recorded explicitly in `Layout`; disjoint nets
-are not globally joined yet. The synthesizer then reuses the current deterministic row placement and
-reach-safe routing. Blueprint serialization consumes that completed layout without choosing geometry
-or wiring. Scalar I/O annotation markers are also finalized here, after their concrete signals are
-known.
+`compile_circuit(...)` is the canonical executable path for this architecture. Physical synthesis
+reserves user-fixed signal identities, derives safe red/green constraints, coalesces proven-compatible
+nets that already meet at connectors, and reuses concrete virtual signal identities across electrically
+disjoint physical groups. It then uses the current deterministic row placement and reach-safe routing.
+That placement policy is intentionally simple and is not an active optimization target for now.
+Blueprint serialization consumes the completed `Layout` without choosing geometry or wiring. Scalar
+I/O annotation markers are finalized after their concrete signals are known.
 
-The current `compile_circuit(...)` concrete backend remains the default while the new backend is
-validated. Both trusted vector-state primitives have moved to the new path, and switchable Fibonacci
-now serves as the coupled-state migration regression.
+`compile_abstract_circuit(...)` remains as a compatibility alias for the canonical path. The previous
+direct-concrete lowerer is retained only in `factorio_circuit.compiler_legacy` as a parity/debugging
+oracle; it is not part of normal compilation.

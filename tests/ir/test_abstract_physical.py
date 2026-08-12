@@ -59,9 +59,7 @@ def test_signal_may_appear_on_multiple_disconnected_nets() -> None:
 
 def test_validation_rejects_unknown_net_signal() -> None:
     circuit = _minimal_circuit()
-    circuit.nets[0] = AbstractNet(
-        100, (999,), (Endpoint(10, Connector.INPUT),), "bad"
-    )
+    circuit.nets[0] = AbstractNet(100, (999,), (Endpoint(10, Connector.INPUT),), "bad")
 
     with pytest.raises(ValueError, match="unknown signal id 999"):
         circuit.validate()

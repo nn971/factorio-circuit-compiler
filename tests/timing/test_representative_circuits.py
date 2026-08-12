@@ -3,6 +3,7 @@ import pytest
 from factorio_circuit import compile_circuit
 from factorio_circuit.simulate.compare import assert_same_stream
 from factorio_circuit.simulate.physical import simulate_stream
+
 from ..support.circuits import n_tick_pulse_generator
 
 

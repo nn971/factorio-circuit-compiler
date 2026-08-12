@@ -63,7 +63,7 @@ class RoutedWire:
         ]
         if left[0] > left[2]:
             left = [left[2], left[3], left[0], left[1]]
-        return tuple(left)
+        return (left[0], left[1], left[2], left[3])
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +128,7 @@ def route_wires(
             occupied.append((position, _RELAY_HALF_EXTENT, relay_id))
 
         chain = [connection.source.entity, *relay_ids, connection.target.entity]
-        for segment_index, (left_id, right_id) in enumerate(zip(chain, chain[1:])):
+        for segment_index, (left_id, right_id) in enumerate(zip(chain, chain[1:], strict=False)):
             left_connector = (
                 _endpoint_connector_id(circuit, connection.source)
                 if segment_index == 0
@@ -218,7 +218,10 @@ def _chain_is_in_reach(
     safe_span: float,
 ) -> bool:
     points = [source, *relays, target]
-    return all(_distance(left, right) <= safe_span + 1e-9 for left, right in zip(points, points[1:]))
+    return all(
+        _distance(left, right) <= safe_span + 1e-9
+        for left, right in zip(points, points[1:], strict=False)
+    )
 
 
 def _relay_candidates_are_clear(
@@ -304,10 +307,8 @@ def _boxes_overlap(
     right_half: tuple[float, float],
 ) -> bool:
     return (
-        abs(left_pos[0] - right_pos[0])
-        < left_half[0] + right_half[0] + _COLLISION_MARGIN
-        and abs(left_pos[1] - right_pos[1])
-        < left_half[1] + right_half[1] + _COLLISION_MARGIN
+        abs(left_pos[0] - right_pos[0]) < left_half[0] + right_half[0] + _COLLISION_MARGIN
+        and abs(left_pos[1] - right_pos[1]) < left_half[1] + right_half[1] + _COLLISION_MARGIN
     )
 
 

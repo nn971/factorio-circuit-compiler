@@ -32,6 +32,7 @@ def eliminate_common_subexpressions(module: CircuitModule) -> CircuitModule:
     interned: dict[tuple[object, ...], ScalarValue] = {}
 
     def rewrite(value: ScalarValue) -> ScalarValue:
+        key: tuple[object, ...]
         cached = memo.get(id(value))
         if cached is not None:
             return cached

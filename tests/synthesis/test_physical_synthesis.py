@@ -58,7 +58,6 @@ def test_color_component_flip_prefers_shared_connector_coalescing() -> None:
     assert layout.physical_net_count == 4
 
 
-
 def test_signal_allocator_reuses_identity_on_disconnected_physical_groups() -> None:
     circuit = AbstractPhysicalCircuit("signal_reuse")
     circuit.signals.extend((AbstractSignal(1), AbstractSignal(2)))
@@ -147,8 +146,7 @@ def test_transitive_net_coalescing_does_not_merge_repeated_lane() -> None:
     circuit = AbstractPhysicalCircuit("transitive_merge_guard")
     circuit.signals.extend((AbstractSignal(1), AbstractSignal(2)))
     circuit.entities.extend(
-        ConstantCombinator(index, annotation_only=True)
-        for index in range(1, 6)
+        ConstantCombinator(index, annotation_only=True) for index in range(1, 6)
     )
     left_join = Endpoint(4, Connector.SINGLE)
     right_join = Endpoint(5, Connector.SINGLE)
@@ -171,13 +169,11 @@ def test_transitive_net_coalescing_does_not_merge_repeated_lane() -> None:
     assert layout.assigned_net_colors[1] != layout.assigned_net_colors[3]
 
 
-
 def test_runtime_open_vector_net_never_coalesces_with_another_net() -> None:
     circuit = AbstractPhysicalCircuit("dynamic_vector_isolation")
     circuit.signals.append(AbstractSignal(1))
     circuit.entities.extend(
-        ConstantCombinator(index, annotation_only=True)
-        for index in range(1, 4)
+        ConstantCombinator(index, annotation_only=True) for index in range(1, 4)
     )
     shared = Endpoint(3, Connector.SINGLE)
     circuit.nets.extend(
@@ -196,7 +192,6 @@ def test_runtime_open_vector_net_never_coalesces_with_another_net() -> None:
 
     assert layout.assigned_net_colors[1] != layout.assigned_net_colors[2]
     assert layout.coalesced_net_groups[1] != layout.coalesced_net_groups[2]
-
 
 
 def test_runtime_open_vector_net_rejects_compiler_allocated_lane() -> None:

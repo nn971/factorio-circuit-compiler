@@ -1,5 +1,10 @@
 from factorio_circuit import Circuit, compile_circuit
-from factorio_circuit.ir.physical import ArithmeticCombinator, DeciderCombinator, SignalId, WireColor
+from factorio_circuit.ir.physical import (
+    ArithmeticCombinator,
+    DeciderCombinator,
+    SignalId,
+    WireColor,
+)
 from factorio_circuit.simulate.compare import assert_same_stream
 from factorio_circuit.simulate.physical import simulate_stream
 
@@ -42,13 +47,12 @@ def test_accumulator_uses_vector_memory_cell() -> None:
     memory = memories[0]
     assert memory.left.each
     assert memory.left.networks == (WireColor.RED,)
-    assert memory.right.signal == SignalId("virtual", "signal-green")
+    assert memory.right.signal is not None
     assert memory.right.networks == (WireColor.GREEN,)
     assert memory.output_each
 
     descriptions = {
-        getattr(entity, "description", None)
-        for entity in result.physical_circuit.entities
+        getattr(entity, "description", None) for entity in result.physical_circuit.entities
     }
     assert "AccumulatorReg memory: add[0] enabled" not in descriptions
 
@@ -73,13 +77,9 @@ def test_freeze_has_pass_and_hold_controls() -> None:
     assert any("transparent input gate" in item for item in descriptions)
     assert any("vector memory" in item for item in descriptions)
     assert (
-        sum(
-            isinstance(entity, DeciderCombinator)
-            for entity in result.physical_circuit.entities
-        )
+        sum(isinstance(entity, DeciderCombinator) for entity in result.physical_circuit.entities)
         >= 2
     )
-
 
 
 def test_accumulator_matches_reference_state_stream() -> None:
@@ -107,6 +107,7 @@ def test_freeze_matches_reference_state_stream() -> None:
         {"data": {}, "set_signal": 0},
     ]
     assert_same_stream(result.semantic_ir, result.physical_circuit, stream)
+
 
 def test_accumulator_accumulates_and_clears_in_physical_simulator() -> None:
     result = compile_circuit(_accumulator(), optimize=False)

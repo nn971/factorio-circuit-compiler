@@ -142,24 +142,26 @@ conservative `Each` packing create `SignalConflict` metadata for coexisting lane
 source must remain separate from another scalar source at a consumer, lowering emits `NetConflict`
 rather than choosing red/green itself.
 
-`compile_abstract_circuit(...)` exercises the full new path. The baseline physical synthesizer is
-intentionally conservative:
+`compile_circuit(...)` exercises the canonical path. The physical synthesizer is intentionally
+conservative:
 
-- every abstract signal gets a unique virtual `SignalId`;
-- explicit net-conflict components are bipartitioned, then component polarity is adjusted to
-  maximize compatible same-color coalescing at shared connectors;
-- same-color nets sharing a connector are recorded as one synthesized physical net group;
-- disjoint nets are not joined merely to create a bus, because that may increase wire/relay cost;
-- the current deterministic row placement and reach-safe relay router are reused;
+- user-fixed target signal identities are reserved before compiler allocation;
+- explicit and synthesis-derived net conflicts are two-colored, with component polarity adjusted to
+  favor proven-safe shared-connector coalescing;
+- same-color compatible nets sharing a connector are recorded as one synthesized physical net group;
+- compiler virtual signals are reused across electrically disjoint physical groups when interference
+  constraints allow it;
+- disjoint nets are not joined merely to create a bus;
+- the current deterministic row placement and reach-safe relay router are reused unchanged;
 - scalar I/O marker descriptions are filled with the final allocated signal identity;
-- the resulting `Layout` contains the final positions, routed wires, relays, concrete signal
-  allocation, net colors, and net-group mapping;
+- the resulting `Layout` contains final positions, routed wires, relays, concrete signal allocation,
+  net colors, and net-group mapping;
 - the layout serializer performs no placement or routing decisions.
 
 The scalar path supports arithmetic, comparisons, selects, fresh input sampling, phase-alignment
-delays, and conservative `Each` packing. Whole-vector stateless values, isolating `.signal(...)`
-extraction, and both trusted vector-register prototypes are also migrated. The existing
-`compile_circuit(...)` backend remains the default while the new path is validated more broadly.
+delays, and conservative `Each` packing. Whole-vector values use direct fixed-lane `.signal(...)` views;
+`AccumulatorReg` and `FreezeReg` are both on this canonical backend. `compile_abstract_circuit(...)` is
+retained only as a compatibility alias.
 
 See `docs/abstract-physical-ir.md`.
 
@@ -207,9 +209,7 @@ can remain abstract until physical synthesis.
 
 ## Recommended next step
 
-Keep the legacy backend as a comparison oracle. Physical synthesis now coalesces proven-compatible
-nets where they already share connectors and reuses concrete virtual signal identities across
-electrically disjoint physical groups while honoring `SignalConflict`. The next useful optimization is
-placement-aware shared routing/layout; do not globally connect disjoint compatible nets unless the
-geometry/cost model shows a benefit. Semantic write-time anchoring remains postponed until this backend
-boundary is stable.
+Treat the physical backend as correctness-complete for the current semantics: keep the deterministic
+row placement, current net/color synthesis, signal reuse, and reach-safe routing stable. Keep the old
+direct-concrete backend only as a narrow comparison oracle. After the cleanup suite is green, return to
+semantic design rather than adding more physical/layout optimization.

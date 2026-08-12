@@ -2,7 +2,12 @@ import pytest
 
 from factorio_circuit import Circuit, CircuitBuildError
 from factorio_circuit.ir.semantic import BinaryOp, InputSample, VectorInputSample
-from factorio_circuit.ir.state import AccumulatorAdd, AccumulatorClear, FreezeSet, VectorRegisterRead
+from factorio_circuit.ir.state import (
+    AccumulatorAdd,
+    AccumulatorClear,
+    FreezeSet,
+    VectorRegisterRead,
+)
 
 
 def test_symbolic_straight_line_builds_ir() -> None:

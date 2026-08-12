@@ -7,7 +7,7 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-def circuit(fn: Callable[P, R]) -> Callable[P, R]:
+def circuit[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     """Reject new use of the former ``@circuit`` AST frontend with a migration message."""
 
     raise RuntimeError(

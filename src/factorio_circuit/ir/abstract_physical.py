@@ -232,13 +232,11 @@ class AbstractPhysicalCircuit:
                 raise ValueError(f"net {net.id} contains a duplicate fixed signal")
             if len(set(net.endpoints)) != len(net.endpoints):
                 raise ValueError(f"net {net.id} contains a duplicate endpoint")
-            for signal in net.signals:
-                _require(signal_ids, signal, "signal")
+            for signal_id in net.signals:
+                _require(signal_ids, signal_id, "signal")
             for endpoint in net.endpoints:
                 if endpoint.entity not in entity_ids:
-                    raise ValueError(
-                        f"net {net.id} references unknown entity {endpoint.entity}"
-                    )
+                    raise ValueError(f"net {net.id} references unknown entity {endpoint.entity}")
 
         connected_entities = {
             endpoint.entity
@@ -271,23 +269,28 @@ class AbstractPhysicalCircuit:
                     _require(signal_ids, entity.else_output_signal, "signal")
                     self._validate_net_refs(entity.else_copy_count_nets, net_ids)
             else:
-                for signal, _count in entity.signals:
-                    self._validate_signal_ref(signal, signal_ids)
+                for signal_ref, _count in entity.signals:
+                    self._validate_signal_ref(signal_ref, signal_ids)
 
-        for conflict in self.signal_conflicts:
-            self._validate_conflict(conflict.left, conflict.right, signal_ids, "signal")
-        for conflict in self.net_conflicts:
-            self._validate_conflict(conflict.left, conflict.right, net_ids, "net")
+        for signal_conflict in self.signal_conflicts:
+            self._validate_conflict(
+                signal_conflict.left, signal_conflict.right, signal_ids, "signal"
+            )
+        for net_conflict in self.net_conflicts:
+            self._validate_conflict(net_conflict.left, net_conflict.right, net_ids, "net")
 
-        for port in (*self.inputs, *self.outputs):
-            if port.endpoint.entity not in entity_ids:
-                raise ValueError(f"port {port.name!r} references unknown entity")
-            if port.signal is not None:
-                self._validate_signal_ref(port.signal, signal_ids)
+        for input_port in self.inputs:
+            if input_port.endpoint.entity not in entity_ids:
+                raise ValueError(f"port {input_port.name!r} references unknown entity")
+            if input_port.signal is not None:
+                self._validate_signal_ref(input_port.signal, signal_ids)
+        for output_port in self.outputs:
+            if output_port.endpoint.entity not in entity_ids:
+                raise ValueError(f"port {output_port.name!r} references unknown entity")
+            if output_port.signal is not None:
+                self._validate_signal_ref(output_port.signal, signal_ids)
 
-    def _validate_operand(
-        self, operand: Operand, signal_ids: set[int], net_ids: set[int]
-    ) -> None:
+    def _validate_operand(self, operand: Operand, signal_ids: set[int], net_ids: set[int]) -> None:
         if operand.signal is not None:
             self._validate_signal_ref(operand.signal, signal_ids)
         self._validate_net_refs(operand.nets, net_ids)

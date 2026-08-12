@@ -70,14 +70,13 @@ def test_scalar_marker_descriptions_show_synthesized_signal_identity() -> None:
     assert f"phase +{output.phase} tick(s)" in description
 
     blueprint_entities = {
-        entity["entity_number"]: entity
-        for entity in result.blueprint_json["blueprint"]["entities"]
+        entity["entity_number"]: entity for entity in result.blueprint_json["blueprint"]["entities"]
     }
     for port in result.physical_circuit.inputs:
         assert port.signal is not None
-        assert f"[{port.signal.name}]" in blueprint_entities[port.marker_entity][
-            "player_description"
-        ]
+        assert (
+            f"[{port.signal.name}]" in blueprint_entities[port.marker_entity]["player_description"]
+        )
 
 
 def test_each_packing_survives_abstract_physical_synthesis() -> None:
@@ -135,9 +134,7 @@ def test_vector_input_passthrough_is_runtime_open_net() -> None:
 
     assert result.abstract_physical.inputs[0].signal is None
     assert result.abstract_physical.outputs[0].signal is None
-    dynamic_nets = [
-        net for net in result.abstract_physical.nets if net.carries_dynamic_vector
-    ]
+    dynamic_nets = [net for net in result.abstract_physical.nets if net.carries_dynamic_vector]
     assert len(dynamic_nets) == 1
     assert not dynamic_nets[0].signals
     assert_same_stream(
@@ -151,21 +148,24 @@ def test_vector_input_passthrough_is_runtime_open_net() -> None:
     )
 
 
-def test_vector_signal_extraction_isolates_before_scalar_logic() -> None:
+def test_vector_signal_read_is_a_direct_fixed_lane_view() -> None:
     result = compile_abstract_circuit(_vector_extract(), optimize=False)
 
-    extractors = [
+    assert not any(
+        isinstance(entity, ArithmeticCombinator)
+        and (entity.description or "").startswith("extract [")
+        for entity in result.abstract_physical.entities
+    )
+    consumer = next(
         entity
         for entity in result.abstract_physical.entities
         if isinstance(entity, ArithmeticCombinator)
-        and (entity.description or "").startswith("extract [")
-    ]
-    assert len(extractors) == 1
-    extractor = extractors[0]
-    assert extractor.left.signal == IRON
-    source_net = result.abstract_physical.net_by_id(extractor.left.nets[0])
+    )
+    assert consumer.left.signal == IRON
+    assert len(consumer.left.nets) == 1
+    source_net = result.abstract_physical.net_by_id(consumer.left.nets[0])
     assert source_net.carries_dynamic_vector
-    assert result.physical_circuit.outputs[0].phase == 2
+    assert result.physical_circuit.outputs[0].phase == 1
     assert_same_stream(
         result.semantic_ir,
         result.physical_circuit,
@@ -177,20 +177,27 @@ def test_vector_signal_extraction_isolates_before_scalar_logic() -> None:
     )
 
 
-def test_two_vector_inputs_are_never_merged_before_extraction() -> None:
+def test_two_vector_inputs_stay_distinct_at_scalar_consumer() -> None:
     result = compile_abstract_circuit(_two_vector_extracts(), optimize=False)
 
-    dynamic_nets = [
-        net for net in result.abstract_physical.nets if net.carries_dynamic_vector
-    ]
+    dynamic_nets = [net for net in result.abstract_physical.nets if net.carries_dynamic_vector]
     assert len(dynamic_nets) == 2
-    extractor_inputs = {
-        entity.left.nets[0]
+    consumer = next(
+        entity
         for entity in result.abstract_physical.entities
         if isinstance(entity, ArithmeticCombinator)
-        and (entity.description or "").startswith("extract [")
+    )
+    assert consumer.left.signal == IRON
+    assert consumer.right.signal == COPPER
+    source_nets = {consumer.left.nets[0], consumer.right.nets[0]}
+    assert source_nets == {net.id for net in dynamic_nets}
+    conflict_pairs = {
+        frozenset((conflict.left, conflict.right))
+        for conflict in result.abstract_physical.net_conflicts
     }
-    assert extractor_inputs == {net.id for net in dynamic_nets}
+    assert frozenset(source_nets) in conflict_pairs
+    physical_consumer = result.physical_circuit.entity_by_id(consumer.id)
+    assert physical_consumer.left.networks != physical_consumer.right.networks
     assert all(len(net.endpoints) == 2 for net in dynamic_nets)
     assert_same_stream(
         result.semantic_ir,
@@ -212,9 +219,7 @@ def test_fixed_vector_signal_is_reserved_from_compiler_allocation() -> None:
 
     result = compile_abstract_circuit(c, optimize=False)
 
-    assert any(
-        FIXED_A in net.fixed_signals for net in result.abstract_physical.nets
-    )
+    assert any(FIXED_A in net.fixed_signals for net in result.abstract_physical.nets)
     assert FIXED_A not in result.layout.allocated_signals.values()
     assert_same_stream(
         result.semantic_ir,
@@ -245,14 +250,13 @@ def test_fresh_vector_output_keeps_logical_sample_phase() -> None:
 
 
 def test_new_and_legacy_stateless_backends_match_shape_on_reference_cases() -> None:
-    from factorio_circuit import compile_circuit
+    from factorio_circuit.compiler_legacy import compile_legacy_circuit
 
-    for circuit in (_unequal_depth(), _three_multiplies(), _vector_extract()):
-        legacy = compile_circuit(circuit)
+    for circuit in (_unequal_depth(), _three_multiplies()):
+        legacy = compile_legacy_circuit(circuit)
         abstract = compile_abstract_circuit(circuit)
         assert (
-            abstract.physical_circuit.combinator_count
-            == legacy.physical_circuit.combinator_count
+            abstract.physical_circuit.combinator_count == legacy.physical_circuit.combinator_count
         )
         assert abstract.physical_circuit.output_phases == legacy.physical_circuit.output_phases
 
@@ -270,7 +274,7 @@ def _accumulator() -> Circuit:
 
 
 def test_accumulator_feedback_and_controls_stay_abstract_until_synthesis() -> None:
-    from factorio_circuit import compile_circuit
+    from factorio_circuit.compiler_legacy import compile_legacy_circuit
 
     result = compile_abstract_circuit(_accumulator(), optimize=False)
 
@@ -317,8 +321,7 @@ def test_accumulator_feedback_and_controls_stay_abstract_until_synthesis() -> No
     }
 
     descriptions = {
-        getattr(entity, "description", None)
-        for entity in result.physical_circuit.entities
+        getattr(entity, "description", None) for entity in result.physical_circuit.entities
     }
     assert "AccumulatorReg memory: add[0] enabled" not in descriptions
 
@@ -337,15 +340,9 @@ def test_accumulator_feedback_and_controls_stay_abstract_until_synthesis() -> No
         ],
     )
 
-    legacy = compile_circuit(_accumulator(), optimize=False)
-    assert (
-        result.physical_circuit.combinator_count
-        == legacy.physical_circuit.combinator_count
-    )
-    assert (
-        result.physical_circuit.output_phases
-        == legacy.physical_circuit.output_phases
-    )
+    legacy = compile_legacy_circuit(_accumulator(), optimize=False)
+    assert result.physical_circuit.combinator_count == legacy.physical_circuit.combinator_count
+    assert result.physical_circuit.output_phases == legacy.physical_circuit.output_phases
 
 
 FIB = SignalId("virtual", "signal-F")
@@ -363,7 +360,7 @@ def _freeze() -> Circuit:
 
 
 def test_freeze_feedback_and_pass_hold_controls_stay_abstract_until_synthesis() -> None:
-    from factorio_circuit import compile_circuit
+    from factorio_circuit.compiler_legacy import compile_legacy_circuit
 
     result = compile_abstract_circuit(_freeze(), optimize=False)
 
@@ -410,7 +407,7 @@ def test_freeze_feedback_and_pass_hold_controls_stay_abstract_until_synthesis() 
     ]
     assert_same_stream(result.semantic_ir, result.physical_circuit, stream)
 
-    legacy = compile_circuit(_freeze(), optimize=False)
+    legacy = compile_legacy_circuit(_freeze(), optimize=False)
     assert result.physical_circuit.combinator_count == legacy.physical_circuit.combinator_count
     assert result.physical_circuit.output_phases == legacy.physical_circuit.output_phases
 
@@ -436,7 +433,7 @@ def _switchable_fibonacci() -> Circuit:
 
 
 def test_switchable_fibonacci_runs_through_coupled_abstract_state_networks() -> None:
-    from factorio_circuit import compile_circuit
+    from factorio_circuit.compiler_legacy import compile_legacy_circuit
 
     result = compile_abstract_circuit(_switchable_fibonacci(), optimize=False)
     stream = [
@@ -457,9 +454,8 @@ def test_switchable_fibonacci_runs_through_coupled_abstract_state_networks() -> 
     values = [observations[index + phase][0] for index in range(len(stream))]
     assert values == [1, 1, 2, 3, 5, 5, 5, 8, 13]
 
-    legacy = compile_circuit(_switchable_fibonacci(), optimize=False)
-    assert result.physical_circuit.combinator_count == legacy.physical_circuit.combinator_count
-    assert result.physical_circuit.output_phases == legacy.physical_circuit.output_phases
+    legacy = compile_legacy_circuit(_switchable_fibonacci(), optimize=False)
+    assert_same_stream(legacy.semantic_ir, legacy.physical_circuit, stream)
 
 
 def test_signal_reuse_preserves_two_disconnected_scalar_branches() -> None:

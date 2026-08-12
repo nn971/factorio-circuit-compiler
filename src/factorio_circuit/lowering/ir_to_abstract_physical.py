@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from itertools import combinations
-from typing import cast
 
 from factorio_circuit.analysis.state_timing import StateTimingPlan, analyze_state_timing
 from factorio_circuit.ir.abstract_physical import (
@@ -123,7 +122,7 @@ class AbstractPhysicalLowerer:
             ):
                 realized_outputs.append(self.realize_vector(value))
             else:
-                realized_outputs.append(self.realize(cast(Value, value)))
+                realized_outputs.append(self.realize(value))
         self._create_output_markers(realized_outputs)
         self.circuit.nets = [
             AbstractNet(
@@ -158,9 +157,7 @@ class AbstractPhysicalLowerer:
             not isinstance(value, (*scalar_types, *vector_types))
             for value in self.module.output.values
         ):
-            raise ValueError(
-                "abstract physical lowering encountered an unsupported output"
-            )
+            raise ValueError("abstract physical lowering encountered an unsupported output")
 
     def _reserve_state_outputs(self) -> None:
         """Reserve memory ids/nets before lowering possibly coupled state updates."""
@@ -185,9 +182,7 @@ class AbstractPhysicalLowerer:
             timing = self.state_timing.for_register(register)
             self.state_memory_ids[register.name] = memory_id
             self.state_memory_nets[register.name] = memory_net
-            self.state_outputs[register.name] = RealizedVector(
-                memory_net, timing.state_phase
-            )
+            self.state_outputs[register.name] = RealizedVector(memory_net, timing.state_phase)
 
     def _create_state_components(self) -> None:
         for register in self.module.state_registers:
@@ -224,9 +219,7 @@ class AbstractPhysicalLowerer:
         clear_active: RealizedValue | None = None
         if clears:
             clear = self.realize(clears[0].when)
-            active_signal = self._new_signal(
-                f"AccumulatorReg {register.name}: clear-active"
-            )
+            active_signal = self._new_signal(f"AccumulatorReg {register.name}: clear-active")
             active = DeciderCombinator(
                 id=self._take_entity_id(),
                 comparator="==",
@@ -247,11 +240,7 @@ class AbstractPhysicalLowerer:
 
         for index, add in enumerate(adds):
             source = self.delay_vector_to(self.realize_vector(add.value), target_phase)
-            if (
-                clear_active is not None
-                and isinstance(add.when, Constant)
-                and add.when.value != 0
-            ):
+            if clear_active is not None and isinstance(add.when, Constant) and add.when.value != 0:
                 # The default ``when=1`` adds no independent control.  Reuse clear-active
                 # directly instead of materializing a constant signal that would be dead.
                 gate_active = self.delay_to(clear_active, target_phase)
@@ -261,9 +250,7 @@ class AbstractPhysicalLowerer:
                     description=f"AccumulatorReg {register.name}: add[{index}] enabled",
                 )
                 if clear_active is not None:
-                    combined = self._emit_binary_from_realized(
-                        "*", add_active, clear_active
-                    )
+                    combined = self._emit_binary_from_realized("*", add_active, clear_active)
                     gate_active = self.delay_to(combined, target_phase)
                 else:
                     gate_active = self.delay_to(add_active, target_phase)
@@ -316,9 +303,7 @@ class AbstractPhysicalLowerer:
                 output_each=True,
                 description=f"AccumulatorReg {register.name}: vector memory",
             )
-            self._attach(
-                aligned_clear_active.net, Endpoint(memory_id, Connector.INPUT)
-            )
+            self._attach(aligned_clear_active.net, Endpoint(memory_id, Connector.INPUT))
         self.circuit.entities.append(memory)
 
     def _lower_freeze(self, register: FreezeRegister) -> None:
@@ -431,10 +416,12 @@ class AbstractPhysicalLowerer:
             self.circuit.inputs.append(InputPort(item.name, endpoint, signal))
             self.memo[id(item)] = RealizedValue(signal, net, 0)
 
-        for item in self.module.vector_inputs:
+        for vector_input in self.module.vector_inputs:
             marker = ConstantCombinator(
                 id=self._take_entity_id(),
-                description=f"INPUT {item.name} — whole signal vector; edit any signals here",
+                description=(
+                    f"INPUT {vector_input.name} — whole signal vector; edit any signals here"
+                ),
                 annotation_only=True,
             )
             self.circuit.entities.append(marker)
@@ -442,21 +429,17 @@ class AbstractPhysicalLowerer:
             net = self._new_net(
                 (),
                 endpoint,
-                label=f"vector input {item.name}",
+                label=f"vector input {vector_input.name}",
                 carries_dynamic_vector=True,
             )
-            self.circuit.inputs.append(InputPort(item.name, endpoint, None))
-            self.vector_memo[id(item)] = RealizedVector(net, 0)
+            self.circuit.inputs.append(InputPort(vector_input.name, endpoint, None))
+            self.vector_memo[id(vector_input)] = RealizedVector(net, 0)
 
-    def _create_output_markers(
-        self, outputs: list[RealizedValue | RealizedVector]
-    ) -> None:
+    def _create_output_markers(self, outputs: list[RealizedValue | RealizedVector]) -> None:
         for index, (semantic, realized) in enumerate(
             zip(self.module.output.values, outputs, strict=True)
         ):
-            declared_name = (
-                self.module.output.names[index] if self.module.output.names else None
-            )
+            declared_name = self.module.output.names[index] if self.module.output.names else None
             name = declared_name or getattr(semantic, "name", None) or f"out{index}"
             if isinstance(realized, RealizedVector):
                 description = f"OUTPUT {name} — whole signal vector"
@@ -525,9 +508,7 @@ class AbstractPhysicalLowerer:
             base = self.memo.get(id(value.source))
             if base is None:
                 raise ValueError(f"input {value.source.name!r} was not initialized")
-            result = RealizedValue(
-                base.signal, base.net, value.offset, base.clean_single_lane
-            )
+            result = RealizedValue(base.signal, base.net, value.offset, base.clean_single_lane)
         elif isinstance(value, Constant):
             result = self._materialize_constant(value)
         elif isinstance(value, BinaryOp):
@@ -554,9 +535,7 @@ class AbstractPhysicalLowerer:
         self.memo[id(value)] = result
         return result
 
-    def _realize_nonzero_control(
-        self, value: Value, *, description: str
-    ) -> RealizedValue:
+    def _realize_nonzero_control(self, value: Value, *, description: str) -> RealizedValue:
         if isinstance(value, Constant):
             signal = self._new_signal(description)
             entity = ConstantCombinator(
@@ -574,7 +553,7 @@ class AbstractPhysicalLowerer:
 
         control = self.realize(value)
         signal = self._new_signal(description)
-        entity = DeciderCombinator(
+        control_entity = DeciderCombinator(
             id=self._take_entity_id(),
             comparator="!=",
             left=Operand(signal=control.signal, nets=(control.net,)),
@@ -583,11 +562,11 @@ class AbstractPhysicalLowerer:
             output_constant=1,
             description=description,
         )
-        self.circuit.entities.append(entity)
-        self._attach(control.net, Endpoint(entity.id, Connector.INPUT))
+        self.circuit.entities.append(control_entity)
+        self._attach(control.net, Endpoint(control_entity.id, Connector.INPUT))
         net = self._new_net(
             (signal,),
-            Endpoint(entity.id, Connector.OUTPUT),
+            Endpoint(control_entity.id, Connector.OUTPUT),
             label=description,
         )
         return RealizedValue(signal, net, control.phase + 1)
@@ -642,7 +621,9 @@ class AbstractPhysicalLowerer:
         for source in aligned:
             self._attach(source.net, input_endpoint)
 
-        output_signals = tuple(source.signal for source in aligned)
+        output_signals = tuple(
+            source.signal for source in aligned if isinstance(source.signal, int)
+        )
         output_net = self._new_net(
             output_signals,
             Endpoint(entity.id, Connector.OUTPUT),
@@ -688,9 +669,7 @@ class AbstractPhysicalLowerer:
         diff = self._emit_scalar_binary("-", select.when_true, select.when_false)
         gated = self._emit_binary_from_realized("*", diff, self.realize(select.condition))
         false_value = self._realize_operand_value(select.when_false)
-        return self._emit_binary_from_operands(
-            "+", false_value, gated, description=select.name
-        )
+        return self._emit_binary_from_operands("+", false_value, gated, description=select.name)
 
     def _emit_scalar_binary(
         self,
@@ -701,9 +680,7 @@ class AbstractPhysicalLowerer:
     ) -> RealizedValue:
         left = self._realize_operand_value(left_value)
         right = self._realize_operand_value(right_value)
-        return self._emit_binary_from_operands(
-            operation, left, right, description=description
-        )
+        return self._emit_binary_from_operands(operation, left, right, description=description)
 
     def _emit_binary_from_realized(
         self, operation: str, left: RealizedValue, right: RealizedValue
@@ -742,15 +719,17 @@ class AbstractPhysicalLowerer:
         left: RealizedValue | int,
         right: RealizedValue | int,
     ) -> tuple[Operand, Operand]:
-        if isinstance(left, RealizedValue) and isinstance(right, RealizedValue):
-            if left.net != right.net and (
-                not left.clean_single_lane or not right.clean_single_lane
-            ):
-                self._add_net_conflict(
-                    left.net,
-                    right.net,
-                    "multi-lane source must remain electrically distinct at scalar consumer",
-                )
+        if (
+            isinstance(left, RealizedValue)
+            and isinstance(right, RealizedValue)
+            and left.net != right.net
+            and (not left.clean_single_lane or not right.clean_single_lane)
+        ):
+            self._add_net_conflict(
+                left.net,
+                right.net,
+                "multi-lane source must remain electrically distinct at scalar consumer",
+            )
         return self._operand(left), self._operand(right)
 
     def _attach_dynamic_inputs(
@@ -810,9 +789,7 @@ class AbstractPhysicalLowerer:
             self.delay_cache[key] = current
         return current
 
-    def delay_vector_to(
-        self, value: RealizedVector, target_phase: int
-    ) -> RealizedVector:
+    def delay_vector_to(self, value: RealizedVector, target_phase: int) -> RealizedVector:
         if value.phase > target_phase:
             raise ValueError("cannot delay vector backwards in time")
         current = value
@@ -870,9 +847,7 @@ class AbstractPhysicalLowerer:
             carries_dynamic_vector,
         )
         for left, right in combinations(signals, 2):
-            self._add_signal_conflict(
-                left, right, "signals coexist on one abstract electrical net"
-            )
+            self._add_signal_conflict(left, right, "signals coexist on one abstract electrical net")
         return net_id
 
     def _attach(self, net_id: int, endpoint: Endpoint) -> None:
@@ -908,13 +883,9 @@ class AbstractPhysicalLowerer:
                 counts[id(child)] += 1
         for output in self.module.output.values:
             counts[id(output)] += 1
-        for op in self.module.state_operations:
-            if isinstance(op, AccumulatorAdd):
-                counts[id(op.when)] += 1
-            elif isinstance(op, AccumulatorClear):
-                counts[id(op.when)] += 1
-            elif isinstance(op, FreezeSet):
-                counts[id(op.when)] += 1
+        for state_op in self.module.state_operations:
+            if isinstance(state_op, (AccumulatorAdd, AccumulatorClear, FreezeSet)):
+                counts[id(state_op.when)] += 1
         return counts
 
 

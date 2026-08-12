@@ -82,9 +82,7 @@ def layout_to_blueprint_json(layout: Layout) -> dict[str, Any]:
 
 
 def encode_layout_blueprint_string(layout: Layout) -> str:
-    payload = json.dumps(
-        layout_to_blueprint_json(layout), separators=(",", ":")
-    ).encode()
+    payload = json.dumps(layout_to_blueprint_json(layout), separators=(",", ":")).encode()
     compressed = zlib.compress(payload, level=9)
     return "0" + base64.b64encode(compressed).decode("ascii")
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import SupportsInt, cast
 
 from factorio_circuit.ir.physical import (
     ArithmeticCombinator,
@@ -60,37 +61,52 @@ def simulate_stream(
         network_values: dict[NetworkKey, SignalMap] = defaultdict(dict)
 
         for port in circuit.inputs:
-            root = networks[(WireColor.RED, WireEndpoint(port.marker_entity, Connector.SINGLE))]
+            input_roots = [
+                root
+                for color in WireColor
+                if (
+                    root := networks.get(
+                        (color, WireEndpoint(port.marker_entity, Connector.SINGLE))
+                    )
+                )
+                is not None
+            ]
             raw = injected.get(port.name, 0 if port.signal is not None else {})
             if port.signal is not None:
-                value = i32(int(raw))
-                _add_signal(network_values[root], port.signal, value)
+                value = i32(int(cast(SupportsInt, raw)))
+                for input_root in input_roots:
+                    _add_signal(network_values[input_root], port.signal, value)
             else:
                 if not isinstance(raw, dict):
                     raise ValueError(f"vector input {port.name!r} expects a signal map")
                 for signal, value in raw.items():
                     if not isinstance(signal, SignalId):
                         raise ValueError("physical vector simulation expects SignalId keys")
-                    _add_signal(network_values[root], signal, i32(int(value)))
+                    for input_root in input_roots:
+                        _add_signal(
+                            network_values[input_root],
+                            signal,
+                            i32(int(cast(SupportsInt, value))),
+                        )
 
         for entity in circuit.entities:
             if isinstance(entity, ConstantCombinator) and not entity.annotation_only:
                 endpoint = WireEndpoint(entity.id, Connector.SINGLE)
                 for color in WireColor:
-                    root = networks.get((color, endpoint))
-                    if root is None:
+                    entity_root = networks.get((color, endpoint))
+                    if entity_root is None:
                         continue
                     for signal, value in entity.signals:
-                        _add_signal(network_values[root], signal, value)
+                        _add_signal(network_values[entity_root], signal, value)
 
         for entity_id, signals in pending_outputs.items():
             endpoint = WireEndpoint(entity_id, Connector.OUTPUT)
             for color in WireColor:
-                root = networks.get((color, endpoint))
-                if root is None:
+                output_root = networks.get((color, endpoint))
+                if output_root is None:
                     continue
                 for signal, value in signals.items():
-                    _add_signal(network_values[root], signal, value)
+                    _add_signal(network_values[output_root], signal, value)
 
         observations.append(
             tuple(
@@ -114,9 +130,10 @@ def simulate_stream(
     return observations
 
 
-def evaluate(circuit: PhysicalCircuit, inputs: dict[str, object]) -> tuple[object, ...]:
+def evaluate(circuit: PhysicalCircuit, inputs: dict[str, int]) -> tuple[object, ...]:
     max_phase = max(circuit.output_phases, default=0)
-    observations = simulate_stream(circuit, [inputs] * (max_phase + 1), flush_ticks=max_phase)
+    input_row: dict[str, object] = dict(inputs)
+    observations = simulate_stream(circuit, [input_row] * (max_phase + 1), flush_ticks=max_phase)
     return tuple(observations[port.phase][index] for index, port in enumerate(circuit.outputs))
 
 
@@ -127,8 +144,8 @@ def _build_networks(circuit: PhysicalCircuit) -> dict[NetworkKey, NetworkKey]:
 
     for port in circuit.inputs:
         uf.find((WireColor.RED, WireEndpoint(port.marker_entity, Connector.SINGLE)))
-    for port in circuit.outputs:
-        uf.find((WireColor.RED, WireEndpoint(port.marker_entity, Connector.SINGLE)))
+    for output_port in circuit.outputs:
+        uf.find((WireColor.RED, WireEndpoint(output_port.marker_entity, Connector.SINGLE)))
 
     return {item: uf.find(item) for item in list(uf.parent)}
 
@@ -163,7 +180,6 @@ def _read_port_signal(
     return total
 
 
-
 def _read_port_map(
     values: dict[NetworkKey, SignalMap],
     networks: dict[NetworkKey, NetworkKey],
@@ -178,6 +194,7 @@ def _read_port_map(
         for signal, value in values.get(root, {}).items():
             _add_signal(result, signal, value)
     return result
+
 
 def _selected_colors(networks: tuple[WireColor, ...] | None) -> tuple[WireColor, ...]:
     return tuple(WireColor) if networks is None else networks

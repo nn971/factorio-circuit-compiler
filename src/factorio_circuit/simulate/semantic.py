@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TypeAlias
+from typing import SupportsInt, cast
 
 from factorio_circuit.analysis.state_timing import StateTimingPlan, analyze_state_timing
 from factorio_circuit.ir.physical import SignalId
@@ -31,9 +31,9 @@ from factorio_circuit.ir.state import (
 )
 from factorio_circuit.target.factorio.semantics import apply_binary, apply_compare, i32
 
-SignalMap: TypeAlias = dict[SignalId, int]
-LogicalInputRow: TypeAlias = dict[str, object]
-LogicalOutput: TypeAlias = int | SignalMap
+type SignalMap = dict[SignalId, int]
+type LogicalInputRow = dict[str, object]
+type LogicalOutput = int | SignalMap
 
 
 def evaluate(module: CircuitModule, inputs: dict[str, int]) -> tuple[int, ...]:
@@ -67,9 +67,7 @@ def simulate_stream(
             if isinstance(
                 value, (VectorInput, VectorInputSample, VectorConstant, VectorRegisterRead)
             ):
-                row.append(
-                    _evaluate_output_vector(value, input_stream, logical_tick, histories)
-                )
+                row.append(_evaluate_output_vector(value, input_stream, logical_tick, histories))
             else:
                 row.append(
                     _evaluate_stream_value(
@@ -105,19 +103,17 @@ def _validate_state_startup_model(module: CircuitModule) -> None:
         raise TypeError(value)
 
     for op in module.state_operations:
-        if isinstance(op, (AccumulatorAdd, FreezeSet)) and isinstance(
-            op.value, VectorInputSample
-        ) and op.value.offset > 0:
+        if (
+            isinstance(op, (AccumulatorAdd, FreezeSet))
+            and isinstance(op.value, VectorInputSample)
+            and op.value.offset > 0
+        ):
             raise ValueError(
                 "zero-initial state simulation does not yet define startup/warm-up semantics for "
                 "future-sampled vector update sources"
             )
         controls: list[ScalarValue] = []
-        if isinstance(op, AccumulatorAdd):
-            controls.append(op.when)
-        elif isinstance(op, AccumulatorClear):
-            controls.append(op.when)
-        elif isinstance(op, FreezeSet):
+        if isinstance(op, (AccumulatorAdd, AccumulatorClear, FreezeSet)):
             controls.append(op.when)
         if any(scalar_has_future_sample(control) for control in controls):
             raise ValueError(
@@ -144,9 +140,7 @@ def _simulate_state_histories(
         register.name: [{}] for register in module.state_registers
     }
     operations = {
-        register.name: tuple(
-            op for op in module.state_operations if op.register == register
-        )
+        register.name: tuple(op for op in module.state_operations if op.register == register)
         for register in module.state_registers
     }
 
@@ -193,9 +187,10 @@ def _step_accumulator(
     adds = [op for op in operations if isinstance(op, AccumulatorAdd)]
     clear = next((op for op in operations if isinstance(op, AccumulatorClear)), None)
     memo: dict[tuple[int, int], int] = {}
-    if clear is not None and _evaluate_stream_value(
-        clear.when, input_stream, invocation, memo, histories
-    ) != 0:
+    if (
+        clear is not None
+        and _evaluate_stream_value(clear.when, input_stream, invocation, memo, histories) != 0
+    ):
         return {}
 
     result = dict(current)
@@ -244,9 +239,7 @@ def _evaluate_vector_source(
     if isinstance(value, VectorInput):
         return _lookup_vector_input(input_stream, logical_tick, value.name)
     if isinstance(value, VectorInputSample):
-        return _lookup_vector_input(
-            input_stream, logical_tick + value.offset, value.source.name
-        )
+        return _lookup_vector_input(input_stream, logical_tick + value.offset, value.source.name)
     if isinstance(value, VectorConstant):
         return {signal: i32(amount) for signal, amount in value.signals if i32(amount) != 0}
     if isinstance(value, VectorRegisterRead):
@@ -321,9 +314,7 @@ def _evaluate_stream_value(
     if isinstance(value, Input):
         result = _lookup_stream_input(input_stream, logical_tick, value.name)
     elif isinstance(value, InputSample):
-        result = _lookup_stream_input(
-            input_stream, logical_tick + value.offset, value.source.name
-        )
+        result = _lookup_stream_input(input_stream, logical_tick + value.offset, value.source.name)
     elif isinstance(value, Constant):
         result = i32(value.value)
     elif isinstance(value, VectorSignal):
@@ -348,9 +339,7 @@ def _evaluate_stream_value(
     elif isinstance(value, Select):
         branch = (
             value.when_true
-            if _evaluate_stream_value(
-                value.condition, input_stream, logical_tick, memo, histories
-            )
+            if _evaluate_stream_value(value.condition, input_stream, logical_tick, memo, histories)
             != 0
             else value.when_false
         )
@@ -374,12 +363,10 @@ def _lookup_stream_input(input_stream: list[LogicalInputRow], tick: int, name: s
     raw = input_stream[tick].get(name, 0)
     if isinstance(raw, dict):
         raise ValueError(f"scalar input {name!r} received a signal map")
-    return i32(int(raw))
+    return i32(int(cast(SupportsInt, raw)))
 
 
-def _lookup_vector_input(
-    input_stream: list[LogicalInputRow], tick: int, name: str
-) -> SignalMap:
+def _lookup_vector_input(input_stream: list[LogicalInputRow], tick: int, name: str) -> SignalMap:
     if tick < 0 or tick >= len(input_stream):
         return {}
     raw = input_stream[tick].get(name, {})

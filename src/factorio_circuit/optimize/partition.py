@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from factorio_circuit.ir.semantic import BinaryOp, CircuitModule
-from factorio_circuit.optimize.compatibility import ArithmeticCompatibilityKey, arithmetic_compatibility_key
+from factorio_circuit.optimize.compatibility import (
+    ArithmeticCompatibilityKey,
+    arithmetic_compatibility_key,
+)
 
 
 @dataclass(frozen=True, slots=True)

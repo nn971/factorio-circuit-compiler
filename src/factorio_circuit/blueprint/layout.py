@@ -20,8 +20,8 @@ def row_positions(circuit: PhysicalCircuit) -> dict[int, tuple[float, float]]:
     for index, entity in enumerate(implementation):
         positions[entity.id] = (float(index * 2), 0.0)
     right_x = float(max(2, len(implementation) * 2 + 2))
-    for index, port in enumerate(circuit.outputs):
-        positions[port.marker_entity] = (right_x, float(index * 2))
+    for index, output_port in enumerate(circuit.outputs):
+        positions[output_port.marker_entity] = (right_x, float(index * 2))
 
     # Defensive fallback for future annotation entities.
     for entity in circuit.entities:

@@ -31,7 +31,7 @@ class LayoutWire:
         ]
         if values[0] > values[2]:
             values = [values[2], values[3], values[0], values[1]]
-        return tuple(values)
+        return (values[0], values[1], values[2], values[3])
 
 
 @dataclass(frozen=True, slots=True)

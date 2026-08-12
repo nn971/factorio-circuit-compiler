@@ -31,8 +31,8 @@ identifies a logical combination of streams and has opaque physical execution ti
 This capability distinction is intentional:
 
 ```python
-x.sample()       # valid temporal-source operation
-(x + 1).sample() # no such method
+x.sample()  # valid temporal-source operation
+(x + 1).sample()  # no such method
 ```
 
 ## 4. Freshness cursor
@@ -40,7 +40,7 @@ x.sample()       # valid temporal-source operation
 A circuit starts at freshness offset `0`.
 
 ```python
-c.tick(n)        # τ += n
+c.tick(n)  # τ += n
 c.tick_until(n)  # τ = n, with n >= current τ
 ```
 

@@ -141,9 +141,7 @@ class PhysicalSynthesizer:
                     f"baseline physical synthesis cannot allocate {signal.domain.value} signals yet"
                 )
             forbidden = {
-                result[neighbor]
-                for neighbor in adjacency[signal_id]
-                if neighbor in result
+                result[neighbor] for neighbor in adjacency[signal_id] if neighbor in result
             }
             concrete = next((item for item in available if item not in forbidden), None)
             if concrete is None:
@@ -178,8 +176,7 @@ class PhysicalSynthesizer:
         """
 
         hard_conflicts = {
-            self._pair(conflict.left, conflict.right)
-            for conflict in self.circuit.net_conflicts
+            self._pair(conflict.left, conflict.right) for conflict in self.circuit.net_conflicts
         }
         preferences, local_conflicts = self._shared_connector_relations()
         hard_conflicts.update(local_conflicts)
@@ -275,8 +272,7 @@ class PhysicalSynthesizer:
 
     def _nets_can_coalesce_locally(self, left_id: int, right_id: int) -> bool:
         explicit = {
-            self._pair(conflict.left, conflict.right)
-            for conflict in self.circuit.net_conflicts
+            self._pair(conflict.left, conflict.right) for conflict in self.circuit.net_conflicts
         }
         if self._pair(left_id, right_id) in explicit:
             return False
@@ -286,21 +282,16 @@ class PhysicalSynthesizer:
             return False
         if set(left.signals) & set(right.signals):
             return False
-        if set(left.fixed_signals) & set(right.fixed_signals):
-            return False
-        return True
+        return not set(left.fixed_signals) & set(right.fixed_signals)
 
-    def _unsafe_group_conflicts(
-        self, net_colors: dict[int, WireColor]
-    ) -> set[tuple[int, int]]:
+    def _unsafe_group_conflicts(self, net_colors: dict[int, WireColor]) -> set[tuple[int, int]]:
         groups = self._raw_net_groups(net_colors)
         members: dict[int, list[int]] = defaultdict(list)
         for net_id, group in groups.items():
             members[group].append(net_id)
 
         explicit = {
-            self._pair(conflict.left, conflict.right)
-            for conflict in self.circuit.net_conflicts
+            self._pair(conflict.left, conflict.right) for conflict in self.circuit.net_conflicts
         }
         unsafe: set[tuple[int, int]] = set()
         for net_ids in members.values():
@@ -308,13 +299,13 @@ class PhysicalSynthesizer:
                 pair = self._pair(left_id, right_id)
                 left = self.circuit.net_by_id(left_id)
                 right = self.circuit.net_by_id(right_id)
-                if pair in explicit:
-                    unsafe.add(pair)
-                elif left.carries_dynamic_vector or right.carries_dynamic_vector:
-                    unsafe.add(pair)
-                elif set(left.signals) & set(right.signals):
-                    unsafe.add(pair)
-                elif set(left.fixed_signals) & set(right.fixed_signals):
+                if (
+                    pair in explicit
+                    or left.carries_dynamic_vector
+                    or right.carries_dynamic_vector
+                    or set(left.signals) & set(right.signals)
+                    or set(left.fixed_signals) & set(right.fixed_signals)
+                ):
                     unsafe.add(pair)
         return unsafe
 
@@ -360,9 +351,7 @@ class PhysicalSynthesizer:
     def _pair(left: int, right: int) -> tuple[int, int]:
         return (left, right) if left < right else (right, left)
 
-    def _coalesce_shared_connector_nets(
-        self, net_colors: dict[int, WireColor]
-    ) -> dict[int, int]:
+    def _coalesce_shared_connector_nets(self, net_colors: dict[int, WireColor]) -> dict[int, int]:
         """Return the proven-safe physical electrical groups for the chosen colors."""
 
         unsafe = self._unsafe_group_conflicts(net_colors)
@@ -379,9 +368,7 @@ class PhysicalSynthesizer:
         annotation_descriptions = self._annotation_descriptions(signals)
         for entity in self.circuit.entities:
             physical.entities.append(
-                self._materialize_entity(
-                    entity, signals, net_colors, annotation_descriptions
-                )
+                self._materialize_entity(entity, signals, net_colors, annotation_descriptions)
             )
 
         # Preserve each abstract net's local wiring tree.  Nets placed on the same
@@ -410,27 +397,25 @@ class PhysicalSynthesizer:
                 InputPort(
                     port.name,
                     port.endpoint.entity,
-                    None
-                    if port.signal is None
-                    else self._signal_ref(port.signal, signals),
+                    None if port.signal is None else self._signal_ref(port.signal, signals),
                 )
             )
-        for port in self.circuit.outputs:
+        for output_port in self.circuit.outputs:
             physical.outputs.append(
                 OutputPort(
-                    port.name,
-                    port.endpoint.entity,
-                    None
-                    if port.signal is None
-                    else self._signal_ref(port.signal, signals),
-                    port.phase,
+                    output_port.name,
+                    output_port.endpoint.entity,
+                    (
+                        None
+                        if output_port.signal is None
+                        else self._signal_ref(output_port.signal, signals)
+                    ),
+                    output_port.phase,
                 )
             )
         return physical
 
-    def _annotation_descriptions(
-        self, signals: dict[int, SignalId]
-    ) -> dict[int, str]:
+    def _annotation_descriptions(self, signals: dict[int, SignalId]) -> dict[int, str]:
         descriptions: dict[int, str] = {}
         for port in self.circuit.inputs:
             if port.signal is not None:
@@ -438,12 +423,12 @@ class PhysicalSynthesizer:
                 descriptions[port.endpoint.entity] = (
                     f"INPUT {port.name} — inject value on [{concrete.name}] here"
                 )
-        for port in self.circuit.outputs:
-            if port.signal is not None:
-                concrete = self._signal_ref(port.signal, signals)
-                descriptions[port.endpoint.entity] = (
-                    f"OUTPUT {port.name} — [{concrete.name}], "
-                    f"phase +{port.phase} tick(s)"
+        for output_port in self.circuit.outputs:
+            if output_port.signal is not None:
+                concrete = self._signal_ref(output_port.signal, signals)
+                descriptions[output_port.endpoint.entity] = (
+                    f"OUTPUT {output_port.name} — [{concrete.name}], "
+                    f"phase +{output_port.phase} tick(s)"
                 )
         return descriptions
 
@@ -491,8 +476,7 @@ class PhysicalSynthesizer:
         return ConstantCombinator(
             id=entity.id,
             signals=tuple(
-                (self._signal_ref(signal, signals), count)
-                for signal, count in entity.signals
+                (self._signal_ref(signal, signals), count) for signal, count in entity.signals
             ),
             description=annotation_descriptions.get(entity.id, entity.description),
             annotation_only=entity.annotation_only,
@@ -505,11 +489,7 @@ class PhysicalSynthesizer:
         net_colors: dict[int, WireColor],
     ) -> Operand:
         return Operand(
-            signal=(
-                None
-                if operand.signal is None
-                else self._signal_ref(operand.signal, signals)
-            ),
+            signal=(None if operand.signal is None else self._signal_ref(operand.signal, signals)),
             constant=operand.constant,
             each=operand.each,
             networks=self._network_selection(operand.nets, net_colors),

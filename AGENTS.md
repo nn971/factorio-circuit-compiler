@@ -94,28 +94,28 @@ Physical synthesis owns those late choices jointly and returns the final `Layout
 only serializes and encodes that layout. Read `docs/abstract-physical-ir.md` before changing this
 boundary.
 
-## Current abstract-physical migration
+## Canonical physical backend
 
-`compile_abstract_circuit(...)` provides an executable migration path through
+`compile_circuit(...)` runs through
 `AbstractPhysicalCircuit -> physical synthesis -> Layout -> blueprint serialization`. It supports
-scalar and whole-vector I/O, fresh scalar/vector samples, vector constants, isolating `.signal(...)`
-extraction, scalar logic, conservative `Each` packing, `AccumulatorReg`, and `FreezeReg`. Runtime-open
-vector nets and fixed target signals are explicit in the abstract IR. Both register feedback loops are
-runtime-open abstract nets; vector/control separation is expressed with `NetConflict`, not concrete wire
-colors. The synthesizer reserves fixed signals, allocates unique compiler virtual signals, bipartitions hard
-red/green conflicts, and flips whole conflict components when that increases compatible coalescing at
-shared connectors. `Layout` records the resulting physical net groups. Do not globally connect disjoint
-compatible nets without a layout/routing cost argument. Switchable Fibonacci is the coupled-state
-regression. The old `compile_circuit(...)` backend remains the default comparison path while synthesis
-is refined.
+scalar and whole-vector I/O, fresh scalar/vector samples, vector constants, direct fixed-lane
+`.signal(...)` views, scalar logic, conservative `Each` packing, `AccumulatorReg`, and `FreezeReg`.
+Runtime-open vector nets and fixed target signals are explicit in the abstract IR. Register
+vector/control separation is expressed with `NetConflict`, not concrete wire colors. Physical synthesis
+reserves fixed signals, derives safe red/green constraints, coalesces compatible shared-connector nets,
+and reuses concrete virtual signals across electrically disjoint physical groups. Switchable Fibonacci
+is the coupled-state regression.
+
+`compile_abstract_circuit(...)` is only a compatibility alias. The previous direct-concrete backend is
+available from `factorio_circuit.compiler_legacy` solely as a parity/debugging oracle.
 
 ## Immediate next route
 
-1. keep broadening legacy-vs-abstract parity coverage across examples/state tests;
-2. build the next synthesis optimization on explicit physical net groups: placement-aware shared
-   routing/layout (concrete signal reuse is now implemented);
-3. retain tick-level simulation plus structural checks for dead/orphan blueprint artifacts;
-4. only then revisit semantic write-time anchoring and more aggressive state optimization.
+1. keep the current deterministic row placement and reach-safe routing unless correctness requires a
+   backend change;
+2. retain tick-level simulation plus structural checks for dead/orphan blueprint artifacts;
+3. keep a small set of legacy parity tests where the old realization is still a useful oracle;
+4. return to semantic design/features only after this cleanup is green under pytest, ruff, and mypy.
 
 ## Representative timing tests
 

@@ -100,13 +100,14 @@ merge.
 
 ## Implemented baseline
 
-The executable path is available through `compile_abstract_circuit(...)`.
-`lower_abstract_physical(...)` supports:
+The canonical executable path is `compile_circuit(...)`; `compile_abstract_circuit(...)` remains a
+compatibility alias. `lower_abstract_physical(...)` supports:
 
 - scalar inputs and fresh `InputSample` observations;
 - whole-vector inputs and fresh `VectorInputSample` observations;
 - scalar and whole-vector constants;
-- `.signal(...)` extraction from vectors through an isolating combinator;
+- direct fixed-lane `.signal(...)` views of vector nets, with a real delay/isolation combinator only
+  when phase alignment requires one;
 - arithmetic and comparisons;
 - scalar `Select` lowering;
 - phase-alignment delays;
@@ -167,13 +168,13 @@ runtime-open feedback net reserved before state lowering, which also allows anot
 as a transition source.
 
 The switchable Fibonacci regression couples a `FreezeReg` and an `AccumulatorReg` through those reserved
-feedback nets, then extracts one fixed lane from both post-transition reads. It produces
-`1, 1, 2, 3, 5`, holds while disabled, and resumes at `8, 13` through the new backend.
+feedback nets, then reads one fixed lane directly from both post-transition vector nets. It produces
+`1, 1, 2, 3, 5`, holds while disabled, and resumes at `8, 13` through the canonical backend.
 
-## Current migration boundary
+## Current backend boundary
 
-`compile_circuit(...)` still uses the previous direct concrete lowerer and remains the default comparison
-path. Scalar/whole-vector stateless behavior, `.signal(...)` isolation, `AccumulatorReg`, `FreezeReg`,
-and mutually coupled vector state now have an executable abstract-physical path. Physical synthesis
-now performs conservative net coalescing and concrete signal reuse; the next backend work should make
-placement/routing participate in those choices while continuing legacy-vs-abstract parity coverage.
+`compile_circuit(...)` now uses Abstract Physical IR and physical synthesis by default. The previous
+direct-concrete lowerer survives only as `factorio_circuit.compiler_legacy.compile_legacy_circuit(...)`
+for parity/debugging tests. Physical synthesis currently performs conservative net coalescing, concrete
+signal reuse, deterministic row placement, and reach-safe routing. The placement policy is intentionally
+frozen at this correctness-first baseline while work returns to semantic features.
