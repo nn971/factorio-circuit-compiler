@@ -2,5 +2,12 @@
 
 from .layout import Layout
 from .physical import synthesize_layout
+from .placement import PlacementMetrics, PlacementOptions, placement_metrics
 
-__all__ = ["Layout", "synthesize_layout"]
+__all__ = [
+    "Layout",
+    "PlacementMetrics",
+    "PlacementOptions",
+    "placement_metrics",
+    "synthesize_layout",
+]

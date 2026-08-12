@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from itertools import combinations
+from math import ceil, hypot
 
-from factorio_circuit.blueprint.layout import row_positions
 from factorio_circuit.blueprint.routing import (
     DEFAULT_SAFE_WIRE_SPAN,
     route_wires,
@@ -28,6 +28,7 @@ from factorio_circuit.ir.physical import (
     WireEndpoint,
 )
 from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
+from factorio_circuit.synthesis.placement import PlacementOptions, place_physical_circuit
 from factorio_circuit.target.factorio.signals import DEFAULT_VIRTUAL_SIGNAL_POOL
 
 
@@ -59,6 +60,7 @@ class PhysicalSynthesizer:
     circuit: abstract.AbstractPhysicalCircuit
     safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN
     signal_pool: tuple[SignalId, ...] = DEFAULT_VIRTUAL_SIGNAL_POOL
+    placement_options: PlacementOptions | None = None
 
     def synthesize(self) -> Layout:
         self.circuit.validate()
@@ -66,7 +68,14 @@ class PhysicalSynthesizer:
         net_groups = self._coalesce_shared_connector_nets(net_colors)
         signal_allocation = self._allocate_signals(net_groups)
         physical = self._materialize_circuit(signal_allocation, net_colors)
-        positions = row_positions(physical)
+        positions = place_physical_circuit(
+            physical,
+            self.circuit,
+            net_groups,
+            safe_wire_span=self.safe_wire_span,
+            options=self.placement_options,
+        )
+        self._materialize_connections(physical, net_colors, net_groups, positions)
         routing = route_wires(physical, positions, safe_span=self.safe_wire_span)
         final_positions = routed_positions(physical, positions, routing)
         return Layout(
@@ -371,27 +380,6 @@ class PhysicalSynthesizer:
                 self._materialize_entity(entity, signals, net_colors, annotation_descriptions)
             )
 
-        # Preserve each abstract net's local wiring tree.  Nets placed on the same
-        # color and sharing a connector coalesce electrically through that connector;
-        # rewiring an entire coalesced group as one global star could create longer
-        # spans and extra relays even though the electrical relation is equivalent.
-        connection_keys: set[tuple[WireEndpoint, WireEndpoint, WireColor]] = set()
-        for net in self.circuit.nets:
-            endpoints = [self._endpoint(endpoint) for endpoint in net.endpoints]
-            if len(endpoints) < 2:
-                continue
-            root = endpoints[0]
-            for target in endpoints[1:]:
-                if root == target:
-                    continue
-                color = net_colors[net.id]
-                key = (root, target, color)
-                reverse = (target, root, color)
-                if key in connection_keys or reverse in connection_keys:
-                    continue
-                connection_keys.add(key)
-                physical.connections.append(WireConnection(root, target, color))
-
         for port in self.circuit.inputs:
             physical.inputs.append(
                 InputPort(
@@ -414,6 +402,83 @@ class PhysicalSynthesizer:
                 )
             )
         return physical
+
+    def _materialize_connections(
+        self,
+        physical: PhysicalCircuit,
+        net_colors: dict[int, WireColor],
+        net_groups: dict[int, int],
+        positions: dict[int, tuple[float, float]],
+    ) -> None:
+        """Choose a geometry-aware spanning tree for every synthesized physical net."""
+
+        endpoints_by_group: dict[int, set[abstract.Endpoint]] = defaultdict(set)
+        colors_by_group: dict[int, WireColor] = {}
+        for net in self.circuit.nets:
+            group = net_groups[net.id]
+            endpoints_by_group[group].update(net.endpoints)
+            color = net_colors[net.id]
+            previous = colors_by_group.setdefault(group, color)
+            if previous != color:  # pragma: no cover - net grouping guarantees this
+                raise AssertionError(f"physical net group {group} contains multiple wire colors")
+
+        physical.connections.clear()
+        connection_keys: set[tuple[WireEndpoint, WireEndpoint, WireColor]] = set()
+        for group in sorted(endpoints_by_group):
+            endpoints = tuple(sorted(endpoints_by_group[group]))
+            color = colors_by_group[group]
+            for left, right in self._minimum_relay_spanning_tree(endpoints, positions):
+                source = self._endpoint(left)
+                target = self._endpoint(right)
+                if source == target:
+                    continue
+                key = (source, target, color)
+                reverse = (target, source, color)
+                if key in connection_keys or reverse in connection_keys:
+                    continue
+                connection_keys.add(key)
+                physical.connections.append(WireConnection(source, target, color))
+
+    def _minimum_relay_spanning_tree(
+        self,
+        endpoints: tuple[abstract.Endpoint, ...],
+        positions: dict[int, tuple[float, float]],
+    ) -> tuple[tuple[abstract.Endpoint, abstract.Endpoint], ...]:
+        if len(endpoints) < 2:
+            return ()
+
+        connected = {0}
+        remaining = set(range(1, len(endpoints)))
+        result: list[tuple[abstract.Endpoint, abstract.Endpoint]] = []
+        while remaining:
+            best: (
+                tuple[tuple[int, float, abstract.Endpoint, abstract.Endpoint], int, int] | None
+            ) = None
+            for left_index in connected:
+                left = endpoints[left_index]
+                left_position = positions[left.entity]
+                for right_index in remaining:
+                    right = endpoints[right_index]
+                    right_position = positions[right.entity]
+                    distance = hypot(
+                        left_position[0] - right_position[0],
+                        left_position[1] - right_position[1],
+                    )
+                    relay_count = max(
+                        0,
+                        ceil(distance / self.safe_wire_span - 1e-12) - 1,
+                    )
+                    key = (relay_count, distance, left, right)
+                    if best is None or key < best[0]:
+                        best = (key, left_index, right_index)
+
+            assert best is not None
+            _, left_index, right_index = best
+            result.append((endpoints[left_index], endpoints[right_index]))
+            connected.add(right_index)
+            remaining.remove(right_index)
+
+        return tuple(result)
 
     def _annotation_descriptions(self, signals: dict[int, SignalId]) -> dict[int, str]:
         descriptions: dict[int, str] = {}
@@ -521,7 +586,12 @@ def synthesize_layout(
     circuit: abstract.AbstractPhysicalCircuit,
     *,
     safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN,
+    placement: PlacementOptions | None = None,
 ) -> Layout:
-    """Materialize a conservative concrete, reach-safe layout from abstract physical IR."""
+    """Materialize a concrete, reach-safe layout from abstract physical IR."""
 
-    return PhysicalSynthesizer(circuit, safe_wire_span=safe_wire_span).synthesize()
+    return PhysicalSynthesizer(
+        circuit,
+        safe_wire_span=safe_wire_span,
+        placement_options=placement,
+    ).synthesize()
