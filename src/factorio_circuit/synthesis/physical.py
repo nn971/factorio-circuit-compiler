@@ -18,6 +18,7 @@ from factorio_circuit.ir.physical import (
     Connector,
     ConstantCombinator,
     DeciderCombinator,
+    DeciderCondition,
     InputPort,
     Operand,
     OutputPort,
@@ -80,6 +81,7 @@ class PhysicalSynthesizer:
             attempt_options = replace(
                 selected,
                 random_seed=selected.random_seed + restart,
+                target_fill=selected.target_fill * selected.retry_fill_scale**restart,
                 restarts=1,
             )
             placement = plan_physical_circuit(
@@ -203,7 +205,14 @@ class PhysicalSynthesizer:
                     if isinstance(signal, SignalId):
                         result.add(signal)
             elif isinstance(entity, (abstract.ArithmeticCombinator, abstract.DeciderCombinator)):
-                for operand in (entity.left, entity.right):
+                operands = [entity.left, entity.right]
+                if isinstance(entity, abstract.DeciderCombinator):
+                    operands.extend(
+                        operand
+                        for condition in entity.additional_conditions
+                        for operand in (condition.left, condition.right)
+                    )
+                for operand in operands:
                     if isinstance(operand.signal, SignalId):
                         result.add(operand.signal)
         return result
@@ -560,6 +569,15 @@ class PhysicalSynthesizer:
                 output_constant=entity.output_constant,
                 output_copy_count_from_input=entity.output_copy_count_from_input,
                 output_networks=self._network_selection(entity.copy_count_nets, net_colors),
+                additional_conditions=tuple(
+                    DeciderCondition(
+                        comparator=condition.comparator,
+                        left=self._operand(condition.left, signals, net_colors),
+                        right=self._operand(condition.right, signals, net_colors),
+                        compare_type=condition.compare_type,
+                    )
+                    for condition in entity.additional_conditions
+                ),
                 else_output_signal=(
                     None
                     if entity.else_output_signal is None

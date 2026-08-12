@@ -130,6 +130,20 @@ class ArithmeticCombinator:
 
 
 @dataclass(frozen=True, slots=True)
+class DeciderCondition:
+    """Additional Factorio decider condition joined to the first condition."""
+
+    comparator: str
+    left: Operand
+    right: Operand
+    compare_type: str = "and"
+
+    def __post_init__(self) -> None:
+        if self.compare_type not in {"and", "or"}:
+            raise ValueError("decider compare_type must be 'and' or 'or'")
+
+
+@dataclass(frozen=True, slots=True)
 class DeciderCombinator:
     id: int
     comparator: str
@@ -139,6 +153,7 @@ class DeciderCombinator:
     output_constant: int = 1
     output_copy_count_from_input: bool = False
     copy_count_nets: tuple[int, ...] = ()
+    additional_conditions: tuple[DeciderCondition, ...] = ()
     else_output_signal: int | None = None
     else_output_constant: int = 1
     else_copy_count_from_input: bool = False
@@ -265,6 +280,9 @@ class AbstractPhysicalCircuit:
                 self._validate_operand(entity.right, signal_ids, net_ids)
                 _require(signal_ids, entity.output_signal, "signal")
                 self._validate_net_refs(entity.copy_count_nets, net_ids)
+                for condition in entity.additional_conditions:
+                    self._validate_operand(condition.left, signal_ids, net_ids)
+                    self._validate_operand(condition.right, signal_ids, net_ids)
                 if entity.else_output_signal is not None:
                     _require(signal_ids, entity.else_output_signal, "signal")
                     self._validate_net_refs(entity.else_copy_count_nets, net_ids)

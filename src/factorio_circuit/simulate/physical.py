@@ -238,12 +238,36 @@ def _eval_arithmetic(entity: ArithmeticCombinator, inputs: InputNetworks) -> Sig
 
 
 def _eval_decider(entity: DeciderCombinator, inputs: InputNetworks) -> SignalMap:
-    condition = apply_compare(
-        entity.comparator,
-        _read_operand(entity.left, inputs),
-        _read_operand(entity.right, inputs),
-    )
-    if condition:
+    conditions = [
+        (entity.comparator, entity.left, entity.right, None),
+        *(
+            (condition.comparator, condition.left, condition.right, condition.compare_type)
+            for condition in entity.additional_conditions
+        ),
+    ]
+    each_operands = [
+        operand
+        for _comparator, left, right, _compare_type in conditions
+        for operand in (left, right)
+        if operand.each
+    ]
+
+    if each_operands:
+        lanes: set[SignalId] = set()
+        for operand in each_operands:
+            lanes.update(_combined_inputs(inputs, operand.networks))
+        output_value = 0
+        for lane in lanes:
+            if not _decider_conditions_match(conditions, inputs, each_signal=lane):
+                continue
+            if entity.output_copy_count_from_input:
+                value = _read_signal(lane, inputs, entity.output_networks)
+            else:
+                value = i32(entity.output_constant)
+            output_value = i32(output_value + value)
+        return {} if output_value == 0 else {entity.output_signal: output_value}
+
+    if _decider_conditions_match(conditions, inputs):
         return _decider_output(
             entity.output_signal,
             entity.output_copy_count_from_input,
@@ -260,6 +284,38 @@ def _eval_decider(entity: DeciderCombinator, inputs: InputNetworks) -> SignalMap
             inputs,
         )
     return {}
+
+
+def _decider_conditions_match(
+    conditions: list[tuple[str, Operand, Operand, str | None]],
+    inputs: InputNetworks,
+    *,
+    each_signal: SignalId | None = None,
+) -> bool:
+    result: bool | None = None
+    for comparator, left, right, compare_type in conditions:
+        current = apply_compare(
+            comparator,
+            _read_decider_operand(left, inputs, each_signal),
+            _read_decider_operand(right, inputs, each_signal),
+        )
+        if result is None:
+            result = current
+        elif compare_type == "or":
+            result = result or current
+        else:
+            result = result and current
+    return bool(result)
+
+
+def _read_decider_operand(
+    operand: Operand, inputs: InputNetworks, each_signal: SignalId | None
+) -> int:
+    if not operand.each:
+        return _read_operand(operand, inputs)
+    if each_signal is None:
+        raise ValueError("Each decider condition requires per-signal evaluation")
+    return _read_signal(each_signal, inputs, operand.networks)
 
 
 def _decider_output(

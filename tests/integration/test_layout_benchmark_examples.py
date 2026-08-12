@@ -8,6 +8,7 @@ import pytest
 from examples.sorting_network import build_sorting_circuit
 from examples.walsh_hadamard import build_wht_circuit
 from factorio_circuit import Circuit, compile_circuit
+from factorio_circuit.simulate.compare import assert_equivalent_random
 from factorio_circuit.simulate.semantic import evaluate
 
 
@@ -102,3 +103,16 @@ def test_real_layout_benchmarks_emit_decodable_blueprint_strings(
     blueprint = result.blueprint_json["blueprint"]
     assert isinstance(blueprint, dict)
     assert blueprint["entities"]
+
+
+def test_sorting_8_uses_supported_two_decider_muxes() -> None:
+    result = compile_circuit(build_sorting_circuit(3))
+
+    assert result.physical_circuit.combinator_count == 168
+    assert "else_outputs" not in json.dumps(result.blueprint_json)
+    assert any(
+        len(entity.get("control_behavior", {}).get("decider_conditions", {}).get("conditions", []))
+        > 1
+        for entity in result.blueprint_json["blueprint"]["entities"]
+    )
+    assert_equivalent_random(result.semantic_ir, result.physical_circuit, cases=24, seed=83)

@@ -15,6 +15,7 @@ from factorio_circuit.ir.abstract_physical import (
     Connector,
     ConstantCombinator,
     DeciderCombinator,
+    DeciderCondition,
     Endpoint,
     InputPort,
     NetConflict,
@@ -666,10 +667,103 @@ class AbstractPhysicalLowerer:
         return RealizedValue(out, net, phase + 1)
 
     def _realize_select(self, select: Select) -> RealizedValue:
-        diff = self._emit_scalar_binary("-", select.when_true, select.when_false)
-        gated = self._emit_binary_from_realized("*", diff, self.realize(select.condition))
-        false_value = self._realize_operand_value(select.when_false)
-        return self._emit_binary_from_operands("+", false_value, gated, description=select.name)
+        condition = self.realize(select.condition)
+        when_true = self._realize_operand_value(select.when_true)
+        when_false = self._realize_operand_value(select.when_false)
+
+        phases = [condition.phase]
+        phases.extend(
+            value.phase for value in (when_true, when_false) if isinstance(value, RealizedValue)
+        )
+        target_phase = max(phases)
+        condition = self.delay_to(condition, target_phase)
+        if isinstance(when_true, RealizedValue):
+            when_true = self.delay_to(when_true, target_phase)
+        if isinstance(when_false, RealizedValue):
+            when_false = self.delay_to(when_false, target_phase)
+
+        if not (
+            self._can_use_decider_mux_arm(condition, when_true)
+            and self._can_use_decider_mux_arm(condition, when_false)
+        ):
+            diff = self._emit_binary_from_operands("-", when_true, when_false)
+            gated = self._emit_binary_from_realized("*", diff, condition)
+            return self._emit_binary_from_operands("+", when_false, gated, description=select.name)
+
+        out = self._new_signal(select.name or "select")
+        true_arm = self._emit_decider_mux_arm(
+            condition,
+            when_true,
+            output_signal=out,
+            active_when_true=True,
+            description=f"{select.name or 'select'}: true arm",
+        )
+        false_arm = self._emit_decider_mux_arm(
+            condition,
+            when_false,
+            output_signal=out,
+            active_when_true=False,
+            description=f"{select.name or 'select'}: false arm",
+        )
+        output_net = self._new_net(
+            (out,),
+            Endpoint(true_arm.id, Connector.OUTPUT),
+            label=select.name or "select mux",
+        )
+        self._attach(output_net, Endpoint(false_arm.id, Connector.OUTPUT))
+        return RealizedValue(out, output_net, target_phase + 1)
+
+    @staticmethod
+    def _can_use_decider_mux_arm(condition: RealizedValue, arm: RealizedValue | int) -> bool:
+        if isinstance(arm, int):
+            return True
+        return arm.clean_single_lane and arm.net != condition.net
+
+    def _emit_decider_mux_arm(
+        self,
+        condition: RealizedValue,
+        arm: RealizedValue | int,
+        *,
+        output_signal: int,
+        active_when_true: bool,
+        description: str,
+    ) -> DeciderCombinator:
+        additional_conditions: tuple[DeciderCondition, ...] = ()
+        copy_count_nets: tuple[int, ...] = ()
+        if isinstance(arm, RealizedValue):
+            additional_conditions = (
+                DeciderCondition(
+                    comparator="!=",
+                    left=Operand(each=True, nets=(arm.net,)),
+                    right=Operand(constant=0),
+                    compare_type="and",
+                ),
+            )
+            copy_count_nets = (arm.net,)
+
+        entity = DeciderCombinator(
+            id=self._take_entity_id(),
+            comparator="!=" if active_when_true else "==",
+            left=Operand(signal=condition.signal, nets=(condition.net,)),
+            right=Operand(constant=0),
+            output_signal=output_signal,
+            output_constant=arm if isinstance(arm, int) else 1,
+            output_copy_count_from_input=isinstance(arm, RealizedValue),
+            copy_count_nets=copy_count_nets,
+            additional_conditions=additional_conditions,
+            description=description,
+        )
+        self.circuit.entities.append(entity)
+        input_endpoint = Endpoint(entity.id, Connector.INPUT)
+        self._attach(condition.net, input_endpoint)
+        if isinstance(arm, RealizedValue):
+            self._attach(arm.net, input_endpoint)
+            self._add_net_conflict(
+                condition.net,
+                arm.net,
+                "decider mux control and Each data must use different wire colors",
+            )
+        return entity
 
     def _emit_scalar_binary(
         self,

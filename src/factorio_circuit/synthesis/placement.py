@@ -40,7 +40,9 @@ class PlacementOptions:
     arithmetic/decider combinators occupy two tiles, so the default 16x16 block contains eight
     combinator columns and sixteen rows.  ``corridor_width`` is inserted between adjacent blocks.
     The default fill leaves in-block whitespace for relay entities because corridors themselves are
-    reserved, while ``restarts`` gives routing one additional deterministic placement basin.
+    reserved.  Routing retries use deterministic placement basins; later retries also reduce
+    ``target_fill`` by ``retry_fill_scale`` so a circuit can trade compactness for legal relay
+    space.
     """
 
     strategy: PlacementStrategy = "net-aware"
@@ -54,6 +56,7 @@ class PlacementOptions:
     iterations: int | None = None
     random_seed: int = 0
     restarts: int = 2
+    retry_fill_scale: float = 0.9
 
     def validate(self) -> None:
         if self.strategy not in {"net-aware", "row"}:
@@ -70,6 +73,8 @@ class PlacementOptions:
             raise ValueError("placement iterations cannot be negative")
         if self.restarts <= 0:
             raise ValueError("placement restarts must be positive")
+        if not 0 < self.retry_fill_scale <= 1:
+            raise ValueError("placement retry_fill_scale must be in (0, 1]")
 
 
 @dataclass(frozen=True, slots=True)
