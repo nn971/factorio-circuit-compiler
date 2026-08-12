@@ -173,7 +173,10 @@ def _find_relay_positions(
     # Start far enough off the main combinator row to clear a horizontal 2x1 combinator.
     # Alternate sides first, then try more distant lanes. edge_index rotates the ordering so
     # consecutive long connections do not all prefer the same routing lane.
-    base_offsets = [2.0, -2.0, 3.25, -3.25, 4.5, -4.5, 5.5, -5.5]
+    max_offset_step = int((safe_span - 0.25) * 4)
+    base_offsets = [
+        direction * step / 4 for step in range(5, max_offset_step + 1) for direction in (1, -1)
+    ]
     rotate = (edge_index - 1) % len(base_offsets)
     offsets = base_offsets[rotate:] + base_offsets[:rotate]
 
