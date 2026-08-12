@@ -38,7 +38,9 @@ def simplify_module(module: CircuitModule) -> CircuitModule:
         if isinstance(value, (Input, InputSample, Constant, VectorSignal)):
             result: ScalarValue = value
         elif isinstance(value, BinaryOp):
-            result = _simplify_binary(value.op, rewrite(value.left), rewrite(value.right), value.name)
+            result = _simplify_binary(
+                value.op, rewrite(value.left), rewrite(value.right), value.name
+            )
         elif isinstance(value, Compare):
             left = rewrite(value.left)
             right = rewrite(value.right)
@@ -98,7 +100,9 @@ def simplify_module(module: CircuitModule) -> CircuitModule:
     )
 
 
-def _simplify_binary(op: str, left: ScalarValue, right: ScalarValue, name: str | None) -> ScalarValue:
+def _simplify_binary(
+    op: str, left: ScalarValue, right: ScalarValue, name: str | None
+) -> ScalarValue:
     if isinstance(left, Constant) and isinstance(right, Constant):
         return Constant(apply_binary(op, left.value, right.value), name)
     if isinstance(right, Constant):

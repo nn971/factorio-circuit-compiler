@@ -142,10 +142,10 @@ The compiler currently chooses the earliest legal `k`.
 Example:
 
 ```python
-old = reg.value        # offset 0
+old = reg.value  # offset 0
 reg.set(data, when=e)
 c.tick(3)
-new = reg.value        # offset 3
+new = reg.value  # offset 3
 ```
 
 permits `k ∈ {0,1,2}` and therefore chooses `k=0`.

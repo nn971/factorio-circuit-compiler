@@ -4,6 +4,7 @@ from factorio_circuit import Circuit, compile_circuit
 from factorio_circuit.analysis.state_timing import StateTimingError
 from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.simulate.compare import assert_same_stream
+
 from ..support.circuits import delayed_accumulator_window
 
 IRON = SignalId("item", "iron-plate")
@@ -58,7 +59,7 @@ def test_previous_value_is_available_when_read_before_complex_update() -> None:
     memory = c.freeze("memory")
 
     old = memory.value
-    complex_enable = ((((enable + 1) * 3) - 3) > 0)
+    complex_enable = (((enable + 1) * 3) - 3) > 0
     memory.set(data, when=complex_enable)
     c.tick(1)
     new = memory.value

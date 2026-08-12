@@ -40,9 +40,7 @@ def test_switchable_fibonacci_state_cycle_has_equal_phases() -> None:
     ],
     ids=["continuous-on", "hold-and-resume"],
 )
-def test_switchable_fibonacci_matches_physical_stream(
-    optimize: bool, switches: list[int]
-) -> None:
+def test_switchable_fibonacci_matches_physical_stream(optimize: bool, switches: list[int]) -> None:
     result = compile_circuit(switchable_fibonacci(), optimize=optimize)
     stream: list[dict[str, object]] = [{"on": value} for value in switches]
     assert_same_stream(result.semantic_ir, result.physical_circuit, stream)

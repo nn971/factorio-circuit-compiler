@@ -144,15 +144,13 @@ def reachable_operations(module: CircuitModule) -> tuple[DerivedValue, ...]:
             result.append(value)
 
     for output in module.output.values:
-        if isinstance(output, (Input, InputSample, Constant, BinaryOp, Compare, Select, VectorSignal)):
+        if isinstance(
+            output, (Input, InputSample, Constant, BinaryOp, Compare, Select, VectorSignal)
+        ):
             visit(output)
     from factorio_circuit.ir.state import AccumulatorAdd, AccumulatorClear, FreezeSet
 
     for op in module.state_operations:
-        if isinstance(op, AccumulatorAdd):
-            visit(op.when)
-        elif isinstance(op, AccumulatorClear):
-            visit(op.when)
-        elif isinstance(op, FreezeSet):
+        if isinstance(op, (AccumulatorAdd, AccumulatorClear, FreezeSet)):
             visit(op.when)
     return tuple(result)

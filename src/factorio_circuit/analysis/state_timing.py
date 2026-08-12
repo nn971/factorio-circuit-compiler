@@ -187,9 +187,7 @@ def earliest_vector_phase(value: VectorValue) -> int:
 
     absolute, dependencies = _vector_requirements(value)
     if dependencies:
-        raise StateTimingError(
-            "state-dependent vector phases require analyze_state_timing(...)"
-        )
+        raise StateTimingError("state-dependent vector phases require analyze_state_timing(...)")
     return absolute
 
 
@@ -247,7 +245,9 @@ def _analyze_register_semantics(
         if unexpected:  # pragma: no cover
             raise StateTimingError(f"unexpected operation for AccumulatorReg {register.name!r}")
         if not adds:
-            raise StateTimingError(f"AccumulatorReg {register.name!r} requires at least one .add(...)")
+            raise StateTimingError(
+                f"AccumulatorReg {register.name!r} requires at least one .add(...)"
+            )
         if len(clears) > 1:
             raise StateTimingError(f"AccumulatorReg {register.name!r} has multiple clear controls")
         clear_phase = _normalized_when_phase(clears[0].when) if clears else 0
@@ -261,16 +261,16 @@ def _analyze_register_semantics(
         if clears:
             absolute = max(absolute, clear_phase)
     elif isinstance(register, FreezeRegister):
-        sets = [op for op in operations if isinstance(op, FreezeSet)]
-        unexpected = [op for op in operations if not isinstance(op, FreezeSet)]
-        if unexpected:  # pragma: no cover
+        freeze_sets: list[FreezeSet] = [op for op in operations if isinstance(op, FreezeSet)]
+        freeze_unexpected = [op for op in operations if not isinstance(op, FreezeSet)]
+        if freeze_unexpected:  # pragma: no cover
             raise StateTimingError(f"unexpected operation for FreezeReg {register.name!r}")
-        if len(sets) != 1:
+        if len(freeze_sets) != 1:
             raise StateTimingError(
                 f"FreezeReg {register.name!r} requires exactly one .set(data, when=...) call"
             )
-        source_abs, source_deps = _vector_requirements(sets[0].value)
-        absolute = max(absolute, source_abs, _normalized_when_phase(sets[0].when))
+        source_abs, source_deps = _vector_requirements(freeze_sets[0].value)
+        absolute = max(absolute, source_abs, _normalized_when_phase(freeze_sets[0].when))
         dependencies.extend(source_deps)
     else:  # pragma: no cover
         raise TypeError(register)
@@ -289,8 +289,7 @@ def _analyze_register_semantics(
 
 def _solve_state_phases(specs: list[_RegisterSpec]) -> dict[str, int]:
     phases = {
-        spec.register.name: max(0, spec.absolute_requirement - spec.commit_offset)
-        for spec in specs
+        spec.register.name: max(0, spec.absolute_requirement - spec.commit_offset) for spec in specs
     }
     by_name = {spec.register.name: spec for spec in specs}
 
@@ -351,10 +350,6 @@ def _collect_state_reads(module: CircuitModule) -> tuple[VectorRegisterRead, ...
     for op in module.state_operations:
         if isinstance(op, (AccumulatorAdd, FreezeSet)):
             add_vector(op.value)
-        if isinstance(op, AccumulatorAdd):
-            add_scalar(op.when)
-        elif isinstance(op, AccumulatorClear):
-            add_scalar(op.when)
-        elif isinstance(op, FreezeSet):
+        if isinstance(op, (AccumulatorAdd, AccumulatorClear, FreezeSet)):
             add_scalar(op.when)
     return tuple(result)

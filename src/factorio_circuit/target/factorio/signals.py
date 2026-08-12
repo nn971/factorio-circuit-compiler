@@ -7,10 +7,26 @@ from factorio_circuit.ir.physical import SignalId
 DEFAULT_VIRTUAL_SIGNAL_POOL: tuple[SignalId, ...] = tuple(
     [SignalId("virtual", f"signal-{chr(ord('A') + index)}") for index in range(26)]
     + [SignalId("virtual", f"signal-{index}") for index in range(10)]
-    + [SignalId("virtual", f"signal-{name}") for name in (
-        "red", "green", "blue", "yellow", "pink", "cyan", "white", "grey", "black",
-        "check", "info", "dot", "star", "clock", "signal",
-    )]
+    + [
+        SignalId("virtual", f"signal-{name}")
+        for name in (
+            "red",
+            "green",
+            "blue",
+            "yellow",
+            "pink",
+            "cyan",
+            "white",
+            "grey",
+            "black",
+            "check",
+            "info",
+            "dot",
+            "star",
+            "clock",
+            "signal",
+        )
+    ]
 )
 
 SIGNAL_EACH = SignalId("virtual", "signal-each")

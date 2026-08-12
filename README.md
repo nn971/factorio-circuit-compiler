@@ -15,9 +15,13 @@ logical stream DAG
         ↓
 optimization + state realization
         ↓
-Factorio physical circuit
+abstract physical Factorio IR
         ↓
-reach-safe blueprint JSON/string
+physical synthesis
+        ↓
+Layout
+        ↓
+blueprint JSON/string serialization
 ```
 
 Start with:
@@ -62,9 +66,9 @@ Raw input objects are temporal sources and provide `.sample()`:
 c = Circuit("fresh")
 x = c.input("x")
 
-x0 = x              # stream X[t]
-c.tick(3)           # freshness cursor becomes +3
-x3 = x.sample()     # stream X[t+3]
+x0 = x  # stream X[t]
+c.tick(3)  # freshness cursor becomes +3
+x3 = x.sample()  # stream X[t+3]
 
 c.output("sum", x0 + x3)
 ```
@@ -136,14 +140,15 @@ can relax this without replacing the state representation.
 - a reference semantic simulator for the current vector registers;
 - mutually coupled state-to-state whole-vector feeds;
 - multiple conditional commutative `AccumulatorReg.add(...)` sources;
-- constant whole-vector streams and extraction of a concrete signal lane with `.signal(...)`;
+- constant whole-vector streams and direct observation of concrete signal lanes with `.signal(...)`;
 - a switchable Fibonacci reference circuit exercising coupled state, post-transition reads, and hold/resume behavior;
 - strict feasibility errors for same-boundary post-update reads and reads splitting compound updates;
-- explicit red/green physical wiring and reach-safe blueprint routing;
+- abstract physical lowering plus late net-color and concrete-signal synthesis;
+- reach-safe blueprint routing with intentionally simple deterministic row placement;
 - working in-game `AccumulatorReg` and `FreezeReg` vector-state prototypes.
 
-The next state milestone is explicit semantic write-time anchoring (`at=`) for timer-like transitions.
-See `docs/state-design.md`.
+The physical backend is intentionally frozen at this simple placement policy while development returns
+to semantic features. See `docs/architecture.md` and `docs/state-design.md`.
 
 ## Development
 

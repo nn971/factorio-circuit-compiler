@@ -15,15 +15,26 @@ logical circuit
         ↓
 optimization + state realization
         ↓
-physical Factorio circuit
-  - exact combinators
-  - exact signals
-  - exact red/green networks
+abstract physical Factorio IR
+  - exact target combinator behavior
+  - abstract signal variables
+  - abstract electrical nets
+  - compatibility/conflict metadata
         ↓
-reach-safe layout + blueprint serialization
+physical synthesis
+  - concrete signal allocation
+  - compatible-net merging
+  - red/green assignment
+  - final entity placement and reach-safe wiring
+        ↓
+Layout
+        ↓
+blueprint serialization + encoding
 ```
 
-There is no separate architecture IR at present.
+The abstract physical IR is target-specific rather than a separate architecture/design layer. It
+exists so signal allocation, electrical-net choices, and placement can be optimized jointly during
+physical synthesis.
 
 ## Symbolic frontend responsibilities
 
@@ -78,8 +89,45 @@ handles the trusted one-compound-transition vector registers together, including
 state-to-state vector feeds. Register phases are solved as difference constraints; a positive-latency
 feedback cycle is diagnosed as an initiation-interval limitation of the current physical prototypes.
 
-## Physical circuit
+## Abstract physical IR
 
-The physical representation contains exact combinator configuration, signal allocation, red/green
-connector wiring, implementation pipeline delays, and feedback circuits. Geometry and long-wire relay
-insertion remain utility-layer concerns after logical synthesis.
+`ir/abstract_physical.py` represents exact target combinator behavior while keeping late physical
+resources unresolved. `AbstractSignal` is a signal-lane variable rather than a concrete `SignalId`.
+`AbstractNet` is a logical electrical-connectivity requirement with no red/green color. Signals and
+nets are independent: one net may carry many signals, and one abstract signal may occur on multiple
+electrically disconnected nets.
+
+Each `AbstractNet` records compiler-allocated lanes, fixed concrete lanes, and whether it may carry an
+open runtime vector. Pairwise `SignalConflict` metadata forbids unsafe abstract-signal aliasing when
+lanes coexist on one net. `NetConflict` forbids electrical net merges. Compatible choices remain
+deliberately unresolved.
+
+The executable lowerer now covers scalar and whole-vector stateless circuits plus both trusted vector
+registers: fresh scalar/vector sampling, vector constants, direct fixed-lane `.signal(...)` views,
+phase-alignment delays, arithmetic, comparisons, selects, conservative `Each` packing,
+`AccumulatorReg`, and `FreezeReg`. A lane read itself creates no extractor; a real delay/isolation
+combinator is introduced only when timing requires one. Register vector/control separation is expressed
+with abstract net conflicts rather than wire colors. See `docs/abstract-physical-ir.md` for the detailed
+contract.
+
+## Physical synthesis and Layout
+
+Physical synthesis consumes the abstract physical IR and jointly chooses concrete Factorio signal
+identities, compatible net merges, red/green assignment, and final placement/wiring. Its output is a
+`Layout` object containing the final placement choices and reach-safe physical wiring.
+
+Blueprint generation is downstream serialization: it translates `Layout` to Factorio blueprint JSON,
+then performs the standard compression/base64 encoding. Layout is an output data object of physical
+synthesis, rather than another processing layer.
+
+`compile_circuit(...)` is the canonical executable path for this architecture. Physical synthesis
+reserves user-fixed signal identities, derives safe red/green constraints, coalesces proven-compatible
+nets that already meet at connectors, and reuses concrete virtual signal identities across electrically
+disjoint physical groups. It then uses the current deterministic row placement and reach-safe routing.
+That placement policy is intentionally simple and is not an active optimization target for now.
+Blueprint serialization consumes the completed `Layout` without choosing geometry or wiring. Scalar
+I/O annotation markers are finalized after their concrete signals are known.
+
+`compile_abstract_circuit(...)` remains as a compatibility alias for the canonical path. The previous
+direct-concrete lowerer is retained only in `factorio_circuit.compiler_legacy` as a parity/debugging
+oracle; it is not part of normal compilation.

@@ -57,7 +57,8 @@ class SignalAllocator:
     def allocate(self) -> SignalId:
         if self.cursor >= len(self.pool):
             raise ValueError(
-                "prototype signal pool exhausted; prototype-driven signal allocation is a later milestone"
+                "prototype signal pool exhausted; prototype-driven signal allocation is a "
+                "later milestone"
             )
         result = self.pool[self.cursor]
         self.cursor += 1
@@ -112,7 +113,9 @@ class PhysicalLowerer:
         self._create_state_components()
         realized_outputs: list[RealizedValue | RealizedVector] = []
         for value in self.module.output.values:
-            if isinstance(value, (VectorInput, VectorInputSample, VectorConstant, VectorRegisterRead)):
+            if isinstance(
+                value, (VectorInput, VectorInputSample, VectorConstant, VectorRegisterRead)
+            ):
                 realized_outputs.append(self.realize_vector(value))
             else:
                 realized_outputs.append(self.realize(value))
@@ -120,7 +123,7 @@ class PhysicalLowerer:
         return self.circuit
 
     def _reserve_state_outputs(self) -> None:
-        """Reserve memory ids before wiring so mutually coupled registers can reference each other."""
+        """Reserve memory ids before wiring so coupled registers can reference each other."""
 
         for register in self.module.state_registers:
             memory_id = self._take_id()
@@ -183,20 +186,22 @@ class PhysicalLowerer:
         gated_outputs: list[WireEndpoint] = []
         for index, add in enumerate(adds):
             source = self.delay_vector_to(self.realize_vector(add.value), target_phase)
-            add_active = self._realize_nonzero_control(
-                add.when,
-                description=f"AccumulatorReg {register.name}: add[{index}] enabled",
-            )
-            if clear_active is not None:
-                if isinstance(add.when, Constant) and add.when.value != 0:
-                    gate_active = self.delay_to(clear_active, target_phase)
-                else:
+            if clear_active is not None and isinstance(add.when, Constant) and add.when.value != 0:
+                # The default ``when=1`` adds no independent control. Reuse clear-active
+                # directly instead of materializing a constant signal that would be dead.
+                gate_active = self.delay_to(clear_active, target_phase)
+            else:
+                add_active = self._realize_nonzero_control(
+                    add.when,
+                    description=f"AccumulatorReg {register.name}: add[{index}] enabled",
+                )
+                if clear_active is not None:
                     # Combining a dynamic add-enable with clear is supported, but costs a scalar
                     # combinator before the vector gate.
                     combined = self._emit_binary_from_realized("*", add_active, clear_active)
                     gate_active = self.delay_to(combined, target_phase)
-            else:
-                gate_active = self.delay_to(add_active, target_phase)
+                else:
+                    gate_active = self.delay_to(add_active, target_phase)
 
             gate = self._add_entity(
                 ArithmeticCombinator(
@@ -250,11 +255,14 @@ class PhysicalLowerer:
 
     def _lower_freeze(self, register: FreezeRegister) -> None:
         sets = [
-            op for op in self.module.state_operations
+            op
+            for op in self.module.state_operations
             if isinstance(op, FreezeSet) and op.register == register
         ]
         if len(sets) != 1:
-            raise ValueError(f"FreezeReg {register.name!r} requires exactly one .set(data, when=...) call")
+            raise ValueError(
+                f"FreezeReg {register.name!r} requires exactly one .set(data, when=...) call"
+            )
         spec = sets[0]
         source = self.realize_vector(spec.value)
         control = self.realize(spec.when)
@@ -262,18 +270,24 @@ class PhysicalLowerer:
         pass_signal = self.allocator.allocate()
         pass_control = self._add_entity(
             DeciderCombinator(
-                id=self._take_id(), comparator="!=",
-                left=Operand(signal=control.signal), right=Operand(constant=0),
-                output_signal=pass_signal, output_constant=1,
+                id=self._take_id(),
+                comparator="!=",
+                left=Operand(signal=control.signal),
+                right=Operand(constant=0),
+                output_signal=pass_signal,
+                output_constant=1,
                 description=f"FreezeReg {register.name}: set!=0 -> pass",
             )
         )
         hold_signal = SignalId("virtual", "signal-green")
         hold_control = self._add_entity(
             DeciderCombinator(
-                id=self._take_id(), comparator="==",
-                left=Operand(signal=control.signal), right=Operand(constant=0),
-                output_signal=hold_signal, output_constant=1,
+                id=self._take_id(),
+                comparator="==",
+                left=Operand(signal=control.signal),
+                right=Operand(constant=0),
+                output_signal=hold_signal,
+                output_constant=1,
                 description=f"FreezeReg {register.name}: set=0 -> hold",
             )
         )
@@ -294,21 +308,29 @@ class PhysicalLowerer:
         aligned_hold = self.delay_to(hold_value, target_phase)
         gate = self._add_entity(
             ArithmeticCombinator(
-                id=self._take_id(), operation="*",
+                id=self._take_id(),
+                operation="*",
                 left=Operand(each=True, networks=(WireColor.RED,)),
                 right=Operand(signal=pass_signal, networks=(WireColor.GREEN,)),
-                output_each=True, description=f"FreezeReg {register.name}: transparent input gate",
+                output_each=True,
+                description=f"FreezeReg {register.name}: transparent input gate",
             )
         )
-        self._connect(aligned_source.endpoint, WireEndpoint(gate.id, Connector.INPUT), color=WireColor.RED)
-        self._connect(aligned_pass.endpoint, WireEndpoint(gate.id, Connector.INPUT), color=WireColor.GREEN)
+        self._connect(
+            aligned_source.endpoint, WireEndpoint(gate.id, Connector.INPUT), color=WireColor.RED
+        )
+        self._connect(
+            aligned_pass.endpoint, WireEndpoint(gate.id, Connector.INPUT), color=WireColor.GREEN
+        )
 
         memory = self._add_entity(
             ArithmeticCombinator(
-                id=self.state_memory_ids[register.name], operation="*",
+                id=self.state_memory_ids[register.name],
+                operation="*",
                 left=Operand(each=True, networks=(WireColor.RED,)),
                 right=Operand(signal=hold_signal, networks=(WireColor.GREEN,)),
-                output_each=True, description=f"FreezeReg {register.name}: vector memory",
+                output_each=True,
+                description=f"FreezeReg {register.name}: vector memory",
             )
         )
         memory_in = WireEndpoint(memory.id, Connector.INPUT)
@@ -331,35 +353,35 @@ class PhysicalLowerer:
             self.memo[id(item)] = RealizedValue(
                 signal=signal, endpoint=WireEndpoint(marker.id, Connector.SINGLE), phase=0
             )
-        for item in self.module.vector_inputs:
+        for vector_input in self.module.vector_inputs:
             marker = self._add_entity(
                 ConstantCombinator(
                     id=self._take_id(),
-                    description=f"INPUT {item.name} — whole signal vector; edit any signals here",
+                    description=(
+                        f"INPUT {vector_input.name} — whole signal vector; edit any signals here"
+                    ),
                     annotation_only=True,
                 )
             )
-            self.circuit.inputs.append(InputPort(item.name, marker.id, None))
-            self.vector_memo[id(item)] = RealizedVector(
+            self.circuit.inputs.append(InputPort(vector_input.name, marker.id, None))
+            self.vector_memo[id(vector_input)] = RealizedVector(
                 endpoint=WireEndpoint(marker.id, Connector.SINGLE), phase=0
             )
 
-    def _create_output_markers(
-        self, outputs: list[RealizedValue | RealizedVector]
-    ) -> None:
+    def _create_output_markers(self, outputs: list[RealizedValue | RealizedVector]) -> None:
         for index, (semantic, realized) in enumerate(
             zip(self.module.output.values, outputs, strict=True)
         ):
-            declared_name = (
-                self.module.output.names[index] if self.module.output.names else None
-            )
+            declared_name = self.module.output.names[index] if self.module.output.names else None
             name = declared_name or getattr(semantic, "name", None) or f"out{index}"
             if isinstance(realized, RealizedVector):
                 description = f"OUTPUT {name} — whole signal vector"
                 signal = None
                 phase = realized.phase
             else:
-                description = f"OUTPUT {name} — [{realized.signal.name}], phase +{realized.phase} tick(s)"
+                description = (
+                    f"OUTPUT {name} — [{realized.signal.name}], phase +{realized.phase} tick(s)"
+                )
                 signal = realized.signal
                 phase = realized.phase
             marker = self._add_entity(
@@ -399,7 +421,8 @@ class PhysicalLowerer:
                 result = self.state_outputs[value.register.name]
             except KeyError as exc:
                 raise ValueError(
-                    "feeding one state register from another is deferred in the first vector-state milestone"
+                    "feeding one state register from another is deferred in the first "
+                    "vector-state milestone"
                 ) from exc
             read_timing = self.state_timing.for_read(value)
             result = RealizedVector(result.endpoint, read_timing.physical_phase)
@@ -418,9 +441,7 @@ class PhysicalLowerer:
             base = self.memo.get(id(value.source))
             if base is None:
                 raise ValueError(f"input {value.source.name!r} was not initialized")
-            result = RealizedValue(
-                base.signal, base.endpoint, value.offset, base.clean_single_lane
-            )
+            result = RealizedValue(base.signal, base.endpoint, value.offset, base.clean_single_lane)
         elif isinstance(value, Constant):
             result = self._materialize_constant(value)
         elif isinstance(value, BinaryOp):
@@ -466,9 +487,7 @@ class PhysicalLowerer:
         self.memo[id(value)] = result
         return result
 
-    def _realize_nonzero_control(
-        self, value: Value, *, description: str
-    ) -> RealizedValue:
+    def _realize_nonzero_control(self, value: Value, *, description: str) -> RealizedValue:
         if isinstance(value, Constant):
             signal = self.allocator.allocate()
             entity = self._add_entity(
@@ -494,9 +513,7 @@ class PhysicalLowerer:
             )
         )
         self._connect(control.endpoint, WireEndpoint(entity.id, Connector.INPUT))
-        return RealizedValue(
-            signal, WireEndpoint(entity.id, Connector.OUTPUT), control.phase + 1
-        )
+        return RealizedValue(signal, WireEndpoint(entity.id, Connector.OUTPUT), control.phase + 1)
 
     def _materialize_constant(self, value: Constant) -> RealizedValue:
         signal = self.allocator.allocate()
@@ -541,7 +558,10 @@ class PhysicalLowerer:
                 left=Operand(each=True),
                 right=Operand(constant=partition.key.constant),
                 output_each=True,
-                description=f"packed {len(partition.operations)}× {partition.key.operation} {partition.key.constant}",
+                description=(
+                    f"packed {len(partition.operations)}× {partition.key.operation} "
+                    f"{partition.key.constant}"
+                ),
             )
         )
         input_endpoint = WireEndpoint(entity.id, Connector.INPUT)
@@ -726,13 +746,17 @@ class PhysicalLowerer:
         while current.phase < target_phase:
             entity = self._add_entity(
                 ArithmeticCombinator(
-                    id=self._take_id(), operation="+",
+                    id=self._take_id(),
+                    operation="+",
                     left=Operand(each=True, networks=(WireColor.RED,)),
-                    right=Operand(constant=0), output_each=True,
+                    right=Operand(constant=0),
+                    output_each=True,
                     description="vector phase alignment delay",
                 )
             )
-            self._connect(current.endpoint, WireEndpoint(entity.id, Connector.INPUT), color=WireColor.RED)
+            self._connect(
+                current.endpoint, WireEndpoint(entity.id, Connector.INPUT), color=WireColor.RED
+            )
             current = RealizedVector(WireEndpoint(entity.id, Connector.OUTPUT), current.phase + 1)
         return current
 
@@ -754,7 +778,8 @@ class PhysicalLowerer:
             return self.delay_to(realized, target_phase)
         if target_phase <= realized.phase:
             raise ValueError(
-                f"{description} is scheduled at register tick {target_phase}, but its value is only "
+                f"{description} is scheduled at register tick {target_phase}, but its value "
+                "is only "
                 f"available at phase {realized.phase} and signal renaming needs one more tick"
             )
         source = self.delay_to(realized, target_phase - 1)
@@ -811,8 +836,9 @@ class PhysicalLowerer:
         self.next_entity_id += 1
         return result
 
-    def _add_entity(self, entity: object):
-        assert isinstance(entity, (ArithmeticCombinator, DeciderCombinator, ConstantCombinator))
+    def _add_entity(
+        self, entity: ArithmeticCombinator | DeciderCombinator | ConstantCombinator
+    ) -> ArithmeticCombinator | DeciderCombinator | ConstantCombinator:
         self.circuit.entities.append(entity)
         return entity
 
@@ -831,9 +857,7 @@ def lower_naive(
 ) -> PhysicalCircuit:
     """Lower the semantic DAG without lane packing."""
 
-    return PhysicalLowerer(
-        module, enable_packing=False, state_timing=state_timing
-    ).lower()
+    return PhysicalLowerer(module, enable_packing=False, state_timing=state_timing).lower()
 
 
 def lower_with_alu_packing(
@@ -841,9 +865,7 @@ def lower_with_alu_packing(
 ) -> PhysicalCircuit:
     """Lower with conservative compatibility-group ``Each`` packing."""
 
-    return PhysicalLowerer(
-        module, enable_packing=True, state_timing=state_timing
-    ).lower()
+    return PhysicalLowerer(module, enable_packing=True, state_timing=state_timing).lower()
 
 
 def _normalize_compare(left: Value, right: Value, op: str) -> tuple[Value, Value, str]:

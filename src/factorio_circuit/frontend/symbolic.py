@@ -10,25 +10,29 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NoReturn
 
+from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.ir.semantic import (
     BinaryOp,
     CircuitModule,
     Compare,
     Constant,
     DerivedValue,
-    Input as IRInput,
     InputSample,
     OutputValue,
     ReturnValue,
     ScalarValue,
     Select,
-    VectorInput as IRVectorInput,
-    VectorInputSample,
     VectorConstant,
+    VectorInputSample,
     VectorSignal,
     VectorValue,
 )
-from factorio_circuit.ir.physical import SignalId
+from factorio_circuit.ir.semantic import (
+    Input as IRInput,
+)
+from factorio_circuit.ir.semantic import (
+    VectorInput as IRVectorInput,
+)
 from factorio_circuit.ir.state import (
     AccumulatorAdd,
     AccumulatorClear,
@@ -203,16 +207,16 @@ class Expr:
     def __ge__(self, other: ScalarLike) -> Expr:
         return self._compare(">=", other)
 
-    # Python expects __eq__/__ne__ to be usable for arbitrary objects; for this DSL they intentionally
+    # Python expects __eq__/__ne__ to be usable for arbitrary objects. This DSL intentionally
     # construct logical comparisons just like tensor libraries do.
     def __eq__(self, other: object) -> Expr:  # type: ignore[override]
         if not isinstance(other, (Expr, int, bool)):
-            return NotImplemented  # type: ignore[return-value]
+            return NotImplemented
         return self._compare("==", other)
 
     def __ne__(self, other: object) -> Expr:  # type: ignore[override]
         if not isinstance(other, (Expr, int, bool)):
-            return NotImplemented  # type: ignore[return-value]
+            return NotImplemented
         return self._compare("!=", other)
 
 
@@ -280,9 +284,7 @@ class SignalsInput(SignalsExpr):
         offset = self._circuit.now.offset
         if offset == 0:
             return self
-        return SignalsExpr(
-            self._circuit, self._circuit._sample_vector_input(self._source, offset)
-        )
+        return SignalsExpr(self._circuit, self._circuit._sample_vector_input(self._source, offset))
 
 
 ScalarLike = Expr | int | bool
@@ -404,13 +406,9 @@ class Circuit:
         from factorio_circuit.compiler import compile_circuit
 
         safe_span = (
-            DEFAULT_SAFE_WIRE_SPAN
-            if blueprint_safe_wire_span is None
-            else blueprint_safe_wire_span
+            DEFAULT_SAFE_WIRE_SPAN if blueprint_safe_wire_span is None else blueprint_safe_wire_span
         )
-        return compile_circuit(
-            self, optimize=optimize, blueprint_safe_wire_span=safe_span
-        )
+        return compile_circuit(self, optimize=optimize, blueprint_safe_wire_span=safe_span)
 
     def _derived(self, value: DerivedValue) -> Expr:
         self._operations.append(value)
@@ -420,9 +418,7 @@ class Circuit:
         key = (id(source), offset)
         return self._scalar_samples.setdefault(key, InputSample(source, offset))
 
-    def _sample_vector_input(
-        self, source: IRVectorInput, offset: int
-    ) -> VectorInputSample:
+    def _sample_vector_input(self, source: IRVectorInput, offset: int) -> VectorInputSample:
         key = (id(source), offset)
         return self._vector_samples.setdefault(key, VectorInputSample(source, offset))
 
