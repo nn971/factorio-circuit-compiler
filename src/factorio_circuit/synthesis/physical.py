@@ -62,9 +62,9 @@ class PhysicalSynthesizer:
 
     def synthesize(self) -> Layout:
         self.circuit.validate()
-        signal_allocation = self._allocate_signals()
         net_colors = self._assign_net_colors()
         net_groups = self._coalesce_shared_connector_nets(net_colors)
+        signal_allocation = self._allocate_signals(net_groups)
         physical = self._materialize_circuit(signal_allocation, net_colors)
         positions = row_positions(physical)
         routing = route_wires(physical, positions, safe_span=self.safe_wire_span)
@@ -91,22 +91,67 @@ class PhysicalSynthesizer:
             net_groups=tuple(sorted(net_groups.items())),
         )
 
-    def _allocate_signals(self) -> dict[int, SignalId]:
-        """Allocate compiler lanes while avoiding user-fixed concrete signals."""
+    def _allocate_signals(self, net_groups: dict[int, int]) -> dict[int, SignalId]:
+        """Greedily reuse concrete lanes across electrically disjoint net groups.
+
+        Two abstract signals interfere when a hard ``SignalConflict`` forbids aliasing or
+        when both are present on the same synthesized electrical network.  Otherwise the
+        same concrete Factorio signal identity is safe because the wire networks are
+        disconnected.  User-fixed signals remain globally reserved in this conservative
+        milestone.
+        """
 
         reserved = self._fixed_signal_ids()
         available = tuple(signal for signal in self.signal_pool if signal not in reserved)
-        if len(self.circuit.signals) > len(available):
+        if not available and self.circuit.signals:
             raise ValueError(
-                "baseline physical synthesis exhausted the concrete virtual-signal pool"
+                "physical synthesis has no concrete virtual signals available for allocation"
             )
+
+        signal_groups: dict[int, set[int]] = {signal.id: set() for signal in self.circuit.signals}
+        for net in self.circuit.nets:
+            if net.carries_dynamic_vector and net.signals:
+                raise ValueError(
+                    f"runtime-open vector net {net.id} cannot carry compiler-allocated "
+                    "abstract signal lanes"
+                )
+            group = net_groups[net.id]
+            for signal_id in net.signals:
+                signal_groups[signal_id].add(group)
+
+        adjacency: dict[int, set[int]] = {signal.id: set() for signal in self.circuit.signals}
+        for conflict in self.circuit.signal_conflicts:
+            adjacency[conflict.left].add(conflict.right)
+            adjacency[conflict.right].add(conflict.left)
+
+        signal_ids = sorted(adjacency)
+        for index, left in enumerate(signal_ids):
+            for right in signal_ids[index + 1 :]:
+                if signal_groups[left] & signal_groups[right]:
+                    adjacency[left].add(right)
+                    adjacency[right].add(left)
+
+        by_id = {signal.id: signal for signal in self.circuit.signals}
+        order = sorted(signal_ids, key=lambda signal_id: (-len(adjacency[signal_id]), signal_id))
         result: dict[int, SignalId] = {}
-        for signal, concrete in zip(self.circuit.signals, available, strict=False):
+        for signal_id in order:
+            signal = by_id[signal_id]
             if signal.domain not in {abstract.SignalDomain.ANY, abstract.SignalDomain.VIRTUAL}:
                 raise ValueError(
                     f"baseline physical synthesis cannot allocate {signal.domain.value} signals yet"
                 )
-            result[signal.id] = concrete
+            forbidden = {
+                result[neighbor]
+                for neighbor in adjacency[signal_id]
+                if neighbor in result
+            }
+            concrete = next((item for item in available if item not in forbidden), None)
+            if concrete is None:
+                raise ValueError(
+                    "physical synthesis exhausted the concrete virtual-signal pool while "
+                    "coloring the abstract signal-interference graph"
+                )
+            result[signal_id] = concrete
         return result
 
     def _fixed_signal_ids(self) -> set[SignalId]:
@@ -123,19 +168,38 @@ class PhysicalSynthesizer:
         return result
 
     def _assign_net_colors(self) -> dict[int, WireColor]:
-        """Two-color hard conflicts while preferring shared-connector net coalescing.
+        """Choose two wire colors while maximizing proven-safe local coalescing.
 
-        Every connected component of the hard conflict graph has two equivalent color
-        orientations.  We first bipartition each component, then greedily flip whole
-        components when that increases the number of same-color net pairs already meeting
-        at a connector.  The objective is deliberately local and deterministic; it is the
-        first synthesis optimization rather than a claim of globally optimal coloring.
+        Explicit ``NetConflict`` metadata is only the starting point.  Physical synthesis
+        also rejects a same-color merge when two nets share known lanes or when either is
+        a runtime-open vector net.  Because same-color merges are transitive through shared
+        connectors, unsafe aggregate groups discovered after coloring are fed back as new
+        hard constraints until every synthesized electrical group is proven compatible.
         """
 
+        hard_conflicts = {
+            self._pair(conflict.left, conflict.right)
+            for conflict in self.circuit.net_conflicts
+        }
+        preferences, local_conflicts = self._shared_connector_relations()
+        hard_conflicts.update(local_conflicts)
+
+        while True:
+            colors = self._color_net_constraints(hard_conflicts, preferences)
+            unsafe = self._unsafe_group_conflicts(colors) - hard_conflicts
+            if not unsafe:
+                return colors
+            hard_conflicts.update(unsafe)
+
+    def _color_net_constraints(
+        self,
+        hard_conflicts: set[tuple[int, int]],
+        preferences: dict[tuple[int, int], int],
+    ) -> dict[int, WireColor]:
         adjacency: dict[int, set[int]] = {net.id: set() for net in self.circuit.nets}
-        for conflict in self.circuit.net_conflicts:
-            adjacency[conflict.left].add(conflict.right)
-            adjacency[conflict.right].add(conflict.left)
+        for left, right in hard_conflicts:
+            adjacency[left].add(right)
+            adjacency[right].add(left)
 
         component_of: dict[int, int] = {}
         parity: dict[int, int] = {}
@@ -159,15 +223,12 @@ class PhysicalSynthesizer:
                         queue.append(neighbor)
                     elif parity[neighbor] != expected:
                         raise ValueError(
-                            "abstract net conflicts require more than the two Factorio wire colors"
+                            "abstract net constraints require more than the two Factorio "
+                            "wire colors"
                         )
             components.append(sorted(component))
 
-        preferences = self._shared_connector_preferences()
         flips = [0] * len(components)
-
-        # Deterministic coordinate-ascent on component polarity.  A flip is accepted only
-        # for a strict improvement, so ties keep the baseline red-first orientation.
         improved = True
         while improved:
             improved = False
@@ -193,17 +254,69 @@ class PhysicalSynthesizer:
             for net in self.circuit.nets
         }
 
-    def _shared_connector_preferences(self) -> dict[tuple[int, int], int]:
+    def _shared_connector_relations(
+        self,
+    ) -> tuple[dict[tuple[int, int], int], set[tuple[int, int]]]:
         endpoint_nets: dict[abstract.Endpoint, list[int]] = defaultdict(list)
         for net in self.circuit.nets:
             for endpoint in net.endpoints:
                 endpoint_nets[endpoint].append(net.id)
 
-        weights: dict[tuple[int, int], int] = defaultdict(int)
+        preferences: dict[tuple[int, int], int] = defaultdict(int)
+        conflicts: set[tuple[int, int]] = set()
         for net_ids in endpoint_nets.values():
             for left, right in combinations(sorted(set(net_ids)), 2):
-                weights[(left, right)] += 1
-        return dict(weights)
+                pair = self._pair(left, right)
+                if self._nets_can_coalesce_locally(left, right):
+                    preferences[pair] += 1
+                else:
+                    conflicts.add(pair)
+        return dict(preferences), conflicts
+
+    def _nets_can_coalesce_locally(self, left_id: int, right_id: int) -> bool:
+        explicit = {
+            self._pair(conflict.left, conflict.right)
+            for conflict in self.circuit.net_conflicts
+        }
+        if self._pair(left_id, right_id) in explicit:
+            return False
+        left = self.circuit.net_by_id(left_id)
+        right = self.circuit.net_by_id(right_id)
+        if left.carries_dynamic_vector or right.carries_dynamic_vector:
+            return False
+        if set(left.signals) & set(right.signals):
+            return False
+        if set(left.fixed_signals) & set(right.fixed_signals):
+            return False
+        return True
+
+    def _unsafe_group_conflicts(
+        self, net_colors: dict[int, WireColor]
+    ) -> set[tuple[int, int]]:
+        groups = self._raw_net_groups(net_colors)
+        members: dict[int, list[int]] = defaultdict(list)
+        for net_id, group in groups.items():
+            members[group].append(net_id)
+
+        explicit = {
+            self._pair(conflict.left, conflict.right)
+            for conflict in self.circuit.net_conflicts
+        }
+        unsafe: set[tuple[int, int]] = set()
+        for net_ids in members.values():
+            for left_id, right_id in combinations(sorted(net_ids), 2):
+                pair = self._pair(left_id, right_id)
+                left = self.circuit.net_by_id(left_id)
+                right = self.circuit.net_by_id(right_id)
+                if pair in explicit:
+                    unsafe.add(pair)
+                elif left.carries_dynamic_vector or right.carries_dynamic_vector:
+                    unsafe.add(pair)
+                elif set(left.signals) & set(right.signals):
+                    unsafe.add(pair)
+                elif set(left.fixed_signals) & set(right.fixed_signals):
+                    unsafe.add(pair)
+        return unsafe
 
     @staticmethod
     def _coalescing_score(
@@ -223,17 +336,7 @@ class PhysicalSynthesizer:
                 score += weight
         return score
 
-    def _coalesce_shared_connector_nets(
-        self, net_colors: dict[int, WireColor]
-    ) -> dict[int, int]:
-        """Make unavoidable same-color merges at shared connectors explicit.
-
-        Factorio has only one red and one green circuit network per connector.  Therefore
-        two abstract nets touching the same connector with the same selected color are one
-        physical electrical network whether or not the IR listed them separately.  Record
-        that equivalence explicitly and materialize each group once.
-        """
-
+    def _raw_net_groups(self, net_colors: dict[int, WireColor]) -> dict[int, int]:
         net_ids = [net.id for net in self.circuit.nets]
         groups = _UnionFind.for_items(net_ids)
         endpoint_nets: dict[abstract.Endpoint, list[int]] = defaultdict(list)
@@ -246,13 +349,26 @@ class PhysicalSynthesizer:
             for net_id in net_ids_at_endpoint:
                 by_color[net_colors[net_id]].append(net_id)
             for same_color in by_color.values():
-                if not same_color:
+                if len(same_color) < 2:
                     continue
                 root = min(same_color)
-                for net_id in same_color:
+                for net_id in same_color[1:]:
                     groups.union(root, net_id)
-
         return {net_id: groups.find(net_id) for net_id in net_ids}
+
+    @staticmethod
+    def _pair(left: int, right: int) -> tuple[int, int]:
+        return (left, right) if left < right else (right, left)
+
+    def _coalesce_shared_connector_nets(
+        self, net_colors: dict[int, WireColor]
+    ) -> dict[int, int]:
+        """Return the proven-safe physical electrical groups for the chosen colors."""
+
+        unsafe = self._unsafe_group_conflicts(net_colors)
+        if unsafe:  # pragma: no cover - guarded by _assign_net_colors
+            raise AssertionError(f"unsafe synthesized net group(s): {sorted(unsafe)}")
+        return self._raw_net_groups(net_colors)
 
     def _materialize_circuit(
         self,
@@ -294,7 +410,9 @@ class PhysicalSynthesizer:
                 InputPort(
                     port.name,
                     port.endpoint.entity,
-                    None if port.signal is None else signals[port.signal],
+                    None
+                    if port.signal is None
+                    else self._signal_ref(port.signal, signals),
                 )
             )
         for port in self.circuit.outputs:
@@ -302,7 +420,9 @@ class PhysicalSynthesizer:
                 OutputPort(
                     port.name,
                     port.endpoint.entity,
-                    None if port.signal is None else signals[port.signal],
+                    None
+                    if port.signal is None
+                    else self._signal_ref(port.signal, signals),
                     port.phase,
                 )
             )
@@ -314,13 +434,13 @@ class PhysicalSynthesizer:
         descriptions: dict[int, str] = {}
         for port in self.circuit.inputs:
             if port.signal is not None:
-                concrete = signals[port.signal]
+                concrete = self._signal_ref(port.signal, signals)
                 descriptions[port.endpoint.entity] = (
                     f"INPUT {port.name} — inject value on [{concrete.name}] here"
                 )
         for port in self.circuit.outputs:
             if port.signal is not None:
-                concrete = signals[port.signal]
+                concrete = self._signal_ref(port.signal, signals)
                 descriptions[port.endpoint.entity] = (
                     f"OUTPUT {port.name} — [{concrete.name}], "
                     f"phase +{port.phase} tick(s)"

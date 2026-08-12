@@ -207,9 +207,9 @@ can remain abstract until physical synthesis.
 
 ## Recommended next step
 
-Keep the legacy backend as a comparison oracle. The first synthesis optimization now coalesces
-compatible nets where they already share connectors and chooses conflict-component polarity to favor
-those merges. The next useful optimization should use the same explicit physical-net groups for either
-concrete signal reuse or placement-aware shared routing; do not globally connect disjoint compatible
-nets unless the layout cost model shows a benefit. Semantic write-time anchoring remains postponed
-until this backend boundary is stable.
+Keep the legacy backend as a comparison oracle. Physical synthesis now coalesces proven-compatible
+nets where they already share connectors and reuses concrete virtual signal identities across
+electrically disjoint physical groups while honoring `SignalConflict`. The next useful optimization is
+placement-aware shared routing/layout; do not globally connect disjoint compatible nets unless the
+geometry/cost model shows a benefit. Semantic write-time anchoring remains postponed until this backend
+boundary is stable.

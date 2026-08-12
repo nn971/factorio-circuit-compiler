@@ -23,6 +23,7 @@ from factorio_circuit.ir.abstract_physical import (
     OutputPort,
     SignalConflict,
     SignalDomain,
+    SignalRef,
 )
 from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.ir.semantic import (
@@ -55,7 +56,7 @@ from factorio_circuit.optimize.partition import ArithmeticPartition, partition_a
 
 @dataclass(frozen=True, slots=True)
 class RealizedValue:
-    signal: int
+    signal: SignalRef
     net: int
     phase: int
     clean_single_lane: bool = True
@@ -98,7 +99,7 @@ class AbstractPhysicalLowerer:
         self.state_outputs: dict[str, RealizedVector] = {}
         self.state_memory_ids: dict[str, int] = {}
         self.state_memory_nets: dict[str, int] = {}
-        self.delay_cache: dict[tuple[int, int, int], RealizedValue] = {}
+        self.delay_cache: dict[tuple[int, SignalRef, int], RealizedValue] = {}
         self.net_builders: dict[int, _NetBuilder] = {}
         self.signal_conflict_keys: set[tuple[int, int]] = set()
         self.net_conflict_keys: set[tuple[int, int]] = set()
@@ -537,24 +538,17 @@ class AbstractPhysicalLowerer:
             result = self._realize_select(value)
         elif isinstance(value, VectorSignal):
             vector = self.realize_vector(value.vector)
-            out = self._new_signal(f"extract {value.signal.name}")
-            entity = ArithmeticCombinator(
-                id=self._take_entity_id(),
-                operation="+",
-                left=Operand(signal=value.signal, nets=(vector.net,)),
-                right=Operand(constant=0),
-                output_each=False,
-                output_signal=out,
-                description=f"extract [{value.signal.name}] from vector",
+            # A scalar lane read does not itself require a combinator.  Keep the fixed
+            # Factorio signal identity attached to the source vector net and let the
+            # eventual scalar consumer choose red/green separation.  If the lane later
+            # needs phase alignment, delay_to() will materialize the required isolating
+            # arithmetic combinator at that point.
+            result = RealizedValue(
+                value.signal,
+                vector.net,
+                vector.phase,
+                clean_single_lane=False,
             )
-            self.circuit.entities.append(entity)
-            self._attach(vector.net, Endpoint(entity.id, Connector.INPUT))
-            output_net = self._new_net(
-                (out,),
-                Endpoint(entity.id, Connector.OUTPUT),
-                label=f"extracted {value.signal.name}",
-            )
-            result = RealizedValue(out, output_net, vector.phase + 1)
         else:  # pragma: no cover
             raise TypeError(value)
         self.memo[id(value)] = result

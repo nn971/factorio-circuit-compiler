@@ -53,9 +53,9 @@ Abstract signals deliberately do not belong to one net. A Factorio signal name i
 while a wire network is an electrical connectivity object. One physical network carries many signal
 names, and the same signal name can occur on multiple electrically disconnected networks.
 
-This separation also permits later signal reuse: two abstract signals may receive the same concrete
-Factorio signal identity when physical synthesis proves that their electrical lifetimes cannot
-interfere. `SignalConflict` records pairs for which such aliasing is forbidden.
+This separation permits signal reuse: two abstract signals may receive the same concrete Factorio
+signal identity when physical synthesis proves that their synthesized electrical groups do not
+overlap. `SignalConflict` records pairs for which such aliasing is forbidden.
 
 ## Abstract nets
 
@@ -121,17 +121,18 @@ or green.
 
 The baseline `synthesize_layout(...)` then:
 
-1. allocates a unique virtual Factorio signal to every abstract signal while reserving all fixed
-   concrete signal identities already used by the circuit;
-2. bipartitions every hard `NetConflict` component, then flips whole components when doing so
-   increases same-color coalescing among compatible nets that already meet at a connector;
-3. records those unavoidable same-color shared-connector merges as physical net groups while
-   preserving each abstract net's local wiring tree;
-4. materializes a concrete `PhysicalCircuit` view for simulation and fills scalar I/O annotation
+1. derives additional synthesis-time net conflicts when a same-color merge would combine repeated
+   known lanes or a runtime-open vector net with another net;
+2. bipartitions the resulting hard conflict graph, then flips whole components when doing so
+   increases proven-safe same-color coalescing among nets that already meet at a connector;
+3. records those same-color shared-connector merges as physical net groups while preserving each
+   abstract net's local wiring tree;
+4. colors an abstract-signal interference graph and reuses concrete virtual signal identities across
+   electrically disjoint physical net groups, while reserving all user-fixed identities;
+5. materializes a concrete `PhysicalCircuit` view for simulation and fills scalar I/O annotation
    descriptions with their final allocated signal identities;
-5. applies the current deterministic row placement and reach-safe relay routing;
-6. returns a final `Layout` containing positions, routed wires, relays, signal allocation, net
-   colors, and abstract-net-to-physical-group mapping.
+6. applies the current deterministic row placement and reach-safe relay routing, then returns the
+   final `Layout`.
 
 This first net-merging optimization is intentionally local. It never connects otherwise disjoint
 compatible nets merely to create a larger bus: doing that can add wire length/relays and must be
@@ -173,6 +174,6 @@ feedback nets, then extracts one fixed lane from both post-transition reads. It 
 
 `compile_circuit(...)` still uses the previous direct concrete lowerer and remains the default comparison
 path. Scalar/whole-vector stateless behavior, `.signal(...)` isolation, `AccumulatorReg`, `FreezeReg`,
-and mutually coupled vector state now have an executable abstract-physical path. The next backend work
-should focus on parity coverage and on physical-synthesis optimizations that jointly use signal, net,
-and layout freedom.
+and mutually coupled vector state now have an executable abstract-physical path. Physical synthesis
+now performs conservative net coalescing and concrete signal reuse; the next backend work should make
+placement/routing participate in those choices while continuing legacy-vs-abstract parity coverage.

@@ -460,3 +460,26 @@ def test_switchable_fibonacci_runs_through_coupled_abstract_state_networks() -> 
     legacy = compile_circuit(_switchable_fibonacci(), optimize=False)
     assert result.physical_circuit.combinator_count == legacy.physical_circuit.combinator_count
     assert result.physical_circuit.output_phases == legacy.physical_circuit.output_phases
+
+
+def test_signal_reuse_preserves_two_disconnected_scalar_branches() -> None:
+    c = Circuit("abstract_signal_reuse")
+    a = c.input("a")
+    b = c.input("b")
+    c.output("x", a + 1)
+    c.output("y", b + 2)
+
+    result = compile_abstract_circuit(c, optimize=False)
+
+    assert len(result.abstract_physical.signals) == 4
+    assert result.layout.concrete_signal_count == 1
+    assert len(result.layout.reused_signal_groups) == 1
+    assert_same_stream(
+        result.semantic_ir,
+        result.physical_circuit,
+        [
+            {"a": 1, "b": 10},
+            {"a": -3, "b": 7},
+            {"a": 2**31 - 1, "b": -20},
+        ],
+    )

@@ -174,7 +174,7 @@ class InputPort:
 class OutputPort:
     name: str
     endpoint: Endpoint
-    signal: int | None
+    signal: SignalRef | None
     phase: int
 
 
@@ -283,7 +283,7 @@ class AbstractPhysicalCircuit:
             if port.endpoint.entity not in entity_ids:
                 raise ValueError(f"port {port.name!r} references unknown entity")
             if port.signal is not None:
-                _require(signal_ids, port.signal, "signal")
+                self._validate_signal_ref(port.signal, signal_ids)
 
     def _validate_operand(
         self, operand: Operand, signal_ids: set[int], net_ids: set[int]

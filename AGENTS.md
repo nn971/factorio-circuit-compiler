@@ -112,8 +112,8 @@ is refined.
 ## Immediate next route
 
 1. keep broadening legacy-vs-abstract parity coverage across examples/state tests;
-2. build the next synthesis optimization on explicit physical net groups: concrete signal reuse or
-   placement-aware shared routing are the strongest candidates;
+2. build the next synthesis optimization on explicit physical net groups: placement-aware shared
+   routing/layout (concrete signal reuse is now implemented);
 3. retain tick-level simulation plus structural checks for dead/orphan blueprint artifacts;
 4. only then revisit semantic write-time anchoring and more aggressive state optimization.
 
