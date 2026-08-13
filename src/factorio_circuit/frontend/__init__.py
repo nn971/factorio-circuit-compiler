@@ -18,15 +18,15 @@ from factorio_circuit.ir.semantic import (
 
 from .symbolic import (
     AccumulatorReg,
-    Circuit as _Circuit,
     CircuitBuildError,
     Expr,
     FreezeReg,
     Input,
     LogicalTime,
-    SignalsExpr as _SignalsExpr,
-    SignalsInput as _BaseSignalsInput,
 )
+from .symbolic import Circuit as _Circuit
+from .symbolic import SignalsExpr as _SignalsExpr
+from .symbolic import SignalsInput as _BaseSignalsInput
 
 
 @dataclass(frozen=True, slots=True)

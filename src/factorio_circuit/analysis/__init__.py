@@ -8,10 +8,10 @@ from .state_timing import (
     StateReadTiming,
     StateTimingError,
     StateTimingPlan,
-    analyze_state_timing as _analyze_state_timing,
     earliest_scalar_phase,
     earliest_vector_phase,
 )
+from .state_timing import analyze_state_timing as _analyze_state_timing
 
 
 def _contains_new_vector_logic(value: object) -> bool:
