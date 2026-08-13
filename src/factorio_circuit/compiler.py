@@ -74,16 +74,9 @@ def _lower(
 def _synthesize(
     circuit: AbstractPhysicalCircuit,
     *,
-    has_state: bool,
     safe_wire_span: float,
     placement: PlacementOptions | None,
 ) -> Layout:
-    if has_state:
-        return synthesize_vector_layout(
-            circuit,
-            safe_wire_span=safe_wire_span,
-            placement=placement,
-        )
     return synthesize_vector_layout(
         circuit,
         safe_wire_span=safe_wire_span,
@@ -106,7 +99,6 @@ def compile_circuit(
         optimize_semantic(semantic) if optimize and not skip_scalar_optimizer else semantic
     )
     state_timing = analyze_state_timing(optimized_semantic)
-    has_state = bool(optimized_semantic.state_registers)
 
     abstract_physical = _lower(
         optimized_semantic,
@@ -115,7 +107,6 @@ def compile_circuit(
     )
     layout = _synthesize(
         abstract_physical,
-        has_state=has_state,
         safe_wire_span=blueprint_safe_wire_span,
         placement=placement,
     )
@@ -128,7 +119,6 @@ def compile_circuit(
         )
         naive_physical = _synthesize(
             naive_abstract,
-            has_state=has_state,
             safe_wire_span=blueprint_safe_wire_span,
             placement=placement,
         ).circuit
