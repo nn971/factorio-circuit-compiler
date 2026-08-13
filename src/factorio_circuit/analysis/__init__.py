@@ -15,20 +15,13 @@ from .state_timing import analyze_state_timing as _analyze_state_timing
 
 
 def _contains_new_vector_logic(value: object) -> bool:
-    from factorio_circuit.frontend import (
-        _VectorBinaryOp,
-        _VectorFilter,
-        _VectorScalarOp,
-        _VectorSelect,
-    )
+    from factorio_circuit.frontend import _VectorBinaryOp, _VectorFilter, _VectorScalarOp
 
     if isinstance(value, _VectorBinaryOp):
         return True
     if isinstance(value, _VectorScalarOp):
         return True
     if isinstance(value, _VectorFilter):
-        return True
-    if isinstance(value, _VectorSelect):
         return True
     if isinstance(value, VectorSignal):
         return _contains_new_vector_logic(value.vector)
