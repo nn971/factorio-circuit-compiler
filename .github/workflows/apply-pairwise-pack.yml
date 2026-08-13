@@ -6,6 +6,7 @@ on:
       - agent/pairwise-arithmetic-packing
     paths:
       - .github/workflows/apply-pairwise-pack.yml
+      - scripts/apply_pairwise_pack.py.gz.b64
 
 permissions:
   contents: write
