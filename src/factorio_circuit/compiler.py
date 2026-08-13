@@ -18,7 +18,7 @@ from factorio_circuit.ir.physical import PhysicalCircuit
 from factorio_circuit.ir.semantic import CircuitModule
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.lowering.ir_to_abstract_physical import lower_abstract_physical
-from factorio_circuit.lowering.open_vector_pipeline import lower_stateless_vectors
+from factorio_circuit.lowering.open_vector_pipeline import lower_vectors
 from factorio_circuit.optimize.pipeline import optimize_semantic
 from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
@@ -72,7 +72,7 @@ def _lower(
             enable_packing=enable_packing,
             state_timing=state_timing,
         )
-    return lower_stateless_vectors(
+    return lower_vectors(
         module,
         enable_packing=enable_packing,
         state_timing=state_timing,
