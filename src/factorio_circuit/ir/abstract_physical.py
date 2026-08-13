@@ -86,6 +86,15 @@ class SignalConflict:
 
 
 @dataclass(frozen=True, slots=True)
+class SignalAlias:
+    """Require two abstract lanes to share one concrete Factorio signal identity."""
+
+    left: int
+    right: int
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class NetConflict:
     """Forbid two abstract nets from being electrically merged."""
 
@@ -130,6 +139,34 @@ class ArithmeticCombinator:
 
 
 @dataclass(frozen=True, slots=True)
+class DeciderCondition:
+    """Additional Factorio decider condition joined to the first condition."""
+
+    comparator: str
+    left: Operand
+    right: Operand
+    compare_type: str = "and"
+
+    def __post_init__(self) -> None:
+        if self.compare_type not in {"and", "or"}:
+            raise ValueError("decider compare_type must be 'and' or 'or'")
+
+
+@dataclass(frozen=True, slots=True)
+class DeciderOutput:
+    """One additional normal output of a Factorio decider combinator."""
+
+    signal: int
+    constant: int = 1
+    copy_count_from_input: bool = False
+    copy_count_nets: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.copy_count_nets and not self.copy_count_from_input:
+            raise ValueError("copy-count net selection requires copy_count_from_input")
+
+
+@dataclass(frozen=True, slots=True)
 class DeciderCombinator:
     id: int
     comparator: str
@@ -139,6 +176,8 @@ class DeciderCombinator:
     output_constant: int = 1
     output_copy_count_from_input: bool = False
     copy_count_nets: tuple[int, ...] = ()
+    additional_conditions: tuple[DeciderCondition, ...] = ()
+    additional_outputs: tuple[DeciderOutput, ...] = ()
     else_output_signal: int | None = None
     else_output_constant: int = 1
     else_copy_count_from_input: bool = False
@@ -187,6 +226,7 @@ class AbstractPhysicalCircuit:
     entities: list[AbstractEntity] = field(default_factory=list)
     nets: list[AbstractNet] = field(default_factory=list)
     signal_conflicts: list[SignalConflict] = field(default_factory=list)
+    signal_aliases: list[SignalAlias] = field(default_factory=list)
     net_conflicts: list[NetConflict] = field(default_factory=list)
     inputs: list[InputPort] = field(default_factory=list)
     outputs: list[OutputPort] = field(default_factory=list)
@@ -265,6 +305,12 @@ class AbstractPhysicalCircuit:
                 self._validate_operand(entity.right, signal_ids, net_ids)
                 _require(signal_ids, entity.output_signal, "signal")
                 self._validate_net_refs(entity.copy_count_nets, net_ids)
+                for condition in entity.additional_conditions:
+                    self._validate_operand(condition.left, signal_ids, net_ids)
+                    self._validate_operand(condition.right, signal_ids, net_ids)
+                for output in entity.additional_outputs:
+                    _require(signal_ids, output.signal, "signal")
+                    self._validate_net_refs(output.copy_count_nets, net_ids)
                 if entity.else_output_signal is not None:
                     _require(signal_ids, entity.else_output_signal, "signal")
                     self._validate_net_refs(entity.else_copy_count_nets, net_ids)
@@ -272,10 +318,24 @@ class AbstractPhysicalCircuit:
                 for signal_ref, _count in entity.signals:
                     self._validate_signal_ref(signal_ref, signal_ids)
 
+        conflict_pairs: set[tuple[int, int]] = set()
         for signal_conflict in self.signal_conflicts:
             self._validate_conflict(
                 signal_conflict.left, signal_conflict.right, signal_ids, "signal"
             )
+            conflict_pairs.add(
+                (
+                    min(signal_conflict.left, signal_conflict.right),
+                    max(signal_conflict.left, signal_conflict.right),
+                )
+            )
+        for signal_alias in self.signal_aliases:
+            self._validate_conflict(signal_alias.left, signal_alias.right, signal_ids, "signal")
+            if (
+                min(signal_alias.left, signal_alias.right),
+                max(signal_alias.left, signal_alias.right),
+            ) in conflict_pairs:
+                raise ValueError("signal pair cannot be both aliased and conflicting")
         for net_conflict in self.net_conflicts:
             self._validate_conflict(net_conflict.left, net_conflict.right, net_ids, "net")
 

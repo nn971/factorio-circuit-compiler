@@ -2,6 +2,7 @@ from math import hypot
 
 from factorio_circuit.blueprint.routing import (
     DEFAULT_SAFE_WIRE_SPAN,
+    _relay_overlaps_forbidden,
     route_wires,
     routed_positions,
     validate_entity_clearance,
@@ -98,3 +99,14 @@ def test_branching_style_parallel_routes_do_not_overlap_entities() -> None:
     # real combinators and causing Factorio to drop the delayed total path on import.
     real_positions = set(positions.values())
     assert all(relay.position not in real_positions for relay in plan.relays)
+
+
+def test_router_keeps_relay_entities_out_of_reserved_areas() -> None:
+    circuit = _long_wire_circuit()
+    positions = {1: (0.0, 0.0), 2: (30.0, 0.0)}
+    reserved = ((10.0, 12.0, -2.0, 2.0),)
+
+    plan = route_wires(circuit, positions, relay_forbidden_areas=reserved)
+
+    assert plan.relays
+    assert all(not _relay_overlaps_forbidden(relay.position, reserved) for relay in plan.relays)

@@ -19,6 +19,7 @@ from .frontend.symbolic import (
     SignalsInput,
 )
 from .ir.physical import SignalId
+from .synthesis.placement import PlacementMetrics, PlacementOptions, placement_metrics
 
 __all__ = [
     "AbstractCompilationResult",
@@ -30,6 +31,8 @@ __all__ = [
     "FreezeReg",
     "Input",
     "LogicalTime",
+    "PlacementMetrics",
+    "PlacementOptions",
     "SignalsExpr",
     "SignalsInput",
     "SignalId",
@@ -37,4 +40,5 @@ __all__ = [
     "StateTimingPlan",
     "compile_abstract_circuit",
     "compile_circuit",
+    "placement_metrics",
 ]

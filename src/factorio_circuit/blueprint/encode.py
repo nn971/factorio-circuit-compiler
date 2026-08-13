@@ -119,26 +119,51 @@ def _arithmetic_conditions(entity: ArithmeticCombinator) -> dict[str, Any]:
 
 
 def _decider_conditions(entity: DeciderCombinator) -> dict[str, Any]:
-    condition: dict[str, Any] = {"comparator": FACTORIO_COMPARATOR[entity.comparator]}
-    _encode_operand(condition, "first", entity.left)
-    _encode_operand(condition, "second", entity.right, decider_second=True)
-    output = _decider_output(
-        entity.output_signal,
-        copy_count=entity.output_copy_count_from_input,
-        constant=entity.output_constant,
-        networks=entity.output_networks,
+    conditions = [_decider_condition(entity.comparator, entity.left, entity.right)]
+    conditions.extend(
+        _decider_condition(
+            condition.comparator,
+            condition.left,
+            condition.right,
+            compare_type=condition.compare_type,
+        )
+        for condition in entity.additional_conditions
     )
-    result: dict[str, Any] = {"conditions": [condition], "outputs": [output]}
+    outputs = [
+        _decider_output(
+            entity.output_signal,
+            copy_count=entity.output_copy_count_from_input,
+            constant=entity.output_constant,
+            networks=entity.output_networks,
+        )
+    ]
+    outputs.extend(
+        _decider_output(
+            output.signal,
+            copy_count=output.copy_count_from_input,
+            constant=output.constant,
+            networks=output.output_networks,
+        )
+        for output in entity.additional_outputs
+    )
     if entity.else_output_signal is not None:
-        result["else_outputs"] = [
-            _decider_output(
-                entity.else_output_signal,
-                copy_count=entity.else_copy_count_from_input,
-                constant=entity.else_output_constant,
-                networks=entity.else_output_networks,
-            )
-        ]
-    return result
+        raise ValueError("the current Factorio target does not support decider else outputs")
+    return {"conditions": conditions, "outputs": outputs}
+
+
+def _decider_condition(
+    comparator: str,
+    left: Operand,
+    right: Operand,
+    *,
+    compare_type: str | None = None,
+) -> dict[str, Any]:
+    condition: dict[str, Any] = {"comparator": FACTORIO_COMPARATOR[comparator]}
+    _encode_operand(condition, "first", left)
+    _encode_operand(condition, "second", right, decider_second=True)
+    if compare_type is not None:
+        condition["compare_type"] = compare_type
+    return condition
 
 
 def _decider_output(

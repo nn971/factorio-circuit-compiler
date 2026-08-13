@@ -2,7 +2,12 @@ import base64
 import json
 import zlib
 
+import pytest
+
 from factorio_circuit import Circuit, SignalId, compile_circuit
+from factorio_circuit.blueprint.layout_encode import layout_to_blueprint_json
+from factorio_circuit.ir.physical import DeciderCombinator, Operand, PhysicalCircuit
+from factorio_circuit.synthesis.layout import Layout
 
 
 def test_blueprint_string_round_trip() -> None:
@@ -39,3 +44,26 @@ def test_constant_signal_filter_serializes_normal_quality_and_count() -> None:
         "count": 1,
         "type": "virtual",
     }
+
+
+def test_layout_encoder_rejects_unsupported_decider_else_output() -> None:
+    control = SignalId("virtual", "signal-C")
+    output = SignalId("virtual", "signal-R")
+    otherwise = SignalId("virtual", "signal-S")
+    circuit = PhysicalCircuit(
+        "unsupported_else",
+        entities=[
+            DeciderCombinator(
+                id=1,
+                comparator="==",
+                left=Operand(signal=control),
+                right=Operand(constant=0),
+                output_signal=output,
+                else_output_signal=otherwise,
+            )
+        ],
+    )
+    layout = Layout(circuit, {1: (0.0, 0.0)}, (), (), (), ())
+
+    with pytest.raises(ValueError, match="does not support decider else outputs"):
+        layout_to_blueprint_json(layout)

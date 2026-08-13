@@ -19,6 +19,7 @@ from factorio_circuit.lowering.ir_to_abstract_physical import lower_abstract_phy
 from factorio_circuit.optimize.pipeline import optimize_semantic
 from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.physical import synthesize_layout
+from factorio_circuit.synthesis.placement import PlacementOptions
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,7 @@ def compile_circuit(
     *,
     optimize: bool = True,
     blueprint_safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN,
+    placement: PlacementOptions | None = None,
 ) -> CompilationResult:
     """Compile through Abstract Physical IR, physical synthesis, and final Layout."""
 
@@ -69,6 +71,7 @@ def compile_circuit(
     layout = synthesize_layout(
         abstract_physical,
         safe_wire_span=blueprint_safe_wire_span,
+        placement=placement,
     )
 
     if optimize:
@@ -80,6 +83,7 @@ def compile_circuit(
         naive_physical = synthesize_layout(
             naive_abstract,
             safe_wire_span=blueprint_safe_wire_span,
+            placement=placement,
         ).circuit
     else:
         naive_physical = layout.circuit
@@ -101,6 +105,7 @@ def compile_abstract_circuit(
     *,
     optimize: bool = True,
     blueprint_safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN,
+    placement: PlacementOptions | None = None,
 ) -> AbstractCompilationResult:
     """Compatibility alias for :func:`compile_circuit`."""
 
@@ -108,4 +113,5 @@ def compile_abstract_circuit(
         source,
         optimize=optimize,
         blueprint_safe_wire_span=blueprint_safe_wire_span,
+        placement=placement,
     )
