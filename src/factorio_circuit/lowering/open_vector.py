@@ -2,13 +2,14 @@
 
 from factorio_circuit.frontend import _VectorBinaryOp, _VectorFilter, _VectorScalarOp
 from factorio_circuit.ir.semantic import VectorValue
-from factorio_circuit.lowering.ir_to_abstract_physical import AbstractPhysicalLowerer, RealizedVector
+from factorio_circuit.lowering.ir_to_abstract_physical import AbstractPhysicalLowerer as _Base
+from factorio_circuit.lowering.ir_to_abstract_physical import RealizedVector
 
 from .vector_binary import realize_vector_binary
 from .vector_unary import realize_vector_filter, realize_vector_scalar
 
 
-class VectorLowerer(AbstractPhysicalLowerer):
+class VectorLowerer(_Base):
     def realize_vector(self, value: VectorValue) -> RealizedVector:
         item: object = value
         cached = self.vector_memo.get(id(item))
