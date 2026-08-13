@@ -50,7 +50,14 @@ class _VectorFilter:
     right: int
 
 
-_VectorNode = _VectorBinaryOp | _VectorScalarOp | _VectorFilter
+@dataclass(frozen=True, slots=True)
+class _VectorSelect:
+    vector: VectorValue
+    select_max: bool
+    index: int
+
+
+_VectorNode = _VectorBinaryOp | _VectorScalarOp | _VectorFilter | _VectorSelect
 
 
 class SignalsExpr(_SignalsExpr):
@@ -87,6 +94,11 @@ class SignalsExpr(_SignalsExpr):
         """Preserve every lane whose count is positive, including its original count."""
 
         return self._wrap_vector(_VectorFilter(">", self._value, 0))
+
+    def max(self) -> SignalsExpr:
+        """Select the nonzero lane with the greatest count, preserving that count."""
+
+        return self._wrap_vector(_VectorSelect(self._value, select_max=True, index=0))
 
     def any(self) -> Expr:
         """Return 1 exactly when at least one vector lane is nonzero."""
