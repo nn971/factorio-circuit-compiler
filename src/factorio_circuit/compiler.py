@@ -66,12 +66,6 @@ def _lower(
     enable_packing: bool,
     state_timing: StateTimingPlan,
 ) -> AbstractPhysicalCircuit:
-    if module.state_registers:
-        return lower_abstract_physical(
-            module,
-            enable_packing=enable_packing,
-            state_timing=state_timing,
-        )
     return lower_vectors(
         module,
         enable_packing=enable_packing,
