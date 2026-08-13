@@ -100,6 +100,7 @@ jobs:
         run: rm -f scripts/apply_pairwise_pack.py.gz.b64
       - name: Canonicalize changed Python
         run: |
+          ruff format .
           ruff check --fix .
           ruff format .
       - name: Compile changed Python
