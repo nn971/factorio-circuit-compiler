@@ -7,8 +7,10 @@ stock = circuit.signals("stock")
 enabled = circuit.input("enabled")
 
 missing = (required - stock).positive()
+request = missing.max()
 
 circuit.output("missing", missing)
+circuit.output("request", request)
 circuit.output("has_missing", missing.any())
 circuit.output("enabled_missing", missing.gate(enabled))
 

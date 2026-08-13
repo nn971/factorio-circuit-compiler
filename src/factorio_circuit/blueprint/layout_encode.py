@@ -32,7 +32,15 @@ def layout_to_blueprint_json(layout: Layout) -> dict[str, Any]:
         if entity.description:
             common["player_description"] = entity.description
 
-        if isinstance(entity, ArithmeticCombinator):
+        if isinstance(entity, ArithmeticCombinator) and entity.operation == "select":
+            common.update(
+                {
+                    "name": "selector-combinator",
+                    "direction": 4,
+                    "control_behavior": _selector_conditions(entity),
+                }
+            )
+        elif isinstance(entity, ArithmeticCombinator):
             common.update(
                 {
                     "name": "arithmetic-combinator",
@@ -85,6 +93,16 @@ def encode_layout_blueprint_string(layout: Layout) -> str:
     payload = json.dumps(layout_to_blueprint_json(layout), separators=(",", ":")).encode()
     compressed = zlib.compress(payload, level=9)
     return "0" + base64.b64encode(compressed).decode("ascii")
+
+
+def _selector_conditions(entity: ArithmeticCombinator) -> dict[str, Any]:
+    if entity.right.constant is None:
+        raise ValueError("selector scaffold requires a constant index")
+    return {
+        "operation": "select",
+        "select_max": True,
+        "index_constant": entity.right.constant,
+    }
 
 
 def _arithmetic_conditions(entity: ArithmeticCombinator) -> dict[str, Any]:
