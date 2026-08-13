@@ -17,12 +17,10 @@ from factorio_circuit.ir.abstract_physical import AbstractPhysicalCircuit
 from factorio_circuit.ir.physical import PhysicalCircuit
 from factorio_circuit.ir.semantic import CircuitModule
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
-from factorio_circuit.lowering.ir_to_abstract_physical import lower_abstract_physical
 from factorio_circuit.lowering.open_vector_pipeline import lower_vectors
 from factorio_circuit.optimize.pipeline import optimize_semantic
 from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
-from factorio_circuit.synthesis.physical import synthesize_layout
 from factorio_circuit.synthesis.placement import PlacementOptions
 
 _VECTOR_OUTPUTS = (_VectorBinaryOp, _VectorScalarOp, _VectorFilter)
