@@ -154,9 +154,7 @@ def earliest_scalar_phase(value: ScalarValue) -> int:
         elif isinstance(item, Constant):
             result = 0
         elif isinstance(item, VectorSignal):
-            raise StateTimingError(
-                "state-derived scalar controls are not yet supported by the state timing solver"
-            )
+            result = earliest_vector_phase(item.vector)
         elif isinstance(item, (BinaryOp, Compare)):
             result = max(visit(item.left), visit(item.right)) + 1
         elif isinstance(item, Select):
@@ -181,8 +179,9 @@ def _normalized_when_phase(value: ScalarValue) -> int:
 def earliest_vector_phase(value: VectorValue) -> int:
     """Earliest absolute phase for vector values with no state dependency.
 
-    Kept as a public diagnostic helper; state-dependent sources are solved only in the full timing
-    plan because their phase is relative to another register.
+    Derived runtime-open vector operations contribute their physical one-tick latency.  Values
+    depending on register reads are solved only in the full timing plan because their absolute
+    phase is relative to another register.
     """
 
     absolute, dependencies = _vector_requirements(value)
@@ -191,13 +190,42 @@ def earliest_vector_phase(value: VectorValue) -> int:
     return absolute
 
 
-def _vector_requirements(value: VectorValue) -> tuple[int, tuple[tuple[StateRegister, int], ...]]:
+def _delay_vector_requirements(
+    requirements: tuple[int, tuple[tuple[StateRegister, int], ...]],
+    ticks: int,
+) -> tuple[int, tuple[tuple[StateRegister, int], ...]]:
+    absolute, dependencies = requirements
+    return absolute + ticks, tuple((register, offset + ticks) for register, offset in dependencies)
+
+
+def _vector_requirements(value: object) -> tuple[int, tuple[tuple[StateRegister, int], ...]]:
+    from factorio_circuit.frontend import _VectorBinaryOp, _VectorFilter, _VectorScalarOp
+
     if isinstance(value, (VectorInput, VectorConstant)):
         return 0, ()
     if isinstance(value, VectorInputSample):
         return value.offset, ()
     if isinstance(value, VectorRegisterRead):
         return 0, ((value.register, value.offset),)
+    if isinstance(value, _VectorBinaryOp):
+        left_abs, left_dependencies = _vector_requirements(value.left)
+        right_abs, right_dependencies = _vector_requirements(value.right)
+        return (
+            max(left_abs, right_abs) + 1,
+            tuple(
+                (register, offset + 1)
+                for register, offset in (*left_dependencies, *right_dependencies)
+            ),
+        )
+    if isinstance(value, _VectorScalarOp):
+        vector_abs, dependencies = _vector_requirements(value.vector)
+        scalar_phase = earliest_scalar_phase(value.scalar)
+        return (
+            max(vector_abs, scalar_phase) + 1,
+            tuple((register, offset + 1) for register, offset in dependencies),
+        )
+    if isinstance(value, _VectorFilter):
+        return _delay_vector_requirements(_vector_requirements(value.vector), 1)
     raise TypeError(value)
 
 
@@ -318,13 +346,31 @@ def _solve_state_phases(specs: list[_RegisterSpec]) -> dict[str, int]:
 
 
 def _collect_state_reads(module: CircuitModule) -> tuple[VectorRegisterRead, ...]:
+    from factorio_circuit.frontend import _VectorBinaryOp, _VectorFilter, _VectorScalarOp
+
     result: list[VectorRegisterRead] = []
     seen: set[int] = set()
 
-    def add_vector(value: VectorValue) -> None:
-        if isinstance(value, VectorRegisterRead) and id(value) not in seen:
-            seen.add(id(value))
-            result.append(value)
+    def add_vector(value: object) -> bool:
+        if isinstance(value, VectorRegisterRead):
+            if id(value) not in seen:
+                seen.add(id(value))
+                result.append(value)
+            return True
+        if isinstance(value, (VectorInput, VectorInputSample, VectorConstant)):
+            return True
+        if isinstance(value, _VectorBinaryOp):
+            add_vector(value.left)
+            add_vector(value.right)
+            return True
+        if isinstance(value, _VectorScalarOp):
+            add_vector(value.vector)
+            add_scalar(value.scalar)
+            return True
+        if isinstance(value, _VectorFilter):
+            add_vector(value.vector)
+            return True
+        return False
 
     def add_scalar(value: ScalarValue, visited: set[int] | None = None) -> None:
         if visited is None:
@@ -343,9 +389,7 @@ def _collect_state_reads(module: CircuitModule) -> tuple[VectorRegisterRead, ...
             add_scalar(value.when_false, visited)
 
     for output in module.output.values:
-        if isinstance(output, (VectorInput, VectorInputSample, VectorConstant, VectorRegisterRead)):
-            add_vector(output)
-        else:
+        if not add_vector(output):
             add_scalar(output)
     for op in module.state_operations:
         if isinstance(op, (AccumulatorAdd, FreezeSet)):
