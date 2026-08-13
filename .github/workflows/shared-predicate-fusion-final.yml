@@ -50,11 +50,21 @@ jobs:
 
           benchmark_test = Path('tests/integration/test_layout_benchmark_examples.py')
           benchmark_text = benchmark_test.read_text()
-          stale = '    assert result.physical_circuit.combinator_count == 168\n'
-          refreshed = '    assert result.physical_circuit.combinator_count == 88\n'
-          if stale not in benchmark_text:
+          stale_count = '    assert result.physical_circuit.combinator_count == 168\n'
+          if stale_count not in benchmark_text:
               raise SystemExit('expected stale sorter-8 combinator assertion not found')
-          benchmark_test.write_text(benchmark_text.replace(stale, refreshed, 1))
+          benchmark_text = benchmark_text.replace(
+              stale_count,
+              '    assert result.physical_circuit.combinator_count == 88\n',
+              1,
+          )
+          stale_structure = '''    assert any(\n        len(entity.get("control_behavior", {}).get("decider_conditions", {}).get("conditions", []))\n        > 1\n        for entity in result.blueprint_json["blueprint"]["entities"]\n    )\n'''
+          refreshed_structure = '''    assert any(\n        len(entity.get("control_behavior", {}).get("decider_conditions", {}).get("outputs", []))\n        > 1\n        for entity in result.blueprint_json["blueprint"]["entities"]\n    )\n'''
+          if stale_structure not in benchmark_text:
+              raise SystemExit('expected stale sorter-8 decider-structure assertion not found')
+          benchmark_test.write_text(
+              benchmark_text.replace(stale_structure, refreshed_structure, 1)
+          )
           PY
 
       - name: Install development environment
