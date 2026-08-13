@@ -47,6 +47,14 @@ jobs:
           if bad not in text:
               raise SystemExit('expected generated compare/select preflight not found')
           path.write_text(text.replace(bad, good, 1))
+
+          benchmark_test = Path('tests/integration/test_layout_benchmark_examples.py')
+          benchmark_text = benchmark_test.read_text()
+          stale = '    assert result.physical_circuit.combinator_count == 168\n'
+          refreshed = '    assert result.physical_circuit.combinator_count == 88\n'
+          if stale not in benchmark_text:
+              raise SystemExit('expected stale sorter-8 combinator assertion not found')
+          benchmark_test.write_text(benchmark_text.replace(stale, refreshed, 1))
           PY
 
       - name: Install development environment
@@ -78,7 +86,7 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src tests/integration/test_shared_predicate_fusion.py
+          git add src tests/integration/test_shared_predicate_fusion.py tests/integration/test_layout_benchmark_examples.py
           git diff --cached --check
           git commit -m "feat(lowering): fuse shared compare predicates"
           git push origin HEAD:agent/shared-predicate-fusion
