@@ -9,7 +9,7 @@ from factorio_circuit.ir.semantic import (
     VectorInput,
     VectorInputSample,
 )
-from factorio_circuit.ir.state import VectorRegisterRead
+from factorio_circuit.ir.state import AccumulatorRegister, FreezeRegister, VectorRegisterRead
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
 
 from .open_vector import VectorLowerer
@@ -25,18 +25,36 @@ _VECTOR_OUTPUTS = (
 )
 
 
-def lower_stateless_vectors(
+def lower_vectors(
     module: CircuitModule,
     *,
     enable_packing: bool,
     state_timing: StateTimingPlan,
 ) -> AbstractPhysicalCircuit:
+    """Lower scalar/vector logic and the current vector-register state subset together."""
+
+    unsupported_registers = [
+        register
+        for register in module.state_registers
+        if not isinstance(register, (AccumulatorRegister, FreezeRegister))
+    ]
+    if unsupported_registers:
+        names = ", ".join(register.name for register in unsupported_registers)
+        raise ValueError(
+            "vector lowering supports AccumulatorReg and FreezeReg state; "
+            f"unsupported register(s): {names}"
+        )
+
     lowerer = VectorLowerer(
         module,
         enable_packing=enable_packing,
         state_timing=state_timing,
     )
     lowerer._create_input_markers()
+    if module.state_registers:
+        lowerer._reserve_state_outputs()
+        lowerer._create_state_components()
+
     outputs: list[RealizedValue | RealizedVector] = []
     for value in module.output.values:
         if isinstance(value, _VECTOR_OUTPUTS):
@@ -57,3 +75,18 @@ def lower_stateless_vectors(
     ]
     lowerer.circuit.validate()
     return lowerer.circuit
+
+
+def lower_stateless_vectors(
+    module: CircuitModule,
+    *,
+    enable_packing: bool,
+    state_timing: StateTimingPlan,
+) -> AbstractPhysicalCircuit:
+    """Compatibility wrapper for the former stateless-only entry point."""
+
+    return lower_vectors(
+        module,
+        enable_packing=enable_packing,
+        state_timing=state_timing,
+    )
