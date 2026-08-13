@@ -1,9 +1,17 @@
 """Whole-vector lowering pipeline."""
 
+from typing import cast
+
 from factorio_circuit.analysis.state_timing import StateTimingPlan
 from factorio_circuit.frontend import _VectorBinaryOp, _VectorFilter, _VectorScalarOp
 from factorio_circuit.ir.abstract_physical import AbstractNet, AbstractPhysicalCircuit
-from factorio_circuit.ir.semantic import CircuitModule, VectorConstant, VectorInput, VectorInputSample
+from factorio_circuit.ir.semantic import (
+    CircuitModule,
+    VectorConstant,
+    VectorInput,
+    VectorInputSample,
+    VectorValue,
+)
 from factorio_circuit.ir.state import VectorRegisterRead
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
 
@@ -35,7 +43,7 @@ def lower_stateless_vectors(
     outputs: list[RealizedValue | RealizedVector] = []
     for value in module.output.values:
         if isinstance(value, _VECTOR_OUTPUTS):
-            outputs.append(lowerer.realize_vector(value))
+            outputs.append(lowerer.realize_vector(cast(VectorValue, value)))
         else:
             outputs.append(lowerer.realize(value))
     lowerer._create_output_markers(outputs)
