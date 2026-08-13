@@ -72,6 +72,7 @@ jobs:
 
       - name: Test and type-check
         run: |
+          uv run ruff format .
           uv run pytest
           uv run ruff check .
           uv run ruff format --check .
