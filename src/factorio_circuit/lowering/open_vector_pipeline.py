@@ -1,0 +1,1 @@
+"""Whole-vector lowering pipeline."""
