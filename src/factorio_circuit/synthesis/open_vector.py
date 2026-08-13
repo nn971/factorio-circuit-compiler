@@ -1,6 +1,7 @@
 """Whole-vector physical synthesis extension."""
 
 from dataclasses import replace
+from typing import Any
 
 from factorio_circuit.ir import abstract_physical as abstract
 from factorio_circuit.ir.physical import DeciderCombinator, SignalId, WireColor
@@ -17,7 +18,7 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
         signals: dict[int, SignalId],
         net_colors: dict[int, WireColor],
         annotation_descriptions: dict[int, str],
-    ):
+    ) -> Any:
         result = super()._materialize_entity(
             entity,
             signals,
