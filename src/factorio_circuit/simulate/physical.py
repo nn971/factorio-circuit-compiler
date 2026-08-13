@@ -212,10 +212,23 @@ def _eval_arithmetic(entity: ArithmeticCombinator, inputs: InputNetworks) -> Sig
     if entity.output_each:
         if not entity.left.each and not entity.right.each:
             raise ValueError("Each output requires an Each input operand")
+        result: SignalMap = {}
+        if entity.left.each and entity.right.each:
+            left_inputs = _combined_inputs(inputs, entity.left.networks)
+            right_inputs = _combined_inputs(inputs, entity.right.networks)
+            for signal in left_inputs.keys() | right_inputs.keys():
+                output = apply_binary(
+                    entity.operation,
+                    left_inputs.get(signal, 0),
+                    right_inputs.get(signal, 0),
+                )
+                if output != 0:
+                    result[signal] = output
+            return result
+
         each_operand = entity.left if entity.left.each else entity.right
         other = entity.right if entity.left.each else entity.left
         lane_inputs = _combined_inputs(inputs, each_operand.networks)
-        result: SignalMap = {}
         for signal, value in lane_inputs.items():
             other_value = _read_operand(other, inputs)
             output = apply_binary(

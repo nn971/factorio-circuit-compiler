@@ -21,6 +21,7 @@ from factorio_circuit.ir.abstract_physical import (
     NetConflict,
     Operand,
     OutputPort,
+    SignalAlias,
     SignalConflict,
     SignalDomain,
     SignalRef,
@@ -51,7 +52,12 @@ from factorio_circuit.ir.state import (
     VectorRegisterRead,
 )
 from factorio_circuit.optimize.compatibility import dynamic_operand
-from factorio_circuit.optimize.partition import ArithmeticPartition, partition_arithmetic
+from factorio_circuit.optimize.partition import (
+    ArithmeticPartition,
+    PairwiseArithmeticPartition,
+    partition_arithmetic,
+    partition_pairwise_arithmetic,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,14 +108,23 @@ class AbstractPhysicalLowerer:
         self.delay_cache: dict[tuple[int, SignalRef, int], RealizedValue] = {}
         self.net_builders: dict[int, _NetBuilder] = {}
         self.signal_conflict_keys: set[tuple[int, int]] = set()
+        self.signal_alias_keys: set[tuple[int, int]] = set()
         self.net_conflict_keys: set[tuple[int, int]] = set()
         self.use_count = self._count_uses()
         self.partition_for_op: dict[int, ArithmeticPartition] = {}
+        self.pairwise_partition_for_op: dict[int, PairwiseArithmeticPartition] = {}
         if enable_packing:
-            for partition in partition_arithmetic(module):
-                if partition.key is not None and len(partition.operations) > 1:
-                    for op in partition.operations:
-                        self.partition_for_op[id(op)] = partition
+            for arithmetic_partition in partition_arithmetic(module):
+                if (
+                    arithmetic_partition.key is not None
+                    and len(arithmetic_partition.operations) > 1
+                ):
+                    for op in arithmetic_partition.operations:
+                        self.partition_for_op[id(op)] = arithmetic_partition
+            for pairwise_partition in partition_pairwise_arithmetic(module):
+                if len(pairwise_partition.operations) > 1:
+                    for op in pairwise_partition.operations:
+                        self.pairwise_partition_for_op[id(op)] = pairwise_partition
 
     def lower(self) -> AbstractPhysicalCircuit:
         self._check_supported_scope()
@@ -589,6 +604,9 @@ class AbstractPhysicalLowerer:
         partition = self.partition_for_op.get(id(op))
         if partition is not None and self._try_emit_partition(partition):
             return self.memo[id(op)]
+        pairwise = self.pairwise_partition_for_op.get(id(op))
+        if pairwise is not None and self._try_emit_pairwise_partition(pairwise, op):
+            return self.memo[id(op)]
         return self._emit_scalar_binary(op.op, op.left, op.right, description=op.name)
 
     def _try_emit_partition(self, partition: ArithmeticPartition) -> bool:
@@ -638,6 +656,189 @@ class AbstractPhysicalLowerer:
                 phase=phase,
                 clean_single_lane=False,
             )
+        return True
+
+    def _try_emit_pairwise_partition(
+        self, partition: PairwiseArithmeticPartition, seed: BinaryOp
+    ) -> bool:
+        if id(seed) in self.memo:
+            return True
+
+        prepared: list[tuple[BinaryOp, RealizedValue, RealizedValue, int]] = []
+        for candidate in partition.operations:
+            if id(candidate) in self.memo:
+                continue
+            left = self._realize_operand_value(candidate.left)
+            right = self._realize_operand_value(candidate.right)
+            if not isinstance(left, RealizedValue) or not isinstance(right, RealizedValue):
+                continue
+            target_phase = max(left.phase, right.phase)
+            prepared.append((candidate, left, right, target_phase))
+
+        seed_record = next((item for item in prepared if item[0] is seed), None)
+        if seed_record is None:
+            return False
+        seed_phase = seed_record[3]
+
+        aligned: list[tuple[BinaryOp, RealizedValue, RealizedValue]] = []
+        for candidate, left, right, target_phase in prepared:
+            if target_phase != seed_phase:
+                continue
+            left = self.delay_to(left, target_phase)
+            right = self.delay_to(right, target_phase)
+            if not (left.clean_single_lane and right.clean_single_lane):
+                continue
+            if not (isinstance(left.signal, int) and isinstance(right.signal, int)):
+                continue
+            if left.net == right.net:
+                continue
+            aligned.append((candidate, left, right))
+
+        seed_aligned = next((item for item in aligned if item[0] is seed), None)
+        if seed_aligned is None:
+            return False
+
+        ordered = [seed_aligned, *(item for item in aligned if item[0] is not seed)]
+        selected: list[tuple[BinaryOp, RealizedValue, RealizedValue]] = []
+        for item in ordered:
+            trial: list[tuple[BinaryOp, RealizedValue, RealizedValue]] = [*selected, item]
+            if self._pairwise_group_is_feasible(trial):
+                selected = trial
+
+        if len(selected) < 2:
+            return False
+
+        left_nets = tuple(item[1].net for item in selected)
+        right_nets = tuple(item[2].net for item in selected)
+        entity = ArithmeticCombinator(
+            id=self._take_entity_id(),
+            operation=partition.operation,
+            left=Operand(each=True, nets=left_nets),
+            right=Operand(each=True, nets=right_nets),
+            output_each=True,
+            description=f"packed {len(selected)}× pairwise {partition.operation}",
+        )
+        self.circuit.entities.append(entity)
+        input_endpoint = Endpoint(entity.id, Connector.INPUT)
+        for net_id in dict.fromkeys((*left_nets, *right_nets)):
+            self._attach(net_id, input_endpoint)
+        for left_net in set(left_nets):
+            for right_net in set(right_nets):
+                self._add_net_conflict(
+                    left_net,
+                    right_net,
+                    "pairwise Each operands must use opposite wire colors",
+                )
+
+        output_signals: list[int] = []
+        for _candidate, left, right in selected:
+            assert isinstance(left.signal, int)
+            assert isinstance(right.signal, int)
+            self._add_signal_alias(
+                left.signal,
+                right.signal,
+                "pairwise Each operands must use the same concrete signal lane",
+            )
+            output_signals.append(left.signal)
+
+        output_net = self._new_net(
+            tuple(output_signals),
+            Endpoint(entity.id, Connector.OUTPUT),
+            label=f"packed pairwise {partition.operation} output",
+        )
+        phase = seed_phase + 1
+        for candidate, left, _right in selected:
+            assert isinstance(left.signal, int)
+            self.memo[id(candidate)] = RealizedValue(
+                signal=left.signal,
+                net=output_net,
+                phase=phase,
+                clean_single_lane=False,
+            )
+        return True
+
+    def _pairwise_group_is_feasible(
+        self, group: list[tuple[BinaryOp, RealizedValue, RealizedValue]]
+    ) -> bool:
+        left_nets = [item[1].net for item in group]
+        right_nets = [item[2].net for item in group]
+        if set(left_nets) & set(right_nets):
+            return False
+
+        left_signals: list[int] = []
+        aliases: list[tuple[int, int]] = []
+        for _candidate, left, right in group:
+            if not (isinstance(left.signal, int) and isinstance(right.signal, int)):
+                return False
+            left_signals.append(left.signal)
+            aliases.append((left.signal, right.signal))
+        if len(set(left_signals)) != len(left_signals):
+            return False
+
+        lane_conflicts = list(combinations(left_signals, 2))
+        if not self._signal_constraints_consistent(aliases, lane_conflicts):
+            return False
+
+        net_conflicts = [
+            (left_net, right_net) for left_net in set(left_nets) for right_net in set(right_nets)
+        ]
+        return self._net_constraints_bipartite(net_conflicts)
+
+    def _signal_constraints_consistent(
+        self,
+        aliases: list[tuple[int, int]],
+        conflicts: list[tuple[int, int]],
+    ) -> bool:
+        signal_ids = [signal.id for signal in self.circuit.signals]
+        parent = {signal_id: signal_id for signal_id in signal_ids}
+
+        def find(signal_id: int) -> int:
+            while parent[signal_id] != signal_id:
+                parent[signal_id] = parent[parent[signal_id]]
+                signal_id = parent[signal_id]
+            return signal_id
+
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[max(left_root, right_root)] = min(left_root, right_root)
+
+        for alias in self.circuit.signal_aliases:
+            union(alias.left, alias.right)
+        for left, right in aliases:
+            union(left, right)
+        for conflict in self.circuit.signal_conflicts:
+            if find(conflict.left) == find(conflict.right):
+                return False
+        return all(find(left) != find(right) for left, right in conflicts)
+
+    def _net_constraints_bipartite(self, extra: list[tuple[int, int]]) -> bool:
+        adjacency: dict[int, set[int]] = {net_id: set() for net_id in self.net_builders}
+        for conflict in self.circuit.net_conflicts:
+            adjacency[conflict.left].add(conflict.right)
+            adjacency[conflict.right].add(conflict.left)
+        for left, right in extra:
+            if left == right:
+                return False
+            adjacency[left].add(right)
+            adjacency[right].add(left)
+
+        colors: dict[int, int] = {}
+        for start in sorted(adjacency):
+            if start in colors:
+                continue
+            colors[start] = 0
+            stack = [start]
+            while stack:
+                current = stack.pop()
+                for neighbor in adjacency[current]:
+                    expected = colors[current] ^ 1
+                    if neighbor not in colors:
+                        colors[neighbor] = expected
+                        stack.append(neighbor)
+                    elif colors[neighbor] != expected:
+                        return False
         return True
 
     def _realize_compare(self, comparison: Compare) -> RealizedValue:
@@ -950,11 +1151,22 @@ class AbstractPhysicalLowerer:
             builder.endpoints.append(endpoint)
 
     def _add_signal_conflict(self, left: int, right: int, reason: str) -> None:
+        if left == right:
+            return
         key = (left, right) if left < right else (right, left)
         if key in self.signal_conflict_keys:
             return
         self.signal_conflict_keys.add(key)
         self.circuit.signal_conflicts.append(SignalConflict(key[0], key[1], reason))
+
+    def _add_signal_alias(self, left: int, right: int, reason: str) -> None:
+        if left == right:
+            return
+        key = (left, right) if left < right else (right, left)
+        if key in self.signal_alias_keys:
+            return
+        self.signal_alias_keys.add(key)
+        self.circuit.signal_aliases.append(SignalAlias(key[0], key[1], reason))
 
     def _add_net_conflict(self, left: int, right: int, reason: str) -> None:
         if left == right:

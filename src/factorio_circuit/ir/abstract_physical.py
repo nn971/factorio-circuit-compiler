@@ -86,6 +86,15 @@ class SignalConflict:
 
 
 @dataclass(frozen=True, slots=True)
+class SignalAlias:
+    """Require two abstract lanes to share one concrete Factorio signal identity."""
+
+    left: int
+    right: int
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class NetConflict:
     """Forbid two abstract nets from being electrically merged."""
 
@@ -202,6 +211,7 @@ class AbstractPhysicalCircuit:
     entities: list[AbstractEntity] = field(default_factory=list)
     nets: list[AbstractNet] = field(default_factory=list)
     signal_conflicts: list[SignalConflict] = field(default_factory=list)
+    signal_aliases: list[SignalAlias] = field(default_factory=list)
     net_conflicts: list[NetConflict] = field(default_factory=list)
     inputs: list[InputPort] = field(default_factory=list)
     outputs: list[OutputPort] = field(default_factory=list)
@@ -290,10 +300,24 @@ class AbstractPhysicalCircuit:
                 for signal_ref, _count in entity.signals:
                     self._validate_signal_ref(signal_ref, signal_ids)
 
+        conflict_pairs: set[tuple[int, int]] = set()
         for signal_conflict in self.signal_conflicts:
             self._validate_conflict(
                 signal_conflict.left, signal_conflict.right, signal_ids, "signal"
             )
+            conflict_pairs.add(
+                (
+                    min(signal_conflict.left, signal_conflict.right),
+                    max(signal_conflict.left, signal_conflict.right),
+                )
+            )
+        for signal_alias in self.signal_aliases:
+            self._validate_conflict(signal_alias.left, signal_alias.right, signal_ids, "signal")
+            if (
+                min(signal_alias.left, signal_alias.right),
+                max(signal_alias.left, signal_alias.right),
+            ) in conflict_pairs:
+                raise ValueError("signal pair cannot be both aliased and conflicting")
         for net_conflict in self.net_conflicts:
             self._validate_conflict(net_conflict.left, net_conflict.right, net_ids, "net")
 

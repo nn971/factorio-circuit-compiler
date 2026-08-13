@@ -137,14 +137,7 @@ class PhysicalSynthesizer:
         ) from last_routing_error
 
     def _allocate_signals(self, net_groups: dict[int, int]) -> dict[int, SignalId]:
-        """Greedily reuse concrete lanes across electrically disjoint net groups.
-
-        Two abstract signals interfere when a hard ``SignalConflict`` forbids aliasing or
-        when both are present on the same synthesized electrical network.  Otherwise the
-        same concrete Factorio signal identity is safe because the wire networks are
-        disconnected.  User-fixed signals remain globally reserved in this conservative
-        milestone.
-        """
+        """Color signal-alias classes over the concrete Factorio signal pool."""
 
         reserved = self._fixed_signal_ids()
         available = tuple(signal for signal in self.signal_pool if signal not in reserved)
@@ -153,7 +146,13 @@ class PhysicalSynthesizer:
                 "physical synthesis has no concrete virtual signals available for allocation"
             )
 
-        signal_groups: dict[int, set[int]] = {signal.id: set() for signal in self.circuit.signals}
+        alias_roots = self._signal_alias_roots()
+        members_by_root: dict[int, list[int]] = defaultdict(list)
+        for signal in self.circuit.signals:
+            members_by_root[alias_roots[signal.id]].append(signal.id)
+
+        signal_groups: dict[int, set[int]] = {root: set() for root in members_by_root}
+        group_members: dict[int, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
         for net in self.circuit.nets:
             if net.carries_dynamic_vector and net.signals:
                 raise ValueError(
@@ -162,31 +161,50 @@ class PhysicalSynthesizer:
                 )
             group = net_groups[net.id]
             for signal_id in net.signals:
-                signal_groups[signal_id].add(group)
+                root = alias_roots[signal_id]
+                signal_groups[root].add(group)
+                group_members[group][root].add(signal_id)
 
-        adjacency: dict[int, set[int]] = {signal.id: set() for signal in self.circuit.signals}
+        for group, by_root in group_members.items():
+            collapsed = [sorted(members) for members in by_root.values() if len(members) > 1]
+            if collapsed:
+                raise ValueError(
+                    "signal-alias constraint would collapse distinct lanes on synthesized "
+                    f"electrical group {group}: {collapsed}"
+                )
+
+        adjacency: dict[int, set[int]] = {root: set() for root in members_by_root}
         for conflict in self.circuit.signal_conflicts:
-            adjacency[conflict.left].add(conflict.right)
-            adjacency[conflict.right].add(conflict.left)
+            left = alias_roots[conflict.left]
+            right = alias_roots[conflict.right]
+            if left == right:
+                raise ValueError(
+                    "signal alias class contains a pair that is also required to conflict"
+                )
+            adjacency[left].add(right)
+            adjacency[right].add(left)
 
-        signal_ids = sorted(adjacency)
-        for index, left in enumerate(signal_ids):
-            for right in signal_ids[index + 1 :]:
+        roots = sorted(adjacency)
+        for index, left in enumerate(roots):
+            for right in roots[index + 1 :]:
                 if signal_groups[left] & signal_groups[right]:
                     adjacency[left].add(right)
                     adjacency[right].add(left)
 
         by_id = {signal.id: signal for signal in self.circuit.signals}
-        order = sorted(signal_ids, key=lambda signal_id: (-len(adjacency[signal_id]), signal_id))
-        result: dict[int, SignalId] = {}
-        for signal_id in order:
-            signal = by_id[signal_id]
-            if signal.domain not in {abstract.SignalDomain.ANY, abstract.SignalDomain.VIRTUAL}:
-                raise ValueError(
-                    f"baseline physical synthesis cannot allocate {signal.domain.value} signals yet"
-                )
+        order = sorted(roots, key=lambda root: (-len(adjacency[root]), root))
+        root_allocation: dict[int, SignalId] = {}
+        for root in order:
+            for signal_id in members_by_root[root]:
+                domain = by_id[signal_id].domain
+                if domain not in {abstract.SignalDomain.ANY, abstract.SignalDomain.VIRTUAL}:
+                    raise ValueError(
+                        f"baseline physical synthesis cannot allocate {domain.value} signals yet"
+                    )
             forbidden = {
-                result[neighbor] for neighbor in adjacency[signal_id] if neighbor in result
+                root_allocation[neighbor]
+                for neighbor in adjacency[root]
+                if neighbor in root_allocation
             }
             concrete = next((item for item in available if item not in forbidden), None)
             if concrete is None:
@@ -194,8 +212,18 @@ class PhysicalSynthesizer:
                     "physical synthesis exhausted the concrete virtual-signal pool while "
                     "coloring the abstract signal-interference graph"
                 )
-            result[signal_id] = concrete
-        return result
+            root_allocation[root] = concrete
+
+        return {
+            signal.id: root_allocation[alias_roots[signal.id]] for signal in self.circuit.signals
+        }
+
+    def _signal_alias_roots(self) -> dict[int, int]:
+        signal_ids = [signal.id for signal in self.circuit.signals]
+        groups = _UnionFind.for_items(signal_ids)
+        for alias in self.circuit.signal_aliases:
+            groups.union(alias.left, alias.right)
+        return {signal_id: groups.find(signal_id) for signal_id in signal_ids}
 
     def _fixed_signal_ids(self) -> set[SignalId]:
         result = {signal for net in self.circuit.nets for signal in net.fixed_signals}
@@ -332,7 +360,10 @@ class PhysicalSynthesizer:
         right = self.circuit.net_by_id(right_id)
         if left.carries_dynamic_vector or right.carries_dynamic_vector:
             return False
-        if set(left.signals) & set(right.signals):
+        alias_roots = self._signal_alias_roots()
+        left_aliases = {alias_roots[signal] for signal in left.signals}
+        right_aliases = {alias_roots[signal] for signal in right.signals}
+        if left_aliases & right_aliases:
             return False
         return not set(left.fixed_signals) & set(right.fixed_signals)
 
@@ -346,16 +377,19 @@ class PhysicalSynthesizer:
             self._pair(conflict.left, conflict.right) for conflict in self.circuit.net_conflicts
         }
         unsafe: set[tuple[int, int]] = set()
+        alias_roots = self._signal_alias_roots()
         for net_ids in members.values():
             for left_id, right_id in combinations(sorted(net_ids), 2):
                 pair = self._pair(left_id, right_id)
                 left = self.circuit.net_by_id(left_id)
                 right = self.circuit.net_by_id(right_id)
+                left_aliases = {alias_roots[signal] for signal in left.signals}
+                right_aliases = {alias_roots[signal] for signal in right.signals}
                 if (
                     pair in explicit
                     or left.carries_dynamic_vector
                     or right.carries_dynamic_vector
-                    or set(left.signals) & set(right.signals)
+                    or left_aliases & right_aliases
                     or set(left.fixed_signals) & set(right.fixed_signals)
                 ):
                     unsafe.add(pair)
