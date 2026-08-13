@@ -111,15 +111,26 @@ def _decider_conditions(entity: DeciderCombinator) -> dict[str, Any]:
         )
         for condition in entity.additional_conditions
     )
-    output = _decider_output(
-        entity.output_signal,
-        copy_count=entity.output_copy_count_from_input,
-        constant=entity.output_constant,
-        networks=entity.output_networks,
+    outputs = [
+        _decider_output(
+            entity.output_signal,
+            copy_count=entity.output_copy_count_from_input,
+            constant=entity.output_constant,
+            networks=entity.output_networks,
+        )
+    ]
+    outputs.extend(
+        _decider_output(
+            output.signal,
+            copy_count=output.copy_count_from_input,
+            constant=output.constant,
+            networks=output.output_networks,
+        )
+        for output in entity.additional_outputs
     )
     if entity.else_output_signal is not None:
         raise ValueError("the current Factorio target does not support decider else outputs")
-    return {"conditions": conditions, "outputs": [output]}
+    return {"conditions": conditions, "outputs": outputs}
 
 
 def _decider_condition(

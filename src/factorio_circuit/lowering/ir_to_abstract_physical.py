@@ -16,6 +16,7 @@ from factorio_circuit.ir.abstract_physical import (
     ConstantCombinator,
     DeciderCombinator,
     DeciderCondition,
+    DeciderOutput,
     Endpoint,
     InputPort,
     NetConflict,
@@ -113,6 +114,8 @@ class AbstractPhysicalLowerer:
         self.use_count = self._count_uses()
         self.partition_for_op: dict[int, ArithmeticPartition] = {}
         self.pairwise_partition_for_op: dict[int, PairwiseArithmeticPartition] = {}
+        self.shared_selects_by_condition: dict[int, tuple[Select, ...]] = {}
+        self.output_value_ids = {id(value) for value in module.output.values}
         if enable_packing:
             for arithmetic_partition in partition_arithmetic(module):
                 if (
@@ -125,6 +128,13 @@ class AbstractPhysicalLowerer:
                 if len(pairwise_partition.operations) > 1:
                     for op in pairwise_partition.operations:
                         self.pairwise_partition_for_op[id(op)] = pairwise_partition
+            select_groups: dict[int, list[Select]] = {}
+            for operation in module.operations:
+                if isinstance(operation, Select) and isinstance(operation.condition, Compare):
+                    select_groups.setdefault(id(operation.condition), []).append(operation)
+            self.shared_selects_by_condition = {
+                key: tuple(values) for key, values in select_groups.items() if len(values) > 1
+            }
 
     def lower(self) -> AbstractPhysicalCircuit:
         self._check_supported_scope()
@@ -867,7 +877,223 @@ class AbstractPhysicalLowerer:
         )
         return RealizedValue(out, net, phase + 1)
 
+    def _try_emit_shared_compare_selects(self, seed: Select) -> RealizedValue | None:
+        condition = seed.condition
+        if not isinstance(condition, Compare):
+            return None
+        group = self.shared_selects_by_condition.get(id(condition), ())
+        if len(group) < 2 or any(id(item) in self.memo for item in group):
+            return None
+        if not all(id(item) in self.output_value_ids for item in group):
+            return None
+
+        prepared = self._prepare_compare_select(condition, group)
+        if prepared is None:
+            return None
+        left, right, phase = prepared
+
+        true_outputs: list[DeciderOutput] = []
+        false_outputs: list[DeciderOutput] = []
+        output_signals: list[int] = []
+        for item in group:
+            true_source = self._select_compare_source(item.when_true, condition, left, right)
+            false_source = self._select_compare_source(item.when_false, condition, left, right)
+            if true_source is None or false_source is None or true_source is false_source:
+                return None
+            output_signal = self._new_signal(item.name or "select")
+            output_signals.append(output_signal)
+            true_outputs.append(
+                DeciderOutput(
+                    signal=output_signal,
+                    copy_count_from_input=True,
+                    copy_count_nets=(true_source.net,),
+                )
+            )
+            false_outputs.append(
+                DeciderOutput(
+                    signal=output_signal,
+                    copy_count_from_input=True,
+                    copy_count_nets=(false_source.net,),
+                )
+            )
+
+        true_entity = self._emit_direct_compare_decider(
+            condition,
+            left,
+            right,
+            primary=true_outputs[0],
+            additional=tuple(true_outputs[1:]),
+            comparator=condition.op,
+            description=f"fused {len(group)}-output compare/select true branch",
+        )
+        false_entity = self._emit_direct_compare_decider(
+            condition,
+            left,
+            right,
+            primary=false_outputs[0],
+            additional=tuple(false_outputs[1:]),
+            comparator=_complement_compare(condition.op),
+            description=f"fused {len(group)}-output compare/select false branch",
+        )
+        self._commit_compare_lane_constraints(left, right)
+        output_net = self._new_net(
+            tuple(output_signals),
+            Endpoint(true_entity.id, Connector.OUTPUT),
+            label="fused compare/select outputs",
+        )
+        self._attach(output_net, Endpoint(false_entity.id, Connector.OUTPUT))
+        for item, output_signal in zip(group, output_signals, strict=True):
+            self.memo[id(item)] = RealizedValue(
+                output_signal, output_net, phase + 1, clean_single_lane=False
+            )
+        return self.memo[id(seed)]
+
+    def _try_emit_inline_compare_select(self, select: Select) -> RealizedValue | None:
+        condition = select.condition
+        if not isinstance(condition, Compare):
+            return None
+        if id(condition) not in self.shared_selects_by_condition:
+            return None
+        prepared = self._prepare_compare_select(condition, (select,))
+        if prepared is None:
+            return None
+        left, right, phase = prepared
+        true_source = self._select_compare_source(select.when_true, condition, left, right)
+        false_source = self._select_compare_source(select.when_false, condition, left, right)
+        if true_source is None or false_source is None or true_source is false_source:
+            return None
+
+        output_signal = self._new_signal(select.name or "select")
+        true_output = DeciderOutput(
+            signal=output_signal,
+            copy_count_from_input=True,
+            copy_count_nets=(true_source.net,),
+        )
+        false_output = DeciderOutput(
+            signal=output_signal,
+            copy_count_from_input=True,
+            copy_count_nets=(false_source.net,),
+        )
+        true_entity = self._emit_direct_compare_decider(
+            condition,
+            left,
+            right,
+            primary=true_output,
+            additional=(),
+            comparator=condition.op,
+            description=f"{select.name or 'select'}: direct compare true branch",
+        )
+        false_entity = self._emit_direct_compare_decider(
+            condition,
+            left,
+            right,
+            primary=false_output,
+            additional=(),
+            comparator=_complement_compare(condition.op),
+            description=f"{select.name or 'select'}: direct compare false branch",
+        )
+        self._commit_compare_lane_constraints(left, right)
+        output_net = self._new_net(
+            (output_signal,),
+            Endpoint(true_entity.id, Connector.OUTPUT),
+            label=select.name or "direct compare/select",
+        )
+        self._attach(output_net, Endpoint(false_entity.id, Connector.OUTPUT))
+        result = RealizedValue(output_signal, output_net, phase + 1)
+        self.memo[id(select)] = result
+        return result
+
+    def _prepare_compare_select(
+        self, condition: Compare, group: tuple[Select, ...]
+    ) -> tuple[RealizedValue, RealizedValue, int] | None:
+        if any(
+            not (item.when_true is condition.left or item.when_true is condition.right)
+            or not (item.when_false is condition.left or item.when_false is condition.right)
+            for item in group
+        ):
+            return None
+        left_value = self._realize_operand_value(condition.left)
+        right_value = self._realize_operand_value(condition.right)
+        if not isinstance(left_value, RealizedValue) or not isinstance(right_value, RealizedValue):
+            return None
+        left, right, phase = self._align(left_value, right_value)
+        assert isinstance(left, RealizedValue) and isinstance(right, RealizedValue)
+        if not (left.clean_single_lane and right.clean_single_lane):
+            return None
+        if not (isinstance(left.signal, int) and isinstance(right.signal, int)):
+            return None
+        if left.net == right.net:
+            return None
+        if not self._signal_constraints_consistent([(left.signal, right.signal)], []):
+            return None
+        if not self._net_constraints_bipartite([(left.net, right.net)]):
+            return None
+        return left, right, phase
+
+    @staticmethod
+    def _select_compare_source(
+        value: Value,
+        condition: Compare,
+        left: RealizedValue | None,
+        right: RealizedValue | None,
+    ) -> RealizedValue | None:
+        if value is condition.left:
+            return left
+        if value is condition.right:
+            return right
+        return None
+
+    def _emit_direct_compare_decider(
+        self,
+        condition: Compare,
+        left: RealizedValue,
+        right: RealizedValue,
+        *,
+        primary: DeciderOutput,
+        additional: tuple[DeciderOutput, ...],
+        comparator: str,
+        description: str,
+    ) -> DeciderCombinator:
+        entity = DeciderCombinator(
+            id=self._take_entity_id(),
+            comparator=comparator,
+            left=Operand(each=True, nets=(left.net,)),
+            right=Operand(each=True, nets=(right.net,)),
+            output_signal=primary.signal,
+            output_constant=primary.constant,
+            output_copy_count_from_input=primary.copy_count_from_input,
+            copy_count_nets=primary.copy_count_nets,
+            additional_outputs=additional,
+            description=description,
+        )
+        self.circuit.entities.append(entity)
+        endpoint = Endpoint(entity.id, Connector.INPUT)
+        self._attach(left.net, endpoint)
+        self._attach(right.net, endpoint)
+        return entity
+
+    def _commit_compare_lane_constraints(self, left: RealizedValue, right: RealizedValue) -> None:
+        assert isinstance(left.signal, int) and isinstance(right.signal, int)
+        self._add_signal_alias(
+            left.signal,
+            right.signal,
+            "direct Each comparison operands must use the same concrete signal lane",
+        )
+        self._add_net_conflict(
+            left.net,
+            right.net,
+            "direct Each comparison operands must use opposite wire colors",
+        )
+
     def _realize_select(self, select: Select) -> RealizedValue:
+        if self.enable_packing and isinstance(select.condition, Compare):
+            fused = self._try_emit_shared_compare_selects(select)
+            if fused is not None:
+                return fused
+            inlined = self._try_emit_inline_compare_select(select)
+            if inlined is not None:
+                return inlined
+
         condition = self.realize(select.condition)
         when_true = self._realize_operand_value(select.when_true)
         when_false = self._realize_operand_value(select.when_false)
@@ -1222,3 +1448,18 @@ def _normalize_compare(left: Value, right: Value, op: str) -> tuple[Value, Value
         ">=": "<=",
     }[op]
     return right, left, swapped
+
+
+def _complement_compare(op: str) -> str:
+    complements = {
+        "==": "!=",
+        "!=": "==",
+        "<": ">=",
+        "<=": ">",
+        ">": "<=",
+        ">=": "<",
+    }
+    try:
+        return complements[op]
+    except KeyError as exc:  # pragma: no cover - semantic IR validates comparators
+        raise ValueError(f"unsupported comparison operator {op!r}") from exc

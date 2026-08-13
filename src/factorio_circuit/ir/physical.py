@@ -62,6 +62,14 @@ class DeciderCondition:
 
 
 @dataclass(frozen=True, slots=True)
+class DeciderOutput:
+    signal: SignalId
+    constant: int = 1
+    copy_count_from_input: bool = False
+    output_networks: tuple[WireColor, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DeciderCombinator:
     id: int
     comparator: str
@@ -72,6 +80,7 @@ class DeciderCombinator:
     output_copy_count_from_input: bool = False
     output_networks: tuple[WireColor, ...] | None = None
     additional_conditions: tuple[DeciderCondition, ...] = ()
+    additional_outputs: tuple[DeciderOutput, ...] = ()
     else_output_signal: SignalId | None = None
     else_output_constant: int = 1
     else_copy_count_from_input: bool = False

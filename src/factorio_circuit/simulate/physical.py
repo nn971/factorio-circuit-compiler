@@ -258,6 +258,23 @@ def _eval_decider(entity: DeciderCombinator, inputs: InputNetworks) -> SignalMap
             for condition in entity.additional_conditions
         ),
     ]
+    outputs = [
+        (
+            entity.output_signal,
+            entity.output_copy_count_from_input,
+            entity.output_constant,
+            entity.output_networks,
+        ),
+        *(
+            (
+                output.signal,
+                output.copy_count_from_input,
+                output.constant,
+                output.output_networks,
+            )
+            for output in entity.additional_outputs
+        ),
+    ]
     each_operands = [
         operand
         for _comparator, left, right, _compare_type in conditions
@@ -269,25 +286,23 @@ def _eval_decider(entity: DeciderCombinator, inputs: InputNetworks) -> SignalMap
         lanes: set[SignalId] = set()
         for operand in each_operands:
             lanes.update(_combined_inputs(inputs, operand.networks))
-        output_value = 0
+        result: SignalMap = {}
         for lane in lanes:
             if not _decider_conditions_match(conditions, inputs, each_signal=lane):
                 continue
-            if entity.output_copy_count_from_input:
-                value = _read_signal(lane, inputs, entity.output_networks)
-            else:
-                value = i32(entity.output_constant)
-            output_value = i32(output_value + value)
-        return {} if output_value == 0 else {entity.output_signal: output_value}
+            for signal, copy_count, constant, networks in outputs:
+                value = _read_signal(lane, inputs, networks) if copy_count else i32(constant)
+                _add_signal(result, signal, value)
+        return result
 
     if _decider_conditions_match(conditions, inputs):
-        return _decider_output(
-            entity.output_signal,
-            entity.output_copy_count_from_input,
-            entity.output_constant,
-            entity.output_networks,
-            inputs,
-        )
+        matched_result: SignalMap = {}
+        for signal, copy_count, constant, networks in outputs:
+            for output_signal, value in _decider_output(
+                signal, copy_count, constant, networks, inputs
+            ).items():
+                _add_signal(matched_result, output_signal, value)
+        return matched_result
     if entity.else_output_signal is not None:
         return _decider_output(
             entity.else_output_signal,

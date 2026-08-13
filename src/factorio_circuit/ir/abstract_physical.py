@@ -153,6 +153,20 @@ class DeciderCondition:
 
 
 @dataclass(frozen=True, slots=True)
+class DeciderOutput:
+    """One additional normal output of a Factorio decider combinator."""
+
+    signal: int
+    constant: int = 1
+    copy_count_from_input: bool = False
+    copy_count_nets: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.copy_count_nets and not self.copy_count_from_input:
+            raise ValueError("copy-count net selection requires copy_count_from_input")
+
+
+@dataclass(frozen=True, slots=True)
 class DeciderCombinator:
     id: int
     comparator: str
@@ -163,6 +177,7 @@ class DeciderCombinator:
     output_copy_count_from_input: bool = False
     copy_count_nets: tuple[int, ...] = ()
     additional_conditions: tuple[DeciderCondition, ...] = ()
+    additional_outputs: tuple[DeciderOutput, ...] = ()
     else_output_signal: int | None = None
     else_output_constant: int = 1
     else_copy_count_from_input: bool = False
@@ -293,6 +308,9 @@ class AbstractPhysicalCircuit:
                 for condition in entity.additional_conditions:
                     self._validate_operand(condition.left, signal_ids, net_ids)
                     self._validate_operand(condition.right, signal_ids, net_ids)
+                for output in entity.additional_outputs:
+                    _require(signal_ids, output.signal, "signal")
+                    self._validate_net_refs(output.copy_count_nets, net_ids)
                 if entity.else_output_signal is not None:
                     _require(signal_ids, entity.else_output_signal, "signal")
                     self._validate_net_refs(entity.else_copy_count_nets, net_ids)

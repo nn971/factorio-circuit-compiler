@@ -19,6 +19,7 @@ from factorio_circuit.ir.physical import (
     ConstantCombinator,
     DeciderCombinator,
     DeciderCondition,
+    DeciderOutput,
     InputPort,
     Operand,
     OutputPort,
@@ -611,6 +612,15 @@ class PhysicalSynthesizer:
                         compare_type=condition.compare_type,
                     )
                     for condition in entity.additional_conditions
+                ),
+                additional_outputs=tuple(
+                    DeciderOutput(
+                        signal=signals[output.signal],
+                        constant=output.constant,
+                        copy_count_from_input=output.copy_count_from_input,
+                        output_networks=self._network_selection(output.copy_count_nets, net_colors),
+                    )
+                    for output in entity.additional_outputs
                 ),
                 else_output_signal=(
                     None
