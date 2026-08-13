@@ -81,7 +81,7 @@ def _synthesize(
     placement: PlacementOptions | None,
 ) -> Layout:
     if has_state:
-        return synthesize_layout(
+        return synthesize_vector_layout(
             circuit,
             safe_wire_span=safe_wire_span,
             placement=placement,
