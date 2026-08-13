@@ -6,7 +6,6 @@ on:
       - agent/pairwise-arithmetic-packing
     paths:
       - .github/workflows/apply-pairwise-pack.yml
-      - scripts/apply_pairwise_pack.py.gz.b64
 
 permissions:
   contents: write
@@ -26,14 +25,19 @@ jobs:
           cache: pip
       - name: Install dev dependencies
         run: python -m pip install -e '.[dev]'
-      - name: Decode transformation
+      - name: Recover verified transformation from git history
         run: |
-          base64 -d scripts/apply_pairwise_pack.py.gz.b64 | gzip -d > /tmp/apply_pairwise_pack.py
+          git show 794306c484a3d2dcf720bbe053e666b75b061a07:scripts/apply_pairwise_pack.py.gz.b64 \
+            | base64 -d | gzip -d > /tmp/apply_pairwise_pack.py
           python -m py_compile /tmp/apply_pairwise_pack.py
       - name: Apply source transformation
         run: python /tmp/apply_pairwise_pack.py
       - name: Remove temporary transformation payload
-        run: rm scripts/apply_pairwise_pack.py.gz.b64
+        run: rm -f scripts/apply_pairwise_pack.py.gz.b64
+      - name: Canonicalize changed Python
+        run: |
+          ruff check --fix .
+          ruff format .
       - name: Compile changed Python
         run: python -m compileall src tests examples
       - name: Pytest
