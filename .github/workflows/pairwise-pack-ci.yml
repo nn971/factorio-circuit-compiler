@@ -1,0 +1,40 @@
+name: Pairwise arithmetic packing
+
+on:
+  push:
+    branches:
+      - agent/pairwise-arithmetic-packing
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dev dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Pytest
+        run: pytest
+      - name: Ruff check
+        run: ruff check .
+      - name: Ruff format check
+        run: ruff format --check .
+      - name: Mypy
+        run: mypy src
+      - name: Generate WHT-32 blueprint
+        run: |
+          python examples/walsh_hadamard.py 5 > /tmp/wht32.txt
+          tail -n 1 /tmp/wht32.txt | grep '^0'
+          head -n 2 /tmp/wht32.txt
+      - name: Generate sorting-8 blueprint
+        run: |
+          python examples/sorting_network.py 3 > /tmp/sort8.txt
+          tail -n 1 /tmp/sort8.txt | grep '^0'
+          head -n 2 /tmp/sort8.txt
