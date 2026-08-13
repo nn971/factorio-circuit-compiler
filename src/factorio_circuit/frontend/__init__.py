@@ -25,6 +25,7 @@ from .symbolic import (
     Input,
     LogicalTime,
     SignalsExpr as _SignalsExpr,
+    SignalsInput as _BaseSignalsInput,
 )
 
 
@@ -129,11 +130,11 @@ class SignalsInput(SignalsExpr):
 class Circuit(_Circuit):
     """Public circuit builder with runtime-open whole-vector expressions."""
 
-    def signals(self, name: str) -> SignalsInput:
+    def signals(self, name: str) -> _BaseSignalsInput:
         self._claim_name(name, "input")
         value = VectorInput(name)
         self._vector_inputs.append(value)
-        return SignalsInput(self, value)
+        return cast(_BaseSignalsInput, SignalsInput(self, value))
 
     def constant_signals(self, signals: dict[SignalId, int]) -> SignalsExpr:
         normalized: list[tuple[SignalId, int]] = []
