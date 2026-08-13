@@ -32,6 +32,92 @@ jobs:
           python -m py_compile /tmp/apply_pairwise_pack.py
       - name: Apply source transformation
         run: python /tmp/apply_pairwise_pack.py
+      - name: Fix strict typing in generated changes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text()
+              if text.count(old) != 1:
+                  raise RuntimeError(f"expected exactly one typing-fix target in {path}")
+              target.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "src/factorio_circuit/ir/abstract_physical.py",
+              '''        conflict_pairs: set[tuple[int, int]] = set()
+          for signal_conflict in self.signal_conflicts:
+              self._validate_conflict(
+                  signal_conflict.left, signal_conflict.right, signal_ids, "signal"
+              )
+              conflict_pairs.add(tuple(sorted((signal_conflict.left, signal_conflict.right))))
+          for signal_alias in self.signal_aliases:
+              self._validate_conflict(signal_alias.left, signal_alias.right, signal_ids, "signal")
+              if tuple(sorted((signal_alias.left, signal_alias.right))) in conflict_pairs:
+                  raise ValueError("signal pair cannot be both aliased and conflicting")
+          ''',
+              '''        conflict_pairs: set[tuple[int, int]] = set()
+          for signal_conflict in self.signal_conflicts:
+              self._validate_conflict(
+                  signal_conflict.left, signal_conflict.right, signal_ids, "signal"
+              )
+              conflict_pair = (
+                  min(signal_conflict.left, signal_conflict.right),
+                  max(signal_conflict.left, signal_conflict.right),
+              )
+              conflict_pairs.add(conflict_pair)
+          for signal_alias in self.signal_aliases:
+              self._validate_conflict(signal_alias.left, signal_alias.right, signal_ids, "signal")
+              alias_pair = (
+                  min(signal_alias.left, signal_alias.right),
+                  max(signal_alias.left, signal_alias.right),
+              )
+              if alias_pair in conflict_pairs:
+                  raise ValueError("signal pair cannot be both aliased and conflicting")
+          ''',
+          )
+
+          replace_once(
+              "src/factorio_circuit/lowering/ir_to_abstract_physical.py",
+              '''            for partition in partition_arithmetic(module):
+                  if partition.key is not None and len(partition.operations) > 1:
+                      for op in partition.operations:
+                          self.partition_for_op[id(op)] = partition
+              for partition in partition_pairwise_arithmetic(module):
+                  if len(partition.operations) > 1:
+                      for op in partition.operations:
+                          self.pairwise_partition_for_op[id(op)] = partition
+          ''',
+              '''            for arithmetic_partition in partition_arithmetic(module):
+                  if arithmetic_partition.key is not None and len(arithmetic_partition.operations) > 1:
+                      for op in arithmetic_partition.operations:
+                          self.partition_for_op[id(op)] = arithmetic_partition
+              for pairwise_partition in partition_pairwise_arithmetic(module):
+                  if len(pairwise_partition.operations) > 1:
+                      for op in pairwise_partition.operations:
+                          self.pairwise_partition_for_op[id(op)] = pairwise_partition
+          ''',
+          )
+
+          replace_once(
+              "src/factorio_circuit/lowering/ir_to_abstract_physical.py",
+              '''        ordered = [seed_aligned, *(item for item in aligned if item[0] is not seed)]
+          selected: list[tuple[BinaryOp, RealizedValue, RealizedValue]] = []
+          for candidate in ordered:
+              trial = [*selected, candidate]
+              if self._pairwise_group_is_feasible(trial):
+                  selected = trial
+          ''',
+              '''        ordered = [seed_aligned, *(item for item in aligned if item[0] is not seed)]
+          selected: list[tuple[BinaryOp, RealizedValue, RealizedValue]] = []
+          for item in ordered:
+              trial: list[tuple[BinaryOp, RealizedValue, RealizedValue]] = [*selected, item]
+              if self._pairwise_group_is_feasible(trial):
+                  selected = trial
+          ''',
+          )
+          PY
       - name: Remove temporary transformation payload
         run: rm -f scripts/apply_pairwise_pack.py.gz.b64
       - name: Canonicalize changed Python
