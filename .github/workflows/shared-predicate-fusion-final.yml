@@ -46,7 +46,20 @@ jobs:
           good = '''        if any(\n            not (item.when_true is condition.left or item.when_true is condition.right)\n            or not (item.when_false is condition.left or item.when_false is condition.right)\n            for item in group\n        ):\n            return None\n'''
           if bad not in text:
               raise SystemExit('expected generated compare/select preflight not found')
-          path.write_text(text.replace(bad, good, 1))
+          text = text.replace(bad, good, 1)
+          stale_loop = '''            for op in module.operations:\n                if isinstance(op, Select) and isinstance(op.condition, Compare):\n                    select_groups.setdefault(id(op.condition), []).append(op)\n'''
+          fixed_loop = '''            for operation in module.operations:\n                if isinstance(operation, Select) and isinstance(operation.condition, Compare):\n                    select_groups.setdefault(id(operation.condition), []).append(operation)\n'''
+          if stale_loop not in text:
+              raise SystemExit('expected shared-select collection loop not found')
+          path.write_text(text.replace(stale_loop, fixed_loop, 1))
+
+          simulator = Path('src/factorio_circuit/simulate/physical.py')
+          simulator_text = simulator.read_text()
+          stale_result = '''    if _decider_conditions_match(conditions, inputs):\n        result: SignalMap = {}\n        for signal, copy_count, constant, networks in outputs:\n            for output_signal, value in _decider_output(\n                signal, copy_count, constant, networks, inputs\n            ).items():\n                _add_signal(result, output_signal, value)\n        return result\n'''
+          fixed_result = '''    if _decider_conditions_match(conditions, inputs):\n        matched_result: SignalMap = {}\n        for signal, copy_count, constant, networks in outputs:\n            for output_signal, value in _decider_output(\n                signal, copy_count, constant, networks, inputs\n            ).items():\n                _add_signal(matched_result, output_signal, value)\n        return matched_result\n'''
+          if stale_result not in simulator_text:
+              raise SystemExit('expected repeated simulator result binding not found')
+          simulator.write_text(simulator_text.replace(stale_result, fixed_result, 1))
 
           benchmark_test = Path('tests/integration/test_layout_benchmark_examples.py')
           benchmark_text = benchmark_test.read_text()
