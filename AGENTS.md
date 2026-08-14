@@ -1,136 +1,106 @@
 # AGENTS.md
 
-## Project purpose
+## Repository purpose
 
-Build an experimental compiler from a symbolic Python circuit EDSL to optimized Factorio 2.x
-circuit-network blueprints. Prioritize correct timed behavior and Factorio-specific combinator-count
-reduction.
+This repository compiles symbolic Python circuit descriptions into Factorio circuit-network
+blueprints.
 
-## Architectural invariants
+Canonical pipeline:
 
-1. Keep the pipeline small: symbolic Python elaboration -> logical circuit -> abstract physical IR -> physical synthesis/Layout -> blueprint serialization.
-2. Python outside symbolic operations is ordinary elaboration/metaprogramming Python.
-3. `Circuit`, source objects, `Expr`, and built-in state objects are the public frontend; do not revive
-   AST parsing as the primary language model.
-4. Symbolic expressions denote logical streams; physical combinator phase is inferred later.
-5. Raw input sources may be sampled at explicit freshness offsets; derived expressions have opaque
-   execution timing and are not sampleable sources.
-6. Keep useful state primitives recognizable until Factorio-specific realization.
-7. Compiler-chosen signal identities, red/green wiring, and entity coordinates are late resources;
-   user-selected target signals remain fixed semantic inputs to physical synthesis.
-8. Validate physical behavior with tick-level simulation and in-game blueprints.
-9. Treat naïve physical latency as a property of that realization rather than an intrinsic semantic
-   lower bound.
+1. symbolic frontend / logical streams
+2. semantic IR with explicit state transitions
+3. abstract physical IR with exact Factorio combinators and abstract nets/signals
+4. physical synthesis: concrete signals, wire colors, placement/layout
+5. blueprint serialization
 
-## Factorio target conventions
+Physical synthesis owns resource allocation and layout. Blueprint generation only serializes the
+final `Layout`.
 
-- red and green are distinct wire networks;
-- each network carries a sparse map `SignalId -> signed i32`;
-- same-name contributions add;
-- arithmetic/decider combinators have one-tick latency;
-- `Each` is a first-class vectorization/state mechanism;
-- initial backend focuses on constant, arithmetic, and decider combinators;
-- selector combinator remains postponed;
-- blueprint generation must respect finite wire reach.
+## Timing invariants
 
-## Current source/timing model
+Logical time and Factorio game ticks are different coordinates.
 
-A `Circuit` describes deterministic logical streams indexed by invocation tick `t`.
+- `source.sample()` observes an input or register at the current logical step.
+- `circuit.step(n)` advances logical time by `n` steps.
+- `Circuit.tick()` is reserved for future explicit physical-tick control and currently must not be
+  used as a logical-time alias.
+- `register.value` is compatibility-only; new code uses `register.sample()`.
+- Stateless combinators preserve logical step and add physical latency.
+- Each connected state clock domain has an inferred integer physical period `P`.
+- A register/value phase `phi` maps logical step `k` to physical tick `phi + k*P`.
+- Feed-forward latency does not increase `P`; recurrence constraints do.
+- Ordinary state dependencies force the involved registers into the same logical clock domain.
+- Independent state components may have different periods.
+- Genuine state communication across different periods requires explicit future rate-crossing
+  semantics; do not silently invent same-index behavior.
+- External inputs are physical sources and may conceptually be sampled by multiple domains.
+- A zero-logical-distance positive-latency cycle remains illegal for every period.
 
-```python
-c = Circuit("example")
-x = c.input("x")
-y = (x + 1) * 2
-c.output("y", y)
+For a state dependency with source logical offset `r`, target commit offset `c`, physical latency
+`L`, shared period `P`, and register phases `phi`, the analyzer uses the difference constraint
+
+```text
+phi_target >= phi_source + (r - c - 1) * P + L + 1
 ```
 
-Operators construct symbolic IR. Python control flow is elaboration-time control flow; use
-`condition.select(a, b)` for runtime dataflow branching.
+and chooses the smallest feasible integer `P` per domain.
 
-`c.tick(n)` / `c.tick_until(n)` advance a freshness cursor only. They do not mutate expressions that
-were already constructed.
+For `P>1`, physical lowering must gate state writes so intermediate game ticks hold state. Period
+inference without physical commit gating is incorrect.
 
-```python
-x0 = x
-c.tick(3)
-x3 = x.sample()
-```
+## Frontend / state
 
-means `x0[t] = X[t]` and `x3[t] = X[t+3]`.
+`Circuit`, `Expr`, `SignalsExpr`, `AccumulatorReg`, and `FreezeReg` are the public symbolic frontend.
+Whole-vector runtime-open expressions currently include arithmetic, positive filtering, `any()`,
+`gate()`, and selector `max()`.
 
-State `.value` observations also carry the current freshness offset.
+`AccumulatorReg` and `FreezeReg` are foundational state primitives. Prefer constructing higher
+structures such as queues/stacks from general primitives before proposing compiler-specific state
+objects.
 
-## State ordering
+Register reads and updates retain strict elaboration ordering. A read cannot split one compound
+state transition.
 
-For v1, accesses to one state object are semantically ordered by Python elaboration order. The user
-therefore captures an earlier state version by reading it before issuing a later update.
+## Abstract physical IR
 
-Internally every state read/write carries an explicit integer order identity. Preserve this metadata:
-it is the migration path to a future partial-order/update-event frontend such as `read(before=u)` or
-`read(after=u)`.
+Abstract physical IR owns:
 
-State writes remain elastic with respect to physical combinator timing. The current state timing
-analyzer assigns one semantic commit offset to each trusted register's compound transition, derives its
-legal interval from surrounding ordered reads, and separately solves the physical state/input phases.
-Same-boundary post-update reads and reads splitting a compound transition are compile-time errors.
-Preserve this semantic/physical separation when extending the scheduler.
+- exact target combinator kinds and operations;
+- abstract nets and signal identities/domains;
+- compatibility/conflict metadata;
+- logical physical phases needed for realization.
 
-## Current state components
+Physical synthesis owns:
 
-- `AccumulatorReg`: whole-vector additive memory with clear.
-- `FreezeReg`: whole-vector pass/freeze memory; `set!=0` tracks input and `set==0` holds.
+- concrete Factorio signal IDs;
+- red/green allocation;
+- placement and wire reach;
+- final `Layout`.
 
-The malfunctioning generic scalar `Reg` remains removed. `Delay`, interleaving, queues/stacks/heaps,
-and processor-like synthesis remain postponed.
+Runtime-open vector nets and fixed target signals must remain explicit. `Each` is the first-class
+whole-vector mechanism. Both red and green networks are usable resources.
 
-## Abstract physical IR boundary
+Factorio combinators add one physical game tick. Wire reach must be respected; invalid long wires
+must never be silently emitted.
 
-`AbstractPhysicalCircuit` is the target-specific pre-layout representation. It contains exact target
-combinators, abstract signal variables, abstract electrical nets, and compatibility/conflict metadata.
-Signals do not belong to one net. Concrete signal identities, red/green assignment, net merging,
-coordinates, and relay placement remain unresolved.
+## Validation
 
-Physical synthesis owns those late choices jointly and returns the final `Layout`. Blueprint generation
-only serializes and encodes that layout. Read `docs/abstract-physical-ir.md` before changing this
-boundary.
+Validate semantic changes at three levels when applicable:
 
-## Canonical physical backend
+1. logical/semantic tests;
+2. physical tick-level simulation or structural timing tests;
+3. generated blueprints tested in Factorio for representative circuits.
 
-`compile_circuit(...)` runs through
-`AbstractPhysicalCircuit -> physical synthesis -> Layout -> blueprint serialization`. It supports
-scalar and whole-vector I/O, fresh scalar/vector samples, vector constants, direct fixed-lane
-`.signal(...)` views, scalar logic, conservative `Each` packing, `AccumulatorReg`, and `FreezeReg`.
-Runtime-open vector nets and fixed target signals are explicit in the abstract IR. Register
-vector/control separation is expressed with `NetConflict`, not concrete wire colors. Physical synthesis
-reserves fixed signals, derives safe red/green constraints, coalesces compatible shared-connector nets,
-and reuses concrete virtual signals across electrically disjoint physical groups. Switchable Fibonacci
-is the coupled-state regression.
+Canonical compiler entrypoint is `compile_circuit`; `compile_abstract_circuit` is a compatibility
+alias.
 
-`compile_abstract_circuit(...)` is only a compatibility alias. The previous direct-concrete backend is
-available from `factorio_circuit.compiler_legacy` solely as a parity/debugging oracle.
+Local checks expected before declaring a change green:
 
-## Immediate next route
-
-1. keep the current deterministic row placement and reach-safe routing unless correctness requires a
-   backend change;
-2. retain tick-level simulation plus structural checks for dead/orphan blueprint artifacts;
-3. keep a small set of legacy parity tests where the old realization is still a useful oracle;
-4. return to semantic design/features only after this cleanup is green under pytest, ruff, and mypy.
-
-## Representative timing tests
-
-Keep reusable timing circuits in `tests/support/circuits.py`. Current canonical cases are the delayed
-accumulator window and the parameterized n-tick pulse generator. Prefer semantic-vs-physical stream
-comparisons over blueprint-shape-only assertions when the simulator supports the feature.
-
-## Testing
-
-With fish + uv:
-
-```fish
-uv sync --extra dev
+```bash
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
 ```
+
+Do not claim these checks passed unless they were actually run.
