@@ -23,10 +23,7 @@ def _vector_stack() -> Circuit:
 
     for index, slot in enumerate(slots):
         pushed = push_data.gate(push) if index == 0 else old_slots[index - 1].gate(push)
-        if index + 1 < DEPTH:
-            next_value = pushed + old_slots[index + 1].gate(pop)
-        else:
-            next_value = pushed
+        next_value = pushed + old_slots[index + 1].gate(pop) if index + 1 < DEPTH else pushed
         slot.set(next_value, when=change)
 
     circuit.output("top", old_slots[0])

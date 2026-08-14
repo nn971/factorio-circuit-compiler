@@ -41,7 +41,6 @@ from .vector_binary import realize_vector_binary
 from .vector_select import realize_vector_select
 from .vector_unary import realize_vector_filter, realize_vector_scalar
 
-
 type _ConditionBranch = tuple[
     DeciderCondition,
     tuple[DeciderCondition, ...],

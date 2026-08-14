@@ -42,10 +42,7 @@ for index, slot in enumerate(slots):
 
     # Pop: [A, B, C, _] -> [B, C, _, _].  On the last slot, pushed is already empty when pop is
     # active, so no explicit empty-vector source is needed.
-    if index + 1 < DEPTH:
-        next_value = pushed + old_slots[index + 1].gate(pop)
-    else:
-        next_value = pushed
+    next_value = pushed + old_slots[index + 1].gate(pop) if index + 1 < DEPTH else pushed
 
     slot.set(next_value, when=change)
 

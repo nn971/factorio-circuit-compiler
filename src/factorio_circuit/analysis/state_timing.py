@@ -142,7 +142,8 @@ def analyze_state_timing(module: CircuitModule) -> StateTimingPlan:
 
     Ordinary expressions preserve logical indices.  Therefore any ordinary expression connecting
     state registers places those registers in the same clock domain.  Different domains may still
-    share raw external inputs; explicit cross-domain state resampling is intentionally not present yet.
+    share raw external inputs; explicit cross-domain state resampling is intentionally not present
+    yet.
     """
 
     if not module.state_registers:
@@ -438,7 +439,8 @@ def _solve_phases_for_period(
                     continue
                 if source.name not in names:
                     raise StateTimingError(
-                        f"state {target!r} depends on state {source.name!r} in another clock domain; "
+                        f"state {target!r} depends on state {source.name!r} "
+                        "in another clock domain; "
                         "ordinary state expressions must share one logical clock domain"
                     )
                 required = (
@@ -493,10 +495,10 @@ def _infer_clock_domain_registers(
             union(operation.register, source)
 
     for output in module.output.values:
-        referenced = sorted(_registers_in_value(output), key=lambda item: order[item.name])
-        if referenced:
-            first = referenced[0]
-            for other in referenced[1:]:
+        output_referenced = sorted(_registers_in_value(output), key=lambda item: order[item.name])
+        if output_referenced:
+            first = output_referenced[0]
+            for other in output_referenced[1:]:
                 union(first, other)
 
     groups: dict[str, list[StateRegister]] = {}
@@ -516,7 +518,9 @@ def _registers_in_value(value: object) -> set[StateRegister]:
         seen.add(id(item))
         if isinstance(item, VectorRegisterRead):
             return {item.register}
-        if isinstance(item, (Input, InputSample, Constant, VectorInput, VectorInputSample, VectorConstant)):
+        if isinstance(
+            item, (Input, InputSample, Constant, VectorInput, VectorInputSample, VectorConstant)
+        ):
             return set()
         if isinstance(item, VectorSignal):
             return visit(item.vector)
@@ -551,7 +555,9 @@ def _collect_state_reads(module: CircuitModule) -> tuple[VectorRegisterRead, ...
                 seen_reads.add(id(value))
                 result.append(value)
             return
-        if isinstance(value, (Input, InputSample, Constant, VectorInput, VectorInputSample, VectorConstant)):
+        if isinstance(
+            value, (Input, InputSample, Constant, VectorInput, VectorInputSample, VectorConstant)
+        ):
             return
         if isinstance(value, VectorSignal):
             add(value.vector)

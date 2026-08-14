@@ -124,14 +124,10 @@ def build_controller() -> Circuit:
     stack_change = push_stack | pop_satisfied
 
     for index, slot in enumerate(slots):
-        if index == 0:
-            pushed = push_data.gate(push_stack)
-        else:
-            pushed = old_slots[index - 1].gate(push_stack)
-        if index + 1 < DEPTH:
-            next_value = pushed + old_slots[index + 1].gate(pop_satisfied)
-        else:
-            next_value = pushed
+        pushed = push_data.gate(push_stack) if index == 0 else old_slots[index - 1].gate(push_stack)
+        next_value = (
+            pushed + old_slots[index + 1].gate(pop_satisfied) if index + 1 < DEPTH else pushed
+        )
         slot.set(next_value, when=stack_change)
 
     # Recipe vectors are requests by themselves: an empty vector means no recipe request. The
