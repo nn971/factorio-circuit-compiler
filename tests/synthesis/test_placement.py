@@ -163,7 +163,7 @@ def test_default_io_markers_are_ordered_on_left_and_right_perimeters() -> None:
     assert output_positions[0][0] > max(implementation_x)
 
 
-def test_default_corridor_geometry_is_substation_pitch_aligned() -> None:
+def test_default_corridor_geometry_is_substation_pitch_aligned_and_relay_open() -> None:
     from factorio_circuit.synthesis.placement import _candidate_grid
 
     options = PlacementOptions(iterations=0)
@@ -172,12 +172,16 @@ def test_default_corridor_geometry_is_substation_pitch_aligned() -> None:
 
     # Horizontal 2x1 combinator centres: 0..14, then a two-tile gap, then 18.
     assert (14.0, 0.0) in slots
+    assert (16.0, 0.0) not in slots
     assert (18.0, 0.0) in slots
     # Vertical 1-tile rows: 0..15, then a two-tile gap, then 18.
     assert (0.0, 15.0) in slots
+    assert (0.0, 16.0) not in slots
+    assert (0.0, 17.0) not in slots
     assert (0.0, 18.0) in slots
     assert options.block_width_tiles == 16
     assert options.block_height_tiles == 16
     assert options.corridor_width == 2.0
-    assert any(right - left == 2.0 for left, right, _top, _bottom in grid.relay_forbidden_areas)
-    assert any(bottom - top == 2.0 for _left, _right, top, bottom in grid.relay_forbidden_areas)
+
+    # Corridors are reserved from ordinary implementation placement, not from layout-only relays.
+    assert grid.relay_forbidden_areas == ()
