@@ -1,12 +1,12 @@
-"""Fresh external sampling without exposing stateless execution ticks."""
+"""Fresh external sampling across logical steps without exposing physical execution ticks."""
 
 from factorio_circuit import Circuit, compile_circuit
 
 circuit = Circuit("fresh_sample")
 x = circuit.input("x")
-x0 = x
+x0 = x.sample()
 
-circuit.tick(3)
+circuit.step(3)
 x3 = x.sample()
 
 circuit.output("sum", x0 + x3)
