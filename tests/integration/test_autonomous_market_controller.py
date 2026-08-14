@@ -41,4 +41,6 @@ def test_market_controller_is_composed_only_from_primitive_freeze_registers(opti
         "mode",
         "top_target",
         "blocked_on_full_stack",
+        "debug_reader_ingredients",
+        "debug_ingredient_missing",
     }
