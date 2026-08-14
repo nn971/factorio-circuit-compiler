@@ -49,11 +49,12 @@ shared predicates, red/green network use, signal allocation/packing, state reali
 transformations that reduce or reshape the physical graph before placement.
 
 The block corridors are intentional physical space for player access and power distribution. Ordinary
-implementation combinators must continue to stay out of them. For now, however, layout-only wire
-relays are allowed in the corridors so the routing experiment is not constrained by reserving the
-entire strip. A future power-aware layout should preferably reserve only local 2x2 footprints at
-selected corridor intersections for substations, leaving the remainder available for walking and
-relay placement.
+implementation combinators stay out of them. Layout-only wire relays may use the corridors, except
+for a local 2x2 footprint centered at every horizontal/vertical corridor crossing. Those footprints
+are reserved for substations; the remainder of each corridor stays available for walking and relay
+placement. With the default 16x16 blocks and two-tile corridors, these reserved crossings repeat on
+the same regular block pitch. The current compiler reserves the space but does not yet emit power
+entities into it.
 
 Placement/router improvements to revisit later include:
 
