@@ -25,6 +25,7 @@ from factorio_circuit.ir.physical import (
 Position = tuple[float, float]
 PlacementStrategy = Literal["net-aware", "row"]
 _DISCONNECTED_NET_PENALTY = 2000.0
+_SUBSTATION_FOOTPRINT = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,14 +36,15 @@ class PlacementOptions:
     anchors public input/output marker entities in ordered columns on the left/right perimeter;
     an explicit entity anchor overrides the corresponding automatic I/O position.
 
-    Reserved corridors are physical empty space, not routing lanes.  ``block_width_tiles`` and
-    ``block_height_tiles`` describe the dense computation block in Factorio tiles.  Horizontal
-    arithmetic/decider combinators occupy two tiles, so the default 16x16 block contains eight
-    combinator columns and sixteen rows.  ``corridor_width`` is inserted between adjacent blocks.
-    The default fill leaves in-block whitespace for relay entities because corridors themselves are
-    reserved.  Routing retries use deterministic placement basins; later retries also reduce
-    ``target_fill`` by ``retry_fill_scale`` so a circuit can trade compactness for legal relay
-    space.
+    Reserved corridors are empty of ordinary implementation combinators.  They preserve regular
+    walking/power-access gaps between dense computation blocks.  Layout-only wire relays may use
+    those corridors except for local 2x2 footprints reserved at corridor intersections for
+    substations.  ``block_width_tiles`` and ``block_height_tiles`` describe the dense computation
+    block in Factorio tiles.  Horizontal arithmetic/decider combinators occupy two tiles, so the
+    default 16x16 block contains eight combinator columns and sixteen rows.  ``corridor_width`` is
+    inserted between adjacent blocks.  Routing retries use deterministic placement basins; later
+    retries also reduce ``target_fill`` by ``retry_fill_scale`` so a circuit can trade compactness
+    for legal relay space.
     """
 
     strategy: PlacementStrategy = "net-aware"
@@ -55,7 +57,7 @@ class PlacementOptions:
     target_fill: float = 0.72
     iterations: int | None = None
     random_seed: int = 0
-    restarts: int = 2
+    restarts: int = 3
     retry_fill_scale: float = 0.9
 
     def validate(self) -> None:
@@ -67,6 +69,8 @@ class PlacementOptions:
             raise ValueError("placement block_height_tiles must be positive")
         if self.corridor_width < 0:
             raise ValueError("corridor width cannot be negative")
+        if self.reserve_corridors and 0 < self.corridor_width < _SUBSTATION_FOOTPRINT:
+            raise ValueError("reserved corridors must be at least 2 tiles wide for substations")
         if not 0 < self.target_fill <= 1:
             raise ValueError("placement target_fill must be in (0, 1]")
         if self.iterations is not None and self.iterations < 0:
@@ -493,15 +497,21 @@ def _candidate_grid(
     )
 
     forbidden: list[RelayForbiddenArea] = []
-    if options.reserve_corridors and options.corridor_width > 0:
-        for column in range(columns_per_block, columns, columns_per_block):
-            left_edge = x_positions[column - 1] + 1.0
-            right_edge = x_positions[column] - 1.0
-            forbidden.append((left_edge, right_edge, bounds[2], bounds[3]))
-        for row in range(rows_per_block, rows, rows_per_block):
-            top_edge = y_positions[row - 1] + 0.5
-            bottom_edge = y_positions[row] - 0.5
-            forbidden.append((bounds[0], bounds[1], top_edge, bottom_edge))
+    if options.reserve_corridors and options.corridor_width >= _SUBSTATION_FOOTPRINT:
+        vertical_centers = [
+            (x_positions[column - 1] + 1.0 + x_positions[column] - 1.0) / 2.0
+            for column in range(columns_per_block, columns, columns_per_block)
+        ]
+        horizontal_centers = [
+            (y_positions[row - 1] + 0.5 + y_positions[row] - 0.5) / 2.0
+            for row in range(rows_per_block, rows, rows_per_block)
+        ]
+        half = _SUBSTATION_FOOTPRINT / 2.0
+        forbidden.extend(
+            (x - half, x + half, y - half, y + half)
+            for x in vertical_centers
+            for y in horizontal_centers
+        )
 
     return _GridGeometry(slots, bounds, tuple(forbidden))
 

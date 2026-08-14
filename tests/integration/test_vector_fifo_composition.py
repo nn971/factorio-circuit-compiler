@@ -1,0 +1,82 @@
+import pytest
+
+from factorio_circuit import SignalId, compile_circuit
+from factorio_circuit.frontend import Circuit
+
+DEPTH = 4
+COUNT_SIGNAL = SignalId("virtual", "signal-Q")
+
+
+def _vector_fifo() -> Circuit:
+    circuit = Circuit("vector_fifo_test")
+    request = circuit.signals("request")
+    push_requested = circuit.input("push") != 0
+    pop_requested = circuit.input("pop") != 0
+
+    plus_one = circuit.constant_signals({COUNT_SIGNAL: 1})
+    minus_one = circuit.constant_signals({COUNT_SIGNAL: -1})
+
+    length_reg = circuit.accumulator("length")
+    slots = [circuit.freeze(f"slot{index}") for index in range(DEPTH)]
+
+    old_length = length_reg.sample().signal(COUNT_SIGNAL)
+    old_slots = [slot.sample() for slot in slots]
+
+    pop = pop_requested * (old_length > 0)
+    push = push_requested * ((old_length < DEPTH) | pop_requested)
+
+    length_reg.add(plus_one, when=push)
+    length_reg.add(minus_one, when=pop)
+
+    tail_index = old_length - pop
+    for index, slot in enumerate(slots):
+        push_here = push * (tail_index == index)
+        injected = request.gate(push_here)
+        next_value = old_slots[index + 1].gate(pop) + injected if index + 1 < DEPTH else injected
+        slot.set(next_value, when=pop | push_here)
+
+    circuit.output("front", old_slots[0])
+    circuit.output("empty", old_length == 0)
+    circuit.output("full", old_length == DEPTH)
+    circuit.output("push_accepted", push)
+    circuit.output("pop_accepted", pop)
+
+    circuit.step(1)
+    circuit.output("next_front", slots[0].sample())
+    circuit.output("next_length", length_reg.sample().signal(COUNT_SIGNAL))
+    return circuit
+
+
+@pytest.mark.parametrize("optimize", [False, True])
+def test_four_slot_vector_fifo_composes_from_existing_registers(optimize: bool) -> None:
+    result = compile_circuit(_vector_fifo(), optimize=optimize)
+    timing = {item.register.name: item for item in result.state_timing.registers}
+
+    assert set(timing) == {"length", "slot0", "slot1", "slot2", "slot3"}
+    assert len(result.state_timing.domains) == 1
+    assert result.state_timing.domains[0].period == 5
+    assert all(item.period == 5 for item in timing.values())
+
+    # A shift such as slot1[k] -> slot0[k+1] has one full five-tick logical period available.
+    # It therefore does not require a P=1-style staircase of register phases.  What matters is
+    # that every transition boundary is at or after all of its physical input requirements.
+    assert all(
+        item.transition_input_phase >= item.earliest_transition_input_phase
+        for item in timing.values()
+    )
+    assert all(item.commit_offset == 0 for item in timing.values())
+
+    assert any(
+        getattr(entity, "description", "") == "clock domain 0: modulo-5 counter"
+        for entity in result.physical_circuit.entities
+    )
+    output_names = {port.name for port in result.physical_circuit.outputs}
+    assert output_names == {
+        "front",
+        "empty",
+        "full",
+        "push_accepted",
+        "pop_accepted",
+        "next_front",
+        "next_length",
+    }

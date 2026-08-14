@@ -1,4 +1,4 @@
-"""Logical circuit IR: timed scalar dataflow plus whole-vector state boundaries."""
+"""Logical circuit IR: sampled scalar dataflow plus whole-vector state boundaries."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ from factorio_circuit.ir.state import StateOperation, StateRegister, VectorRegis
 
 @dataclass(frozen=True, slots=True)
 class Input:
-    """A scalar external input stream at the invocation's base logical tick."""
+    """A scalar external source observed at logical step zero by default."""
 
     name: str
 
 
 @dataclass(frozen=True, slots=True)
 class InputSample:
-    """A fresh observation of ``source`` at ``t + offset``."""
+    """Observation of ``source`` at logical offset ``offset``."""
 
     source: Input
     offset: int
@@ -26,14 +26,14 @@ class InputSample:
 
 @dataclass(frozen=True, slots=True)
 class VectorInput:
-    """A complete Factorio signal-map input port at the base logical tick."""
+    """A complete Factorio signal-map source at logical step zero by default."""
 
     name: str
 
 
 @dataclass(frozen=True, slots=True)
 class VectorInputSample:
-    """A fresh whole-vector observation of ``source`` at ``t + offset``."""
+    """Whole-vector observation of ``source`` at logical offset ``offset``."""
 
     source: VectorInput
     offset: int

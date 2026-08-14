@@ -2,12 +2,10 @@
 
 ## Goal
 
-Compile a symbolic Python circuit EDSL to optimized Factorio 2.x combinator blueprints, with
-Factorio-specific optimization primarily reducing combinator count.
+Compile a symbolic Python circuit EDSL to optimized Factorio 2.x combinator blueprints while keeping
+logical stream semantics independent from physical combinator timing.
 
-## Frontend
-
-The canonical frontend is ordinary Python elaboration over symbolic stream objects:
+## Canonical frontend
 
 ```python
 c = Circuit("example")
@@ -16,200 +14,142 @@ y = (x + 1) * 2
 c.output("y", y)
 ```
 
-Runtime selection uses symbolic operations such as `condition.select(a, b)`; Python `if`/loops remain
-elaboration-time Python.
+Python execution is elaboration. Symbolic values are logical streams.
 
-## Streams and freshness
+Current runtime-open vector operations include arithmetic, `.positive()`, `.any()`, `.gate(...)`, and
+selector `.max()`.
 
-Raw external sources are sampleable:
+## Logical time vocabulary
+
+Inputs and registers use the same observation operation:
 
 ```python
-x0 = x
-c.tick(3)
-x3 = x.sample()
+x0 = input.sample()
+s0 = register.sample()
+
+c.step()
+
+x1 = input.sample()
+s1 = register.sample()
 ```
 
-means `x0[t]=X[t]`, `x3[t]=X[t+3]`.
+`step(n)` advances logical time. It is not a Factorio-tick delay. `Circuit.tick()` is reserved for
+future explicit physical scheduling and currently raises. `register.value` is compatibility-only.
 
-Derived `Expr` values are logical streams with opaque physical execution phase and have no `.sample()`.
-Whole-vector `SignalsInput` sources are sampleable too.
+## Clock-domain timing milestone
+
+Logical and physical time are now separate.
+
+For a state clock domain with physical period `P`, register/value phase `phi`, and logical index `k`:
+
+```text
+physical_time(value[k]) = phi + k*P
+```
+
+Stateless combinators preserve `k` and add physical latency. Feed-forward latency does not enlarge
+`P`; feedback recurrence constraints do.
+
+Ordinary state dependencies force all involved registers into one logical clock domain, even for
+one-way dependencies. Independent state components may infer different periods. External physical
+inputs do not themselves own a state domain.
+
+A state dependency with source logical offset `r`, target commit offset `c`, physical latency `L`, and
+shared period `P` gives:
+
+```text
+phi_target >= phi_source + (r - c - 1) * P + L + 1
+```
+
+The analyzer tests integer periods from 1 upward and takes the first feasible one. A positive-latency
+same-step combinational cycle remains impossible for every `P`.
+
+Canonical regression:
+
+```python
+old = memory.sample()
+memory.set(data, when=old.any())
+```
+
+now infers `P=3` rather than being rejected.
+
+## Physical realization of multicycle state
+
+For each `P>1` domain, vector lowering synthesizes a modulo-`P` clock. Register gates open only on
+the scheduled residue:
+
+- `FreezeReg` holds on intermediate physical ticks;
+- `AccumulatorReg` suppresses adds and ignores clear between logical boundaries while retaining
+  memory.
+
+Thus only one physical input sample per logical window can affect that domain's next state.
+
+Independent state domains with different periods are supported when they use current-step physical
+inputs. Nonzero-step external samples across heterogeneous domains are currently rejected until
+context-sensitive input realization / explicit resampling is implemented.
 
 ## State primitives
 
-`AccumulatorReg` and `FreezeReg` are the trusted whole-vector state semantics. The legacy backend
-still provides both concrete prototypes; the abstract-physical migration now supports both as well.
+`AccumulatorReg` and `FreezeReg` remain the foundational whole-vector state primitives. Higher
+structures should first be built from them rather than added as compiler primitives.
 
-```text
-AccumulatorReg:
-clear != 0   next = {}
-clear == 0   next = current + data
+A depth-4 FIFO example exists in `examples/vector_fifo.py`. It uses four `FreezeReg`s plus one
+`AccumulatorReg` length counter. It now protects full/empty internally, including simultaneous
+full-pop+push, and intentionally exercises the new multicycle recurrence. Current timing analysis
+expects the FIFO domain to infer `P=5`.
 
-FreezeReg:
-set != 0     next = data
-set == 0     next = current
+The autonomous-market direction remains:
+
+```python
+missing = (required - stock).positive()
+request = missing.max()
 ```
 
-For the current backend, all update methods on one register describe one **compound transition per
-invocation**. `AccumulatorReg.add(...)` and `.clear(...)` are therefore not serial writes.
+then store/queue selected requests using general state primitives before connecting one reader and
+one worker assembler.
 
-## State timing milestone completed
-
-State reads carry exact freshness offsets and per-state elaboration-order identities. The compiler now
-builds an abstract `StateTimingPlan` before physical lowering.
-
-Each elastic transition gets a compiler-chosen semantic commit offset `k`:
+## Physical pipeline
 
 ```text
-invocation t update commits between S[t+k] and S[t+k+1]
-```
-
-Strict reads give bounds:
-
-```text
-read before transition at r    r <= k
-read after transition at r     k < r
-```
-
-A same-freshness read after an update is rejected. To preserve the old value, read it before issuing
-the transition; to demand the new value, advance the freshness cursor to the desired logical boundary.
-
-The timing plan separately solves a physical state phase `P`, update-input alignment phase, and every
-state-read physical phase. The vector register lowerers consume this plan.
-
-## Reference simulation and reusable tests
-
-The semantic simulator now evaluates both current vector registers and is compared tick-for-tick with
-the physical simulator.
-
-Reusable representative circuits live in `tests/support/circuits.py`:
-
-- `delayed_accumulator_window(offset=3)` brackets a complex elastic update by old/new state reads;
-- `n_tick_pulse_generator(n)` is a retriggerable `n`-tick pulse stretcher stressing fresh sampling
-  and alignment independently of state;
-- `switchable_fibonacci()` couples `FreezeReg` and `AccumulatorReg` in a zero-latency state cycle,
-  holds while disabled, resumes when enabled, and reads the post-transition boundary at `tick(1)`.
-
-The Fibonacci case also forced scalar extraction from whole-vector networks to become explicit: `.signal(...)`
-is lowered through an isolating combinator before ordinary scalar arithmetic, so separate feedback networks
-are never electrically merged by a consumer.
-
-The pre-abstract-physical migration baseline was **52 passed** in the provided environment.
-
-## Important distinction
-
-```text
-sample/freshness
-    which external/state logical sample is meant
-
-semantic state commit
-    between which state boundaries an update belongs
-
-physical phase
-    when combinators realize the stream value/transition
-```
-
-These remain separate compiler concerns.
-
-## Current limitations
-
-- explicit semantic write anchoring (`at=`) is not implemented yet;
-- future-sampled external sources feeding feedback state still need a startup/warm-up convention;
-- reads cannot split one current compound register transition;
-- state-derived scalar update controls are not yet supported by the timing solver;
-- update-event partial ordering and more aggressive commutative accumulator optimization remain future work.
-
-## Abstract Physical IR pipeline milestone completed
-
-The backend boundary is now executable for scalar stateless circuits:
-
-```text
-semantic / optimized IR
+symbolic/logical circuit
     ↓
-lower_abstract_physical(...)
+semantic IR + state timing / clock domains
     ↓
 AbstractPhysicalCircuit
     ↓
-synthesize_layout(...)
+physical synthesis
     ↓
 Layout
     ↓
-layout blueprint serialization
+blueprint serialization
 ```
 
-`AbstractNet` records both logical endpoints and the abstract signal lanes carried by the net. This
-makes signal-allocation and net-merging compatibility explicit. Multi-lane networks generated by
-conservative `Each` packing create `SignalConflict` metadata for coexisting lanes. When a multi-lane
-source must remain separate from another scalar source at a consumer, lowering emits `NetConflict`
-rather than choosing red/green itself.
+Abstract physical IR owns exact target combinators, abstract nets/signals, and compatibility
+metadata. Physical synthesis owns concrete signal IDs, red/green allocation, placement, wire reach,
+and final layout. Blueprint generation only serializes.
 
-`compile_circuit(...)` exercises the canonical path. The physical synthesizer is intentionally
-conservative:
+## Current validation status
 
-- user-fixed target signal identities are reserved before compiler allocation;
-- explicit and synthesis-derived net conflicts are two-colored, with component polarity adjusted to
-  favor proven-safe shared-connector coalescing;
-- same-color compatible nets sharing a connector are recorded as one synthesized physical net group;
-- compiler virtual signals are reused across electrically disjoint physical groups when interference
-  constraints allow it;
-- disjoint nets are not joined merely to create a bus;
-- the current deterministic row placement and reach-safe relay router are reused unchanged;
-- scalar I/O marker descriptions are filled with the final allocated signal identity;
-- the resulting `Layout` contains final positions, routed wires, relays, concrete signal allocation,
-  net colors, and net-group mapping;
-- the layout serializer performs no placement or routing decisions.
+The branch contains focused regressions for:
 
-The scalar path supports arithmetic, comparisons, selects, fresh input sampling, phase-alignment
-delays, and conservative `Each` packing. Whole-vector values use direct fixed-lane `.signal(...)` views;
-`AccumulatorReg` and `FreezeReg` are both on this canonical backend. `compile_abstract_circuit(...)` is
-retained only as a compatibility alias.
+- `.step()` / `.sample()` frontend semantics and reserved `.tick()`;
+- P=1 state timing compatibility;
+- state-derived vector predicates;
+- `P=3` self-feedback;
+- independent heterogeneous domains and domain unification;
+- self-validating FIFO composition;
+- periodic clock combinator structure.
 
-See `docs/abstract-physical-ir.md`.
+The assistant environment cannot run the repository locally because GitHub DNS access is unavailable,
+and this branch currently has no GitHub CI statuses. Do not claim the suite is green until local checks
+are run:
 
-## Whole-vector stateless migration completed
+```fish
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src
+```
 
-The abstract-physical path now also represents whole-vector stateless values. `AbstractNet` distinguishes
-compiler-allocated abstract lanes, user-fixed concrete lanes, and runtime-open vector networks. Vector
-inputs therefore remain truly sparse/dynamic instead of being forced into a finite compiler signal list.
+Also validate representative multicycle blueprints in Factorio, especially `vector_fifo.py`.
 
-`VectorConstant` keeps its explicit Factorio `SignalId` lanes. The baseline allocator reserves all such
-fixed identities before allocating compiler virtual signals. `.signal(...)` is lowered through an
-isolating arithmetic combinator: the source vector net reaches only that extractor, and ordinary scalar
-logic sees a fresh compiler lane on a private output net. Separate vector inputs can therefore feed one
-scalar expression without electrically merging their original networks. Fresh vector outputs preserve
-the semantic sample phase directly.
-
-Side-by-side regression tests compare the new and legacy stateless backends on combinator count/output
-phase for representative scalar, packed-`Each`, and vector-extraction cases, in addition to stream-level
-semantic/physical checks.
-
-## Accumulator abstract-physical migration completed
-
-`compile_abstract_circuit(...)` now accepts `AccumulatorReg`. The accumulator memory loop is one
-runtime-vector abstract net. Gated add sources drive that net, and the memory combinator feeds it back
-through its own output/input connectors. Clear/add control paths remain separate abstract nets.
-`NetConflict` expresses the required vector/control isolation at `Each` gates and at the memory cell;
-red/green assignment happens only in physical synthesis.
-
-The new path consumes the same `StateTimingPlan` as the legacy backend, including transition-input
-alignment and `VectorRegisterRead` output phases. A stream regression covers accumulation, clearing,
-and resuming, while a parity check compares the resulting combinator count and output phases with the
-legacy accumulator backend.
-
-## Freeze + coupled-state migration completed
-
-`compile_abstract_circuit(...)` now also accepts `FreezeReg`. The pass gate observes one runtime-vector
-source net and one scalar pass-control net; the memory cell observes its feedback net and a separate
-hold-control net. `NetConflict` expresses both required separations, so the lowerer never chooses
-red/green. The same `StateTimingPlan` supplies transition-input and read phases.
-
-The switchable Fibonacci circuit now runs through the new backend with `FreezeReg` and `AccumulatorReg`
-in one zero-latency state cycle. A regression checks `1, 1, 2, 3, 5`, two held ticks while `on=0`, then
-`8, 13` after resuming. This is the first end-to-end proof that mutually coupled vector feedback nets
-can remain abstract until physical synthesis.
-
-## Recommended next step
-
-Treat the physical backend as correctness-complete for the current semantics: keep the deterministic
-row placement, current net/color synthesis, signal reuse, and reach-safe routing stable. Keep the old
-direct-concrete backend only as a narrow comparison oracle. After the cleanup suite is green, return to
-semantic design rather than adding more physical/layout optimization.
+See `docs/semantics.md` and `docs/state-design.md` for the full timing model.

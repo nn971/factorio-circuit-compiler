@@ -27,11 +27,11 @@ def test_symbolic_straight_line_builds_ir() -> None:
     assert module.output.names == ("x", "y")
 
 
-def test_input_sample_uses_freshness_cursor_without_changing_old_expression() -> None:
+def test_input_sample_uses_logical_step_without_changing_old_expression() -> None:
     c = Circuit("fresh")
     x = c.input("x")
     x0 = x
-    c.tick(3)
+    c.step(3)
     x3 = x.sample()
     combined = x0 + x3
     c.output("combined", combined)
@@ -46,7 +46,7 @@ def test_whole_vector_source_is_sampleable_but_derived_scalar_is_not() -> None:
     data = c.signals("data")
     scalar = c.input("scalar")
     derived = scalar + 1
-    c.tick(2)
+    c.step(2)
 
     sampled = data.sample()
     assert isinstance(sampled.ir, VectorInputSample)
@@ -68,14 +68,14 @@ def test_vector_state_primitives_preserve_strict_elaboration_order() -> None:
     set_signal = c.input("set")
 
     acc = c.accumulator("acc")
-    before = acc.value
+    before = acc.sample()
     acc.add(data)
     acc.clear(when=clear)
-    after = acc.value
+    after = acc.sample()
 
     freeze = c.freeze("freeze")
     freeze.set(data, when=set_signal)
-    held = freeze.value
+    held = freeze.sample()
 
     c.output("before", before)
     c.output("after", after)
@@ -96,10 +96,16 @@ def test_vector_state_primitives_preserve_strict_elaboration_order() -> None:
     assert held.ir.order == 1
 
 
-def test_tick_until_is_monotone() -> None:
+def test_step_until_is_monotone() -> None:
     c = Circuit("time")
-    c.tick(2)
-    c.tick_until(5)
+    c.step(2)
+    c.step_until(5)
     assert c.now.offset == 5
-    with pytest.raises(CircuitBuildError, match="current freshness 5"):
-        c.tick_until(4)
+    with pytest.raises(CircuitBuildError, match="current logical step 5"):
+        c.step_until(4)
+
+
+def test_tick_spelling_is_reserved_for_future_physical_control() -> None:
+    c = Circuit("physical_time")
+    with pytest.raises(CircuitBuildError, match="reserved for future physical-tick control"):
+        c.tick()

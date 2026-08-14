@@ -4,22 +4,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from factorio_circuit.analysis.state_timing import StateTimingPlan, analyze_state_timing
+from factorio_circuit.analysis import analyze_state_timing
+from factorio_circuit.analysis.state_timing import StateTimingPlan
 from factorio_circuit.blueprint.layout_encode import (
     encode_layout_blueprint_string,
     layout_to_blueprint_json,
 )
 from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
+from factorio_circuit.frontend import _VectorBinaryOp, _VectorFilter, _VectorScalarOp
 from factorio_circuit.frontend.symbolic import Circuit
 from factorio_circuit.ir.abstract_physical import AbstractPhysicalCircuit
 from factorio_circuit.ir.physical import PhysicalCircuit
 from factorio_circuit.ir.semantic import CircuitModule
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
-from factorio_circuit.lowering.ir_to_abstract_physical import lower_abstract_physical
+from factorio_circuit.lowering.open_vector_pipeline import lower_vectors
 from factorio_circuit.optimize.pipeline import optimize_semantic
 from factorio_circuit.synthesis.layout import Layout
-from factorio_circuit.synthesis.physical import synthesize_layout
+from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
 from factorio_circuit.synthesis.placement import PlacementOptions
+
+_VECTOR_OUTPUTS = (_VectorBinaryOp, _VectorScalarOp, _VectorFilter)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +54,36 @@ class CompilationResult:
 AbstractCompilationResult = CompilationResult
 
 
+def _contains_vector_output(module: CircuitModule) -> bool:
+    return any(isinstance(value, _VECTOR_OUTPUTS) for value in module.output.values)
+
+
+def _lower(
+    module: CircuitModule,
+    *,
+    enable_packing: bool,
+    state_timing: StateTimingPlan,
+) -> AbstractPhysicalCircuit:
+    return lower_vectors(
+        module,
+        enable_packing=enable_packing,
+        state_timing=state_timing,
+    )
+
+
+def _synthesize(
+    circuit: AbstractPhysicalCircuit,
+    *,
+    safe_wire_span: float,
+    placement: PlacementOptions | None,
+) -> Layout:
+    return synthesize_vector_layout(
+        circuit,
+        safe_wire_span=safe_wire_span,
+        placement=placement,
+    )
+
+
 def compile_circuit(
     source: Circuit | CircuitModule,
     *,
@@ -60,27 +94,30 @@ def compile_circuit(
     """Compile through Abstract Physical IR, physical synthesis, and final Layout."""
 
     semantic = lower_frontend(source)
-    optimized_semantic = optimize_semantic(semantic) if optimize else semantic
+    skip_scalar_optimizer = _contains_vector_output(semantic)
+    optimized_semantic = (
+        optimize_semantic(semantic) if optimize and not skip_scalar_optimizer else semantic
+    )
     state_timing = analyze_state_timing(optimized_semantic)
 
-    abstract_physical = lower_abstract_physical(
+    abstract_physical = _lower(
         optimized_semantic,
         enable_packing=optimize,
         state_timing=state_timing,
     )
-    layout = synthesize_layout(
+    layout = _synthesize(
         abstract_physical,
         safe_wire_span=blueprint_safe_wire_span,
         placement=placement,
     )
 
     if optimize:
-        naive_abstract = lower_abstract_physical(
+        naive_abstract = _lower(
             optimized_semantic,
             enable_packing=False,
             state_timing=state_timing,
         )
-        naive_physical = synthesize_layout(
+        naive_physical = _synthesize(
             naive_abstract,
             safe_wire_span=blueprint_safe_wire_span,
             placement=placement,

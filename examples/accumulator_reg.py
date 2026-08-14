@@ -7,8 +7,8 @@ memory = circuit.accumulator("memory")
 
 memory.add(data)
 memory.clear(when=clear)
-circuit.tick(1)
-circuit.output("memory", memory.value)
+circuit.step(1)
+circuit.output("memory", memory.sample())
 
 
 if __name__ == "__main__":

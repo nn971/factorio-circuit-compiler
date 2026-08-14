@@ -1,229 +1,206 @@
-# Core Semantics
+# Circuit semantics
 
-## 1. Modules are logical stream transducers
+## Two time coordinates
 
-A `Circuit` denotes deterministic behavior over Factorio's discrete signal streams, with persistent
-state where required. Logical stream semantics and physical combinator phase are separate layers.
+The source language describes **logical streams**. Factorio realizes them with a physical pipeline.
+Those are deliberately different coordinates.
 
-## 2. Symbolic scalar expressions
-
-```python
-c = Circuit("m")
-x = c.input("x")
-y = (x + 1) * 2
-```
-
-`x` and `y` are Python objects representing streams. Conceptually,
+For a logical clock domain `D`, logical step `k` is activated every `P_D` game ticks. A value `v`
+in that domain has a physical phase `phi_v`, so its realization repeats at
 
 ```text
-x[t] = X[t]
-y[t] = (X[t] + 1) * 2
+physical_time(v[k]) = k * P_D + phi_v
 ```
 
-The Python operations build a logical DAG. The compiler decides when physical combinators produce the
-corresponding values.
+(up to an irrelevant common origin for the domain).
 
-## 3. Raw sources versus derived expressions
+`P_D` is the domain's physical **period / initiation interval**. `phi_v` is ordinary pipeline
+latency inside that schedule. A long feed-forward pipeline may have a large `phi` while still using
+`P=1`.
 
-A raw `Input` identifies an externally observable stream and can be sampled again. A derived `Expr`
-identifies a logical combination of streams and has opaque physical execution timing.
+## Source vocabulary
 
-This capability distinction is intentional:
+Use one operation for observing any source:
 
 ```python
-x.sample()  # valid temporal-source operation
-(x + 1).sample()  # no such method
+x = input.sample()
+s = register.sample()
 ```
 
-## 4. Freshness cursor
+Both mean: observe this source at the circuit's current logical step.
 
-A circuit starts at freshness offset `0`.
+Advance logical time with:
 
 ```python
-c.tick(n)  # τ += n
-c.tick_until(n)  # τ = n, with n >= current τ
+circuit.step()
+circuit.step(n)
+circuit.step_until(n)
 ```
 
-These operations move the cursor used by later fresh observations. They do not mutate expressions
-already built.
+`step(n)` advances the logical sequence index by `n`; it does **not** promise `n` Factorio ticks.
 
-At cursor `τ`, `x.sample()` denotes `X[t+τ]`.
+`Circuit.tick()` is intentionally reserved for future explicit physical-tick scheduling control and
+currently raises an error. `register.value` remains only as a compatibility alias for
+`register.sample()` while old callers migrate.
 
-```python
-x0 = x
-c.tick(3)
-x3 = x.sample()
-y = x0 + x3
-```
+## Stateless expressions
 
-means
+Arithmetic, comparisons, selects, and runtime-open vector operations preserve logical step:
 
 ```text
-x0[t] = X[t]
-x3[t] = X[t+3]
-y[t]  = X[t] + X[t+3]
+x[k] -> combinational logic -> y[k]
 ```
 
-The physical lowerer may carry the same live input wire with semantic phase `+3` for `x3` while delaying
-`x0` so both required samples meet at the consuming combinator.
+Every physical combinator adds its normal game-tick latency. The compiler inserts physical delays
+when two logically compatible values arrive at different phases.
 
-## 5. Runtime selection
+A feed-forward path does not by itself restrict `P`; it is a pipeline and may accept a new logical
+sample every physical tick.
 
-Python control flow executes during elaboration. Runtime circuit control uses `select`:
+## Inputs
+
+Raw scalar/vector inputs are physical sources rather than stateful logical clock domains. A domain
+samples them at that domain's activation cadence.
 
 ```python
-result = (a > b).select(a, b)
+x0 = x.sample()       # x[k]
+circuit.step()
+x1 = x.sample()       # x[k+1]
 ```
 
-A non-comparison condition is interpreted by nonzero truthiness:
+If the consuming domain has `P=4`, these observations correspond to physical source ticks separated
+by four game ticks. Intermediate physical source values are not separate samples for that domain.
+Pulse-like sources therefore need an appropriate fast domain or explicit event capture/buffering.
+
+Purely external stateless circuits use the default `P=1` schedule.
+
+## State
+
+A register observation is a logical state sample:
 
 ```python
-result = enable.select(active, idle)
+old = state.sample()      # S[k]
+state.set(next_value, when=enable)
+circuit.step()
+new = state.sample()      # S[k+1]
 ```
 
-which semantically normalizes `enable != 0` before selecting.
+The update methods describe the transition; `step()` only moves the logical observation cursor.
+It does not imperatively execute the update.
 
-## 6. Whole-vector streams
+`AccumulatorReg` and `FreezeReg` retain their existing logical transition semantics. A state
+transition may take several physical ticks. The compiler infers the smallest legal period and gates
+the physical memory so it commits only at logical boundaries; intermediate game ticks hold state.
 
-`Circuit.signals(name)` represents the complete sparse Factorio signal map
+## Clock domains
+
+Ordinary expressions have same-index semantics. Therefore state registers connected by an ordinary
+state dependency must share one logical clock domain.
+
+Examples that unify domains:
 
 ```text
-SignalId -> signed i32
+A[k] -> B[k+1]
+A[k] + B[k] -> C[k+1]
+A[k] + B[k] -> output[k]
 ```
 
-at one external port. Whole-vector inputs are also fresh-sampleable sources. General vector arithmetic
-is not yet part of the source language; current vector values primarily feed state components.
+Domain inference starts with one candidate domain per state register and unions registers that occur
+in the same ordinary dependency relation. The transitive closure gives maximal ordinary same-index
+components.
 
-## 7. State observations and strict v1 ordering
+Independent state components may keep different periods. For example one recurrence can use `P=1`
+while an unrelated recurrence uses `P=3`.
 
-A state `.value` access creates a distinct `VectorRegisterRead` carrying:
+External inputs do not union domains: multiple domains may sample the same physical source at their
+own cadence.
 
-- the state object;
-- an exact logical freshness offset;
-- a monotonically increasing order identity for that state object.
+State-to-state communication between genuinely different periods is **not** an ordinary expression.
+It requires an explicit future clock-domain-crossing operation (sample/hold, event accumulation,
+FIFO, etc.) that defines which source logical value is observed.
 
-Current update-method calls receive identities from the same sequence.  V1 therefore gives one strict
-elaboration order per state object while the backend keeps the concrete transition event explicit.
+Current lowering restriction: a nonzero-step external `InputSample` shared by heterogeneous state
+domains is rejected until domain-contextual input realization is implemented. This is a backend
+limitation, not a different semantic rule.
 
-For the trusted vector registers, all update methods on one register describe **one compound transition
-per invocation**.  In particular, `AccumulatorReg.add(...)` and `.clear(...)` are two inputs to one
-transition rule rather than two serial memory writes.  A read may occur before the compound transition
-or after it.  A read between `.add(...)` and `.clear(...)` is currently rejected because the physical
-prototype has no such intermediate state.
+## Timing constraints and inferred period
 
-## 8. Elastic semantic commit time
+For one domain, let register/value phases be `phi`. A dependency from source register state sampled
+at logical offset `r` to a target transition committing after logical offset `c` has physical logic
+latency `L`.
 
-An unanchored compound transition receives a compiler-chosen semantic commit offset `k`:
+The target transition-input phase is
 
 ```text
-invocation t creates an update
-        ↓
-transition occurs between S[t+k] and S[t+k+1]
+phi_target + (c + 1) * P - 1
 ```
 
-Strict reads constrain `k` without exposing physical latency:
-
-- a read before the transition at offset `r` requires `r <= k`;
-- a read after the transition at offset `r` requires `k < r`.
-
-Thus:
-
-```python
-old = memory.value
-memory.set(data, when=enable)
-c.tick(1)
-new = memory.value
-```
-
-allows `k=0`.  By contrast, a post-update read at the same freshness offset is infeasible and produces
-a compile-time diagnostic asking the user to advance the logical observation time.  The programmer
-chooses when the new state is required; the compiler chooses the elastic commit point inside the
-resulting legal interval.
-
-## 9. Physical state phase
-
-Semantic commit time and Factorio execution phase are solved separately.  Every register receives a
-physical state phase `P` such that logical boundary `S[t]` is observable at physical tick `t+P`.
-Update operands have independently inferred availability phases.  The timing analysis chooses the
-smallest non-negative `P` and inserts alignment delays so the trusted physical register prototype can
-realize the selected semantic commit offset.
-
-`CompilationResult.state_timing` exposes the solved plan for diagnostics and tests.  Each register plan
-contains:
-
-- `commit_offset` — semantic transition offset `k`;
-- `state_phase` — physical shift `P` of the state stream;
-- `transition_input_phase` — phase at which update inputs meet the physical state gate;
-- `earliest_transition_input_phase` — the operand-derived lower bound;
-- physical phases for every state read.
-
-The semantic simulator now evaluates `AccumulatorReg` and `FreezeReg` from the same timing plan, so
-representative circuits can be checked against the tick-accurate physical simulator rather than merely
-checking blueprint structure.
-
-## 10. Current concrete state components
-
-### `AccumulatorReg`
-
-Whole-vector additive memory with optional clear control.
-
-```python
-memory = c.accumulator("memory")
-memory.add(data)
-memory.clear(when=clear)
-c.tick(1)
-c.output("memory", memory.value)
-```
-
-Its current compound transition is equivalent to:
+and the source becomes available at
 
 ```text
-clear != 0   next = {}
-clear == 0   next = current + data
+phi_source + r * P + L
 ```
 
-### `FreezeReg`
-
-Whole-vector pass/freeze memory.
+so the compiler requires
 
 ```text
-set != 0   next = data
-set == 0   next = current
+phi_target >= phi_source + (r - c - 1) * P + L + 1
 ```
+
+For a cycle, the `phi` terms cancel. Positive logical distance permits a finite `P`; a same-step
+physical cycle does not.
+
+For the common recurrence
+
+```text
+S[k] -- L ticks of logic --> S[k+1]
+```
+
+we get
+
+```text
+P >= L + 1
+```
+
+where the final `+1` is the state-writing combinator stage.
+
+Example:
 
 ```python
-memory = c.freeze("memory")
-memory.set(data, when=set_signal)
-c.tick(1)
-c.output("memory", memory.value)
+old = memory.sample()
+memory.set(data, when=old.any())
 ```
 
-## 11. Representative timing tests
+`old.any()` needs one combinator tick and state-control normalization needs another. The write gate
+is the final stage, so the minimum period is `P=3` rather than an error.
 
-`tests/support/circuits.py` contains reusable temporal circuits used across the timing/integration
-suite. Important cases are:
+A genuine combinational cycle has zero logical distance and positive physical latency. No choice of
+`P` can satisfy it, so it remains illegal.
 
-- `delayed_accumulator_window(offset=3)`: brackets one elastic transition by old/new observations while
-  giving the clear control a deliberately multi-stage expression;
-- `n_tick_pulse_generator(n)`: a stateless retriggerable pulse stretcher built from fresh samples;
-- `switchable_fibonacci()`: two mutually coupled registers that advance one Fibonacci step per enabled
-  tick, hold while disabled, and expose the post-transition value at `tick(1)`.
+## Physical realization of P > 1
 
-Together these cases cover freshness, phase growth, strict state boundaries, simultaneous coupled state
-transitions, hold/resume behavior, and end-to-end semantic/physical stream equivalence. Whole-vector
-`.signal(...)` extraction is physically isolated before scalar arithmetic so consumers never merge
-independent feedback networks.
+Each multicycle domain gets a synthesized modulo-`P` clock signal. State update gates open only on
+the residue assigned to that register's phase. On other physical ticks:
 
-## 12. Current limitations and next semantics
+- `FreezeReg` forces its memory path to hold;
+- `AccumulatorReg` suppresses additions and ignores clear requests while retaining memory.
 
-The current timing solver intentionally covers the trusted one-transition-per-invocation vector state
-model.  The following remain open:
+Thus physical inputs may continue changing every game tick, but only values aligned with a logical
+activation can affect that domain's transition.
 
-1. explicit semantic write-time anchoring (`at=` / logical `now`) for timer-like updates;
-2. startup/warm-up semantics when future-sampled external sources feed feedback state;
-3. state-derived scalar controls for state transitions;
-4. a future partial-order/update-event API such as reads constrained before/after named updates;
-5. more aggressive physical optimization of commutative accumulator updates;
-6. additional state types such as counters, timers, queues, stacks, and memories;
-7. interleaving and temporal resource sharing.
+## Elaboration order and logical steps
 
+Register reads and update calls still carry strict elaboration order. Reads may occur before or after
+one compound transition, but a read cannot split the operations belonging to that transition.
+
+A post-update observation must advance at least one logical step:
+
+```python
+old = state.sample()
+state.set(x, when=enable)
+circuit.step()
+new = state.sample()
+```
+
+The timing analyzer chooses a realizable physical phase and period consistent with these logical
+constraints; source code does not name the write's physical game tick.

@@ -1,8 +1,7 @@
 """Logical whole-vector state primitives.
 
-State accesses carry elaboration-order and freshness metadata even though the current physical
-prototypes still realize a restricted subset of those semantics.  Keeping the metadata in the IR
-lets a later frontend relax strict ordering without replacing the state representation.
+State accesses carry elaboration order and logical-step metadata. Physical Factorio phases and clock
+periods are inferred later and are intentionally absent from this IR.
 """
 
 from __future__ import annotations
@@ -25,8 +24,8 @@ class AccumulatorRegister:
 class FreezeRegister:
     """Whole-vector sample/hold register.
 
-    ``set`` high makes the register transparent (track input); ``set`` low freezes
-    the last tracked vector.
+    ``set`` high makes the register transparent at a logical update boundary; ``set`` low holds the
+    previous logical state.
     """
 
     name: str
@@ -37,7 +36,7 @@ StateRegister = AccumulatorRegister | FreezeRegister
 
 @dataclass(frozen=True, slots=True)
 class VectorRegisterRead:
-    """Observation of a whole-vector register at one logical freshness point."""
+    """Observation of a whole-vector register at one logical step."""
 
     register: StateRegister
     offset: int = 0

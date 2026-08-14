@@ -1,7 +1,5 @@
 # Architecture
 
-Keep the architecture deliberately small:
-
 ```text
 ordinary Python elaboration
         ↓
@@ -9,125 +7,99 @@ symbolic frontend
   Circuit / Input / SignalsInput / Expr / state objects
         ↓
 logical circuit
-  - stateless expression DAG
-  - source-sample provenance and freshness offsets
-  - explicit built-in state accesses/updates
+  - scalar/vector stream graph
+  - logical source-sample offsets
+  - explicit state accesses/updates
         ↓
-optimization + state realization
+optimization + logical clock-domain timing
         ↓
 abstract physical Factorio IR
-  - exact target combinator behavior
-  - abstract signal variables
-  - abstract electrical nets
+  - exact target combinators
+  - abstract signals and electrical nets
   - compatibility/conflict metadata
         ↓
 physical synthesis
-  - concrete signal allocation
-  - compatible-net merging
+  - concrete signals
   - red/green assignment
-  - final entity placement and reach-safe wiring
+  - placement and reach-safe wiring
         ↓
 Layout
         ↓
-blueprint serialization + encoding
+blueprint serialization
 ```
 
-The abstract physical IR is target-specific rather than a separate architecture/design layer. It
-exists so signal allocation, electrical-net choices, and placement can be optimized jointly during
-physical synthesis.
+The abstract physical IR is target-specific. It exists so signal allocation, electrical-net choices,
+and placement can be optimized jointly during physical synthesis.
 
-## Symbolic frontend responsibilities
+## Symbolic frontend
 
-Python runs once as elaboration. Symbolic operators create logical IR nodes immediately.
+Python runs once as elaboration. Symbolic operators create logical stream nodes.
 
-- `Circuit.input(name)` creates a scalar external source.
-- `Circuit.signals(name)` creates a whole-signal-vector external source.
-- source `.sample()` creates a fresh observation at the current freshness cursor.
-- scalar operators create `BinaryOp`, `Compare`, and `Select` nodes.
-- `Circuit.output(name, expr)` declares an observable output.
+- `Circuit.input(name)` and `Circuit.signals(name)` create external physical sources.
+- input/register `.sample()` observes a source at the current logical step.
+- `Circuit.step(n)` advances the logical observation cursor.
+- `Circuit.tick()` is reserved for future physical-tick constraints.
+- scalar/vector operators create logical expressions without exposing physical execution ticks.
 - state objects create explicit read/update IR records.
 
-Derived `Expr` objects represent logical streams and intentionally expose no physical execution tick.
+Derived expressions are already sampled logical streams and therefore have no `.sample()` operation.
 
-## Logical circuit responsibilities
+## Logical timing and state realization
 
-The logical circuit records:
+Logical step and physical game tick are separate coordinates. Each connected state clock domain has
+an inferred physical period `P`; a value phase `phi` realizes logical value `v[k]` at
+`phi + k*P`.
 
-- external source identities;
-- fresh source observations such as `InputSample(source=x, offset=3)`;
-- arithmetic/comparison/mux dependencies;
-- state observation freshness;
-- strict v1 state-access order identities;
-- state update requests;
-- whole-vector constant sources and concrete signal-lane observations;
-- named outputs.
+Stateless operations preserve `k` and add physical latency. Feed-forward latency does not constrain
+`P` because pipelines can overlap samples. Recurrences do constrain `P`.
 
-Physical phases are inferred later.
+Ordinary state dependencies union their registers into one domain. Independent state components may
+have different periods. Explicit state communication between different periods is future
+clock-domain-crossing work rather than ordinary same-index arithmetic.
 
-## Stateless optimization
+`analysis/state_timing.py` records each dependency as logical displacement plus physical latency. For
+source offset `r`, target commit offset `c`, latency `L`, and shared period `P`:
 
-The stateless DAG remains the main input to simplification, CSE/DCE, compatibility partitioning,
-conservative `Each` packing, phase/alignment scheduling, and late signal allocation.
+```text
+phi_target >= phi_source + (r - c - 1) * P + L + 1
+```
 
-Values with different freshness origins may feed one operation. The physical scheduler delays older
-values until the required samples coexist without changing sample identity.
+The analyzer chooses the smallest feasible positive integer `P` per domain and then solves register
+phases as difference constraints. A positive-latency recurrence with positive logical distance is
+therefore legal at a sufficiently large period. A positive-latency cycle with zero logical distance
+remains impossible.
 
-## State realization
+The physical lowerer consumes this plan. For `P>1` it synthesizes a modulo-domain clock and gates
+`AccumulatorReg`/`FreezeReg` transitions so intermediate Factorio ticks retain state.
 
-Built-in state components remain opaque enough that the backend can choose Factorio-native
-implementations.
-
-Current trusted prototypes:
-
-- `AccumulatorReg`;
-- `FreezeReg`.
-
-The IR records freshness/order metadata for state accesses. `analysis/state_timing.py` turns that
-metadata into one `StateTimingPlan`: semantic commit offsets, physical register phases, transition-input
-alignment phases, and read phases. The physical state lowerer consumes the plan. The current solver
-handles the trusted one-compound-transition vector registers together, including mutually coupled
-state-to-state vector feeds. Register phases are solved as difference constraints; a positive-latency
-feedback cycle is diagnosed as an initiation-interval limitation of the current physical prototypes.
+Register accesses still carry strict elaboration order. Reads cannot split one compound transition;
+post-transition observations use a later logical step.
 
 ## Abstract physical IR
 
 `ir/abstract_physical.py` represents exact target combinator behavior while keeping late physical
 resources unresolved. `AbstractSignal` is a signal-lane variable rather than a concrete `SignalId`.
-`AbstractNet` is a logical electrical-connectivity requirement with no red/green color. Signals and
-nets are independent: one net may carry many signals, and one abstract signal may occur on multiple
-electrically disconnected nets.
+`AbstractNet` is an electrical-connectivity requirement with no red/green color.
 
-Each `AbstractNet` records compiler-allocated lanes, fixed concrete lanes, and whether it may carry an
-open runtime vector. Pairwise `SignalConflict` metadata forbids unsafe abstract-signal aliasing when
-lanes coexist on one net. `NetConflict` forbids electrical net merges. Compatible choices remain
-deliberately unresolved.
+Nets distinguish compiler-allocated lanes, user-fixed concrete lanes, and runtime-open vectors.
+`SignalConflict`, `SignalAlias`, and `NetConflict` express allocation/electrical constraints without
+prematurely choosing concrete signals or wire colors.
 
-The executable lowerer now covers scalar and whole-vector stateless circuits plus both trusted vector
-registers: fresh scalar/vector sampling, vector constants, direct fixed-lane `.signal(...)` views,
-phase-alignment delays, arithmetic, comparisons, selects, conservative `Each` packing,
-`AccumulatorReg`, and `FreezeReg`. A lane read itself creates no extractor; a real delay/isolation
-combinator is introduced only when timing requires one. Register vector/control separation is expressed
-with abstract net conflicts rather than wire colors. See `docs/abstract-physical-ir.md` for the detailed
-contract.
+The canonical lowerer covers scalar logic, runtime-open vectors, fresh logical samples, selector
+operations, phase-alignment delays, `AccumulatorReg`, and `FreezeReg`.
 
 ## Physical synthesis and Layout
 
-Physical synthesis consumes the abstract physical IR and jointly chooses concrete Factorio signal
-identities, compatible net merges, red/green assignment, and final placement/wiring. Its output is a
-`Layout` object containing the final placement choices and reach-safe physical wiring.
+Physical synthesis jointly chooses:
 
-Blueprint generation is downstream serialization: it translates `Layout` to Factorio blueprint JSON,
-then performs the standard compression/base64 encoding. Layout is an output data object of physical
-synthesis, rather than another processing layer.
+- concrete Factorio signal identities;
+- compatible net merges;
+- red/green allocation;
+- final placement and reach-safe wiring.
 
-`compile_circuit(...)` is the canonical executable path for this architecture. Physical synthesis
-reserves user-fixed signal identities, derives safe red/green constraints, coalesces proven-compatible
-nets that already meet at connectors, and reuses concrete virtual signal identities across electrically
-disjoint physical groups. It then uses the current deterministic row placement and reach-safe routing.
-That placement policy is intentionally simple and is not an active optimization target for now.
-Blueprint serialization consumes the completed `Layout` without choosing geometry or wiring. Scalar
-I/O annotation markers are finalized after their concrete signals are known.
+Its output is `Layout`. Blueprint generation is downstream serialization only; it does not choose
+geometry or wiring.
 
-`compile_abstract_circuit(...)` remains as a compatibility alias for the canonical path. The previous
-direct-concrete lowerer is retained only in `factorio_circuit.compiler_legacy` as a parity/debugging
-oracle; it is not part of normal compilation.
+`compile_circuit(...)` is the canonical path. `compile_abstract_circuit(...)` remains a compatibility
+alias. `compiler_legacy` is only a P=1 comparison/debugging oracle and explicitly rejects multicycle
+state domains.
