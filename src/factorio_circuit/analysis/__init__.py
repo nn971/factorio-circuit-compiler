@@ -1,6 +1,7 @@
 """Compiler analyses."""
 
 from .state_timing import (
+    ClockDomainTiming,
     RegisterTiming,
     StateReadTiming,
     StateTimingError,
@@ -11,6 +12,7 @@ from .state_timing import (
 )
 
 __all__ = [
+    "ClockDomainTiming",
     "RegisterTiming",
     "StateReadTiming",
     "StateTimingError",
