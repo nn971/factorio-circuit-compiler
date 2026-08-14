@@ -40,15 +40,15 @@ def _switchable_fibonacci() -> Circuit:
     a = c.freeze("fib_a")
     b = c.accumulator("fib_b")
 
-    old_a = a.value
-    old_b = b.value
+    old_a = a.sample()
+    old_b = b.sample()
     a.set(old_b, when=on)
     b.add(old_a, when=on)
     b.add(one, when=on)
 
-    c.tick(1)
-    new_a = a.value
-    new_b = b.value
+    c.step(1)
+    new_a = a.sample()
+    new_b = b.sample()
     c.output("fib", new_b.signal(FIB) - new_a.signal(FIB))
     return c
 
