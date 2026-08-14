@@ -1,8 +1,9 @@
-"""Abstract timing analysis for stateful stream components.
+"""Logical state timing and physical clock-period inference.
 
-The analysis separates semantic state-boundary ordering from physical Factorio phase.  The current
-vector registers each describe one compound transition per invocation.  Multiple accumulator adds
-belong to the same transition and commute.
+Logical steps and Factorio game ticks are separate coordinates.  Stateless combinators preserve a
+logical step while adding physical latency.  Register transitions advance logical state and may need
+more than one physical tick per logical step.  The analyzer groups ordinary state dependencies into
+clock domains and chooses the smallest feasible physical period for each domain.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from factorio_circuit.ir.state import (
 
 
 class StateTimingError(ValueError):
-    """Raised when strict state timing cannot be realized by the current state model."""
+    """Raised when logical state ordering has no realizable physical schedule."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,8 +48,19 @@ class StateReadTiming:
 
 
 @dataclass(frozen=True, slots=True)
+class ClockDomainTiming:
+    """One set of state streams that share a logical-step cadence."""
+
+    id: int
+    period: int
+    registers: tuple[StateRegister, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RegisterTiming:
     register: StateRegister
+    clock_domain: int
+    period: int
     commit_offset: int
     state_phase: int
     transition_input_phase: int
@@ -66,6 +78,7 @@ class RegisterTiming:
 
 @dataclass(frozen=True, slots=True)
 class StateTimingPlan:
+    domains: tuple[ClockDomainTiming, ...]
     registers: tuple[RegisterTiming, ...]
 
     def for_register(self, register: StateRegister) -> RegisterTiming:
@@ -81,6 +94,33 @@ class StateTimingPlan:
                 return item
         raise KeyError(read)
 
+    def domain_for_register(self, register: StateRegister) -> ClockDomainTiming:
+        timing = self.for_register(register)
+        for domain in self.domains:
+            if domain.id == timing.clock_domain:
+                return domain
+        raise KeyError(register)
+
+    @property
+    def uniform_period(self) -> int | None:
+        """Return the common state period, or ``None`` for heterogeneous domains."""
+
+        periods = {domain.period for domain in self.domains}
+        if not periods:
+            return 1
+        if len(periods) == 1:
+            return next(iter(periods))
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class _Requirement:
+    """Availability of one leaf after a logical displacement and physical latency."""
+
+    source: StateRegister | None
+    logical_offset: int
+    latency: int
+
 
 @dataclass(frozen=True, slots=True)
 class _RegisterSpec:
@@ -90,21 +130,23 @@ class _RegisterSpec:
     commit_offset: int
     first_update_order: int
     last_update_order: int
-    absolute_requirement: int
-    state_dependencies: tuple[tuple[StateRegister, int], ...]
-
-
-_Requirements = tuple[int, tuple[tuple[StateRegister, int], ...]]
+    requirements: tuple[_Requirement, ...]
 
 
 def analyze_state_timing(module: CircuitModule) -> StateTimingPlan:
-    """Solve semantic commit windows and physical phases for the current vector state.
+    """Infer logical clock domains, their minimal periods, and concrete physical phases.
 
-    State-to-state scalar/vector feeds produce ordinary difference constraints between register
-    phases.  Zero-weight feedback cycles are valid (and are important for mutually coupled
-    registers); a positive-weight cycle is rejected because it would require a value to arrive
-    before itself.
+    For a register with state phase ``phi`` and domain period ``P``, logical state ``S[k]`` is
+    observable at physical tick ``phi + k*P``.  A transition committed between logical boundaries
+    ``k`` and ``k+1`` receives its physical update input one game tick before the latter boundary.
+
+    Ordinary expressions preserve logical indices.  Therefore any ordinary expression connecting
+    state registers places those registers in the same clock domain.  Different domains may still
+    share raw external inputs; explicit cross-domain state resampling is intentionally not present yet.
     """
+
+    if not module.state_registers:
+        return StateTimingPlan((), ())
 
     reads = _collect_state_reads(module)
     specs: list[_RegisterSpec] = []
@@ -113,23 +155,40 @@ def analyze_state_timing(module: CircuitModule) -> StateTimingPlan:
         register_reads = tuple(read for read in reads if read.register == register)
         specs.append(_analyze_register_semantics(register, operations, register_reads))
 
-    phases = _solve_state_phases(specs)
+    specs_by_name = {spec.register.name: spec for spec in specs}
+    groups = _infer_clock_domain_registers(module)
+
+    domain_timings: list[ClockDomainTiming] = []
+    phase_by_name: dict[str, int] = {}
+    period_by_name: dict[str, int] = {}
+    domain_by_name: dict[str, int] = {}
+
+    for domain_id, registers in enumerate(groups):
+        domain_specs = [specs_by_name[register.name] for register in registers]
+        period, phases = _solve_domain(domain_specs)
+        domain_timings.append(ClockDomainTiming(domain_id, period, registers))
+        for register in registers:
+            phase_by_name[register.name] = phases[register.name]
+            period_by_name[register.name] = period
+            domain_by_name[register.name] = domain_id
+
     timings: list[RegisterTiming] = []
     for spec in specs:
-        state_phase = phases[spec.register.name]
-        earliest = spec.absolute_requirement
-        for source, offset in spec.state_dependencies:
-            earliest = max(earliest, phases[source.name] + offset)
-        transition = state_phase + spec.commit_offset
+        state_phase = phase_by_name[spec.register.name]
+        period = period_by_name[spec.register.name]
+        transition = state_phase + (spec.commit_offset + 1) * period - 1
+        earliest = _earliest_requirement_phase(spec, period, phase_by_name)
         if transition < earliest:  # pragma: no cover - solver invariant
-            raise AssertionError("state phase solver violated an update-input requirement")
+            raise AssertionError("clock-period solver violated an update-input requirement")
         read_timings = tuple(
-            StateReadTiming(read, state_phase + read.offset)
+            StateReadTiming(read, state_phase + read.offset * period)
             for read in sorted(spec.reads, key=lambda item: item.order)
         )
         timings.append(
             RegisterTiming(
                 register=spec.register,
+                clock_domain=domain_by_name[spec.register.name],
+                period=period,
                 commit_offset=spec.commit_offset,
                 state_phase=state_phase,
                 transition_input_phase=transition,
@@ -139,119 +198,87 @@ def analyze_state_timing(module: CircuitModule) -> StateTimingPlan:
                 reads=read_timings,
             )
         )
-    return StateTimingPlan(tuple(timings))
 
-
-def _merge_requirements(*requirements: _Requirements) -> _Requirements:
-    if not requirements:
-        return 0, ()
-    absolute = max(item[0] for item in requirements)
-    dependencies = tuple(
-        dependency
-        for _absolute, item_dependencies in requirements
-        for dependency in item_dependencies
-    )
-    return absolute, dependencies
-
-
-def _delay_requirements(requirements: _Requirements, ticks: int) -> _Requirements:
-    absolute, dependencies = requirements
-    return absolute + ticks, tuple((register, offset + ticks) for register, offset in dependencies)
+    return StateTimingPlan(tuple(domain_timings), tuple(timings))
 
 
 def earliest_scalar_phase(value: ScalarValue) -> int:
-    """Earliest phase of scalar logic that has no state-read dependency."""
+    """Earliest physical phase for a state-independent scalar in the default ``P=1`` domain."""
 
-    absolute, dependencies = _scalar_requirements(value)
-    if dependencies:
+    requirements = _scalar_requirements(value)
+    if any(item.source is not None for item in requirements):
         raise StateTimingError("state-dependent scalar phases require analyze_state_timing(...)")
-    return absolute
+    return max((item.logical_offset + item.latency for item in requirements), default=0)
 
 
-def _scalar_requirements(value: ScalarValue) -> _Requirements:
+def earliest_vector_phase(value: VectorValue) -> int:
+    """Earliest physical phase for a state-independent vector in the default ``P=1`` domain."""
+
+    requirements = _vector_requirements(value)
+    if any(item.source is not None for item in requirements):
+        raise StateTimingError("state-dependent vector phases require analyze_state_timing(...)")
+    return max((item.logical_offset + item.latency for item in requirements), default=0)
+
+
+def _delay_requirements(
+    requirements: tuple[_Requirement, ...], ticks: int
+) -> tuple[_Requirement, ...]:
+    return tuple(
+        _Requirement(item.source, item.logical_offset, item.latency + ticks)
+        for item in requirements
+    )
+
+
+def _scalar_requirements(value: ScalarValue) -> tuple[_Requirement, ...]:
     if isinstance(value, Input):
-        return 0, ()
+        return (_Requirement(None, 0, 0),)
     if isinstance(value, InputSample):
-        return value.offset, ()
+        return (_Requirement(None, value.offset, 0),)
     if isinstance(value, Constant):
-        return 0, ()
+        return (_Requirement(None, 0, 0),)
     if isinstance(value, VectorSignal):
         return _vector_requirements(value.vector)
     if isinstance(value, (BinaryOp, Compare)):
         return _delay_requirements(
-            _merge_requirements(
-                _scalar_requirements(value.left),
-                _scalar_requirements(value.right),
-            ),
-            1,
+            (*_scalar_requirements(value.left), *_scalar_requirements(value.right)), 1
         )
     if isinstance(value, Select):
-        false_requirements = _scalar_requirements(value.when_false)
-        diff_requirements = _delay_requirements(
-            _merge_requirements(
-                _scalar_requirements(value.when_true),
-                false_requirements,
-            ),
-            1,
-        )
-        gated_requirements = _delay_requirements(
-            _merge_requirements(
-                diff_requirements,
-                _scalar_requirements(value.condition),
-            ),
-            1,
-        )
-        return _delay_requirements(
-            _merge_requirements(false_requirements, gated_requirements),
-            1,
+        # The conservative generic mux is false + (true-false)*condition.  Keep the same timing
+        # envelope as the previous analyzer even when physical optimization later fuses the mux.
+        return (
+            *_delay_requirements(_scalar_requirements(value.when_true), 3),
+            *_delay_requirements(_scalar_requirements(value.when_false), 3),
+            *_delay_requirements(_scalar_requirements(value.condition), 2),
         )
     raise TypeError(value)
 
 
-def _normalized_when_requirements(value: ScalarValue) -> _Requirements:
+def _control_requirements(value: ScalarValue) -> tuple[_Requirement, ...]:
+    """Requirements after nonzero/zero normalization at a state boundary."""
+
     if isinstance(value, Constant):
-        return 0, ()
+        return ()
     return _delay_requirements(_scalar_requirements(value), 1)
 
 
-def earliest_vector_phase(value: VectorValue) -> int:
-    """Earliest absolute phase for vector values with no state dependency.
-
-    Derived runtime-open vector operations contribute their physical one-tick latency.  Values
-    depending on register reads are solved only in the full timing plan because their absolute
-    phase is relative to another register.
-    """
-
-    absolute, dependencies = _vector_requirements(value)
-    if dependencies:
-        raise StateTimingError("state-dependent vector phases require analyze_state_timing(...)")
-    return absolute
-
-
-def _vector_requirements(value: object) -> _Requirements:
+def _vector_requirements(value: object) -> tuple[_Requirement, ...]:
     from factorio_circuit.frontend import _VectorBinaryOp, _VectorFilter, _VectorScalarOp
 
-    if isinstance(value, (VectorInput, VectorConstant)):
-        return 0, ()
+    if isinstance(value, VectorInput):
+        return (_Requirement(None, 0, 0),)
     if isinstance(value, VectorInputSample):
-        return value.offset, ()
+        return (_Requirement(None, value.offset, 0),)
+    if isinstance(value, VectorConstant):
+        return (_Requirement(None, 0, 0),)
     if isinstance(value, VectorRegisterRead):
-        return 0, ((value.register, value.offset),)
+        return (_Requirement(value.register, value.offset, 0),)
     if isinstance(value, _VectorBinaryOp):
         return _delay_requirements(
-            _merge_requirements(
-                _vector_requirements(value.left),
-                _vector_requirements(value.right),
-            ),
-            1,
+            (*_vector_requirements(value.left), *_vector_requirements(value.right)), 1
         )
     if isinstance(value, _VectorScalarOp):
         return _delay_requirements(
-            _merge_requirements(
-                _vector_requirements(value.vector),
-                _scalar_requirements(value.scalar),
-            ),
-            1,
+            (*_vector_requirements(value.vector), *_scalar_requirements(value.scalar)), 1
         )
     if isinstance(value, _VectorFilter):
         return _delay_requirements(_vector_requirements(value.vector), 1)
@@ -285,14 +312,13 @@ def _analyze_register_semantics(
     if upper is not None and lower > upper:
         after_desc = min(after, key=lambda read: read.offset)
         raise StateTimingError(
-            f"state {register.name!r} update must occur after logical offset {lower}, but the "
-            f"read at order {after_desc.order} observes offset {after_desc.offset}; advance the "
-            "freshness cursor before that read"
+            f"state {register.name!r} update must occur after logical step {lower}, but the "
+            f"read at order {after_desc.order} observes step {after_desc.offset}; advance the "
+            "logical step before that read"
         )
     commit_offset = lower
 
-    absolute = 0
-    dependencies: list[tuple[StateRegister, int]] = []
+    requirements: list[_Requirement] = []
     if isinstance(register, AccumulatorRegister):
         adds = [op for op in operations if isinstance(op, AccumulatorAdd)]
         clears = [op for op in operations if isinstance(op, AccumulatorClear)]
@@ -308,33 +334,16 @@ def _analyze_register_semantics(
         if len(clears) > 1:
             raise StateTimingError(f"AccumulatorReg {register.name!r} has multiple clear controls")
 
-        clear_requirements = (
-            _normalized_when_requirements(clears[0].when) if clears else (0, ())
-        )
+        clear_requirements = _control_requirements(clears[0].when) if clears else ()
         for add in adds:
-            source_requirements = _vector_requirements(add.value)
-            add_requirements = _normalized_when_requirements(add.when)
-            if clears:
-                if isinstance(add.when, Constant) and add.when.value != 0:
-                    gate_requirements = clear_requirements
-                else:
-                    gate_requirements = _delay_requirements(
-                        _merge_requirements(add_requirements, clear_requirements),
-                        1,
-                    )
-            else:
-                gate_requirements = add_requirements
-
-            for requirement in (source_requirements, gate_requirements):
-                absolute = max(absolute, requirement[0])
-                dependencies.extend(requirement[1])
-
-        if clears:
-            absolute = max(absolute, clear_requirements[0])
-            dependencies.extend(clear_requirements[1])
+            requirements.extend(_vector_requirements(add.value))
+            requirements.extend(_control_requirements(add.when))
+            # A physical state gate can test add-enable and clear-disable in one decider stage.
+            requirements.extend(clear_requirements)
+        requirements.extend(clear_requirements)
 
     elif isinstance(register, FreezeRegister):
-        freeze_sets: list[FreezeSet] = [op for op in operations if isinstance(op, FreezeSet)]
+        freeze_sets = [op for op in operations if isinstance(op, FreezeSet)]
         freeze_unexpected = [op for op in operations if not isinstance(op, FreezeSet)]
         if freeze_unexpected:  # pragma: no cover
             raise StateTimingError(f"unexpected operation for FreezeReg {register.name!r}")
@@ -342,12 +351,8 @@ def _analyze_register_semantics(
             raise StateTimingError(
                 f"FreezeReg {register.name!r} requires exactly one .set(data, when=...) call"
             )
-
-        source_requirements = _vector_requirements(freeze_sets[0].value)
-        control_requirements = _normalized_when_requirements(freeze_sets[0].when)
-        for requirement in (source_requirements, control_requirements):
-            absolute = max(absolute, requirement[0])
-            dependencies.extend(requirement[1])
+        requirements.extend(_vector_requirements(freeze_sets[0].value))
+        requirements.extend(_control_requirements(freeze_sets[0].when))
 
     else:  # pragma: no cover
         raise TypeError(register)
@@ -359,90 +364,225 @@ def _analyze_register_semantics(
         commit_offset=commit_offset,
         first_update_order=first_order,
         last_update_order=last_order,
-        absolute_requirement=absolute,
-        state_dependencies=tuple(dependencies),
+        requirements=tuple(requirements),
     )
 
 
-def _solve_state_phases(specs: list[_RegisterSpec]) -> dict[str, int]:
-    phases = {
-        spec.register.name: max(0, spec.absolute_requirement - spec.commit_offset) for spec in specs
-    }
-    by_name = {spec.register.name: spec for spec in specs}
+def _earliest_requirement_phase(
+    spec: _RegisterSpec,
+    period: int,
+    phases: dict[str, int],
+) -> int:
+    earliest = 0
+    for requirement in spec.requirements:
+        base = 0 if requirement.source is None else phases[requirement.source.name]
+        earliest = max(
+            earliest,
+            base + requirement.logical_offset * period + requirement.latency,
+        )
+    return earliest
 
-    # P_target >= P_source + read_offset - commit_offset.
+
+def _solve_domain(specs: list[_RegisterSpec]) -> tuple[int, dict[str, int]]:
+    """Find the smallest integer period whose difference constraints are feasible."""
+
+    state_edges = sum(
+        requirement.latency + 1
+        for spec in specs
+        for requirement in spec.requirements
+        if requirement.source is not None
+    )
+    # Any feasible recurrence cycle has a positive integer logical distance.  Its required period is
+    # at most the sum of its positive physical constants, which is bounded by all state edges here.
+    max_period = max(1, state_edges)
+
+    for period in range(1, max_period + 1):
+        phases = _solve_phases_for_period(specs, period)
+        if phases is not None:
+            return period, phases
+
+    names = ", ".join(spec.register.name for spec in specs)
+    raise StateTimingError(
+        "state recurrence has no finite logical clock period: ordinary same-step dependencies form "
+        f"a noncausal/zero-distance physical cycle in domain {{{names}}}"
+    )
+
+
+def _solve_phases_for_period(
+    specs: list[_RegisterSpec], period: int
+) -> dict[str, int] | None:
+    phases: dict[str, int] = {}
+    names = {spec.register.name for spec in specs}
+
+    for spec in specs:
+        lower_bound = 0
+        for requirement in spec.requirements:
+            if requirement.source is not None:
+                continue
+            lower_bound = max(
+                lower_bound,
+                (requirement.logical_offset - spec.commit_offset - 1) * period
+                + requirement.latency
+                + 1,
+            )
+        phases[spec.register.name] = lower_bound
+
+    # phi_target >= phi_source + (r-c-1)P + latency + 1.
     for iteration in range(len(specs)):
         changed = False
         for spec in specs:
             target = spec.register.name
-            for source, read_offset in spec.state_dependencies:
-                if source.name not in by_name:
+            for requirement in spec.requirements:
+                source = requirement.source
+                if source is None:
+                    continue
+                if source.name not in names:
                     raise StateTimingError(
-                        f"state {target!r} depends on unknown state {source.name!r}"
+                        f"state {target!r} depends on state {source.name!r} in another clock domain; "
+                        "ordinary state expressions must share one logical clock domain"
                     )
-                required = phases[source.name] + read_offset - spec.commit_offset
+                required = (
+                    phases[source.name]
+                    + (requirement.logical_offset - spec.commit_offset - 1) * period
+                    + requirement.latency
+                    + 1
+                )
                 if required > phases[target]:
                     phases[target] = required
                     changed = True
         if not changed:
             return phases
         if iteration == len(specs) - 1:
-            raise StateTimingError(
-                "state feedback has positive physical latency around a cycle; the current register "
-                "prototypes cannot sustain one logical transition per game tick for this recurrence"
-            )
+            return None
     return phases
+
+
+def _infer_clock_domain_registers(
+    module: CircuitModule,
+) -> tuple[tuple[StateRegister, ...], ...]:
+    """Union registers connected by ordinary same-index expressions."""
+
+    registers = tuple(module.state_registers)
+    by_name = {register.name: register for register in registers}
+    parent = {register.name: register.name for register in registers}
+    order = {register.name: index for index, register in enumerate(registers)}
+
+    def find(name: str) -> str:
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    def union(left: StateRegister, right: StateRegister) -> None:
+        left_root = find(left.name)
+        right_root = find(right.name)
+        if left_root == right_root:
+            return
+        if order[left_root] <= order[right_root]:
+            parent[right_root] = left_root
+        else:
+            parent[left_root] = right_root
+
+    for operation in module.state_operations:
+        referenced: set[StateRegister] = set()
+        if isinstance(operation, (AccumulatorAdd, FreezeSet)):
+            referenced.update(_registers_in_value(operation.value))
+        if isinstance(operation, (AccumulatorAdd, AccumulatorClear, FreezeSet)):
+            referenced.update(_registers_in_value(operation.when))
+        for source in referenced:
+            union(operation.register, source)
+
+    for output in module.output.values:
+        referenced = sorted(_registers_in_value(output), key=lambda item: order[item.name])
+        if referenced:
+            first = referenced[0]
+            for other in referenced[1:]:
+                union(first, other)
+
+    groups: dict[str, list[StateRegister]] = {}
+    for register in registers:
+        groups.setdefault(find(register.name), []).append(by_name[register.name])
+    return tuple(tuple(group) for group in groups.values())
+
+
+def _registers_in_value(value: object) -> set[StateRegister]:
+    from factorio_circuit.frontend import _VectorBinaryOp, _VectorFilter, _VectorScalarOp
+
+    seen: set[int] = set()
+
+    def visit(item: object) -> set[StateRegister]:
+        if id(item) in seen:
+            return set()
+        seen.add(id(item))
+        if isinstance(item, VectorRegisterRead):
+            return {item.register}
+        if isinstance(item, (Input, InputSample, Constant, VectorInput, VectorInputSample, VectorConstant)):
+            return set()
+        if isinstance(item, VectorSignal):
+            return visit(item.vector)
+        if isinstance(item, (BinaryOp, Compare)):
+            return visit(item.left) | visit(item.right)
+        if isinstance(item, Select):
+            return visit(item.condition) | visit(item.when_true) | visit(item.when_false)
+        if isinstance(item, _VectorBinaryOp):
+            return visit(item.left) | visit(item.right)
+        if isinstance(item, _VectorScalarOp):
+            return visit(item.vector) | visit(item.scalar)
+        if isinstance(item, _VectorFilter):
+            return visit(item.vector)
+        raise TypeError(item)
+
+    return visit(value)
 
 
 def _collect_state_reads(module: CircuitModule) -> tuple[VectorRegisterRead, ...]:
     from factorio_circuit.frontend import _VectorBinaryOp, _VectorFilter, _VectorScalarOp
 
     result: list[VectorRegisterRead] = []
-    seen: set[int] = set()
+    seen_reads: set[int] = set()
+    traversed: set[int] = set()
 
-    def add_vector(value: object) -> bool:
-        if isinstance(value, VectorRegisterRead):
-            if id(value) not in seen:
-                seen.add(id(value))
-                result.append(value)
-            return True
-        if isinstance(value, (VectorInput, VectorInputSample, VectorConstant)):
-            return True
-        if isinstance(value, _VectorBinaryOp):
-            add_vector(value.left)
-            add_vector(value.right)
-            return True
-        if isinstance(value, _VectorScalarOp):
-            add_vector(value.vector)
-            add_scalar(value.scalar)
-            return True
-        if isinstance(value, _VectorFilter):
-            add_vector(value.vector)
-            return True
-        return False
-
-    def add_scalar(value: ScalarValue, visited: set[int] | None = None) -> None:
-        if visited is None:
-            visited = set()
-        if id(value) in visited:
+    def add(value: object) -> None:
+        if id(value) in traversed:
             return
-        visited.add(id(value))
+        traversed.add(id(value))
+        if isinstance(value, VectorRegisterRead):
+            if id(value) not in seen_reads:
+                seen_reads.add(id(value))
+                result.append(value)
+            return
+        if isinstance(value, (Input, InputSample, Constant, VectorInput, VectorInputSample, VectorConstant)):
+            return
         if isinstance(value, VectorSignal):
-            add_vector(value.vector)
-        elif isinstance(value, (BinaryOp, Compare)):
-            add_scalar(value.left, visited)
-            add_scalar(value.right, visited)
-        elif isinstance(value, Select):
-            add_scalar(value.condition, visited)
-            add_scalar(value.when_true, visited)
-            add_scalar(value.when_false, visited)
+            add(value.vector)
+            return
+        if isinstance(value, (BinaryOp, Compare)):
+            add(value.left)
+            add(value.right)
+            return
+        if isinstance(value, Select):
+            add(value.condition)
+            add(value.when_true)
+            add(value.when_false)
+            return
+        if isinstance(value, _VectorBinaryOp):
+            add(value.left)
+            add(value.right)
+            return
+        if isinstance(value, _VectorScalarOp):
+            add(value.vector)
+            add(value.scalar)
+            return
+        if isinstance(value, _VectorFilter):
+            add(value.vector)
+            return
+        raise TypeError(value)
 
     for output in module.output.values:
-        if not add_vector(output) and isinstance(output, ScalarValue):
-            add_scalar(output)
-    for op in module.state_operations:
-        if isinstance(op, (AccumulatorAdd, FreezeSet)):
-            add_vector(op.value)
-        if isinstance(op, (AccumulatorAdd, AccumulatorClear, FreezeSet)):
-            add_scalar(op.when)
+        add(output)
+    for operation in module.state_operations:
+        if isinstance(operation, (AccumulatorAdd, FreezeSet)):
+            add(operation.value)
+        if isinstance(operation, (AccumulatorAdd, AccumulatorClear, FreezeSet)):
+            add(operation.when)
     return tuple(result)
