@@ -23,7 +23,10 @@ def _vector_stack() -> Circuit:
 
     for index, slot in enumerate(slots):
         pushed = push_data.gate(push) if index == 0 else old_slots[index - 1].gate(push)
-        next_value = pushed + old_slots[index + 1].gate(pop) if index + 1 < DEPTH else pushed
+        if index + 1 < DEPTH:
+            next_value = pushed + old_slots[index + 1].gate(pop)
+        else:
+            next_value = pushed
         slot.set(next_value, when=change)
 
     circuit.output("top", old_slots[0])
@@ -47,7 +50,10 @@ def test_four_slot_vector_stack_uses_only_primitive_freeze_registers(optimize: b
     period = result.state_timing.domains[0].period
     assert period > 1
     assert all(item.period == period for item in timing.values())
-    assert all(item.transition_input_phase >= item.earliest_transition_input_phase for item in timing.values())
+    assert all(
+        item.transition_input_phase >= item.earliest_transition_input_phase
+        for item in timing.values()
+    )
 
     assert any(
         getattr(entity, "description", "") == f"clock domain 0: modulo-{period} counter"
