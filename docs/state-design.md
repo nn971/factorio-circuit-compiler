@@ -5,10 +5,10 @@
 State is a logical stream, not a physical combinator tick.
 
 ```python
-old = reg.sample()       # S[k]
+old = reg.sample()  # S[k]
 reg.set(next_value, when=enable)
 circuit.step()
-new = reg.sample()       # S[k+1]
+new = reg.sample()  # S[k+1]
 ```
 
 For `AccumulatorReg`, `.add(...)` and `.clear(...)` together describe one compound logical

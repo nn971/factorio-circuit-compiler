@@ -1,4 +1,4 @@
-# Development Conventions v0.7
+# Development Conventions
 
 ## Scope
 
@@ -73,7 +73,7 @@ FreezeReg
 For `P>1`, lowering synthesizes a modulo-domain clock and gates state writes so intermediate physical
 ticks hold state.
 
-Higher structures such as queues should first be expressed using these general state primitives.
+Higher structures such as queues/stacks should first be expressed using these general state primitives.
 
 ## Factorio substrate
 
@@ -82,12 +82,16 @@ Higher structures such as queues should first be expressed using these general s
 - same-name contributions add;
 - arithmetic/decider combinators have one-tick latency;
 - `Each` is a major vectorization mechanism;
-- selector combinators are available for the current vector `max()` operation;
+- selector combinators support current vector selection operations such as `max()`;
 - blueprint layout must respect finite circuit-wire reach.
 
 ## Optimization
 
-Keep logical streams and state primitives recognizable through simplification, CSE, DCE,
-compatibility partitioning, `Each` packing, phase alignment, state realization, and late signal
-allocation. Never turn the latency or clocking of one convenient lowering into a source-language
+Keep logical streams and state primitives recognizable through simplification, CSE, DCE, target-level
+packing/fusion, phase alignment, state realization, late signal allocation, net coalescing, placement,
+and routing. Never turn the latency or clocking of one convenient lowering into a source-language
 semantic requirement.
+
+Physical synthesis owns concrete signal identities, red/green choices, placement, and reach-safe
+routing. Prefer target-graph reductions before increasing placement/router complexity, and measure
+changes on the parameterized sorting/WHT benchmarks plus representative stateful circuits.

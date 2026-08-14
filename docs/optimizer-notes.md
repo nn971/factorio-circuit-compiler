@@ -2,75 +2,74 @@
 
 This file is exploratory. Hypotheses become architecture only after benchmark or in-game evidence.
 
-## Implemented stateless baseline
+## Implemented baseline
 
-- constant folding and algebraic simplification;
-- common-subexpression elimination;
-- dead-code elimination;
-- arithmetic compatibility grouping and conservative `Each` packing;
-- phase-aware scalar physical lowering;
-- fresh external source offsets and automatic alignment;
-- abstract state commit/phase scheduling for the current vector registers;
-- semantic reference simulation for current vector state;
-- tick-level physical simulation;
-- reach-safe blueprint routing.
+The compiler currently performs:
 
-## State lesson from the working prototypes
+- semantic constant folding/algebraic simplification, common-subexpression elimination, and dead-code
+  elimination for the scalar semantic path;
+- phase-aware scalar lowering and automatic operand alignment;
+- runtime-open vector lowering;
+- conservative `Each` packing, including generic pairwise arithmetic batches;
+- shared-predicate / multi-output decider fusion;
+- state timing with inferred logical clock-domain periods;
+- Factorio-native `AccumulatorReg` and `FreezeReg` realization;
+- late abstract-signal allocation and compatible electrical-net coalescing;
+- net-aware placement with deterministic retries, reserved access/power corridors, and reach-safe
+  relay routing;
+- semantic reference simulation and tick-level physical simulation.
 
-A naïve state realization can have a much longer feedback path than a deliberately designed Factorio
-circuit. Keep useful state components recognizable until a Factorio-native realization is selected.
+Representative stress circuits are the parameterized sorting network and Walsh-Hadamard transform,
+plus the FIFO/stack and autonomous-market controller for stateful timing/layout behavior.
 
-The working `AccumulatorReg` and `FreezeReg` blueprints demonstrate whole-vector `Each` memory,
-red/green network separation, continuous memory exposure, and target-specific feedback structures.
+## Optimization boundary
 
-## Timing model for optimization
+Keep semantic streams and useful state components recognizable until a Factorio-native realization is
+selected. The abstract physical IR already fixes target combinator behavior while leaving concrete
+signal identities, wire colors, compatible net merging, and placement to physical synthesis.
 
-The logical representation distinguishes:
+Physical optimization should therefore prefer transformations that improve the target graph before
+adding increasingly complicated geometry heuristics. Useful examples include:
 
-- source/sample identity;
-- state-access order;
-- physical availability.
+- better combinator selection and algebraic target rewrites;
+- broader but proven-safe `Each` packing;
+- predicate/result sharing;
+- red/green-aware realization choices expressed through abstract compatibility metadata;
+- improved state realization when a shorter feedback structure is semantically equivalent;
+- signal/net reuse that removes physical graph structure rather than merely renaming lanes.
 
-External freshness is explicit through `Input.sample()` at a `Circuit` freshness offset. Stateless
-logic is freely pipelined. State accesses carry strict v1 order identities. The state timing analysis now converts surrounding
-reads into a legal semantic commit window and independently computes the physical state phase required
-by operand availability. The current scope is one compound transition per trusted vector register.
+## Placement and routing
 
-## Physical synthesis priority exposed by the autonomous market
+The current default placer is net-aware rather than row-based. It treats synthesized electrical groups
+as hyperedges, optimizes a reach/connectivity/MST-style objective, reserves regular block corridors,
+and retries deterministic placement basins when routing fails. Row placement remains a compatibility
+and debugging strategy.
 
-The autonomous-market controller is now large and interconnected enough to expose a gap between the
-current placement objective and the concrete relay router: a placement can have a good hyperedge/MST
-score yet still leave no collision-free relay chain for the router's chosen point-to-point edges.
-This is a useful physical-synthesis/layout stress case, not a reason to simplify the market semantics.
+The autonomous-market controller exposed a remaining gap: a placement with a good approximate net
+objective can still be awkward for the concrete point-to-point relay router. Future geometry work may
+include:
 
-Development priority is nevertheless **physical synthesis first**. Before investing in a substantially
-more sophisticated placer/router, improve Factorio-native realization choices: combinator selection,
-shared predicates, red/green network use, signal allocation/packing, state realization, and other
-transformations that reduce or reshape the physical graph before placement.
+- objectives based on actual routed congestion rather than only idealized net metrics;
+- feedback from failed routes into subsequent placement attempts;
+- joint routing of one electrical group so relay infrastructure can be shared safely;
+- explicit power-entity emission at the already-reserved substation corridor crossings.
 
-The block corridors are intentional physical space for player access and power distribution. Ordinary
-implementation combinators stay out of them. Layout-only wire relays may use the corridors, except
-for a local 2x2 footprint centered at every horizontal/vertical corridor crossing. Those footprints
-are reserved for substations; the remainder of each corridor stays available for walking and relay
-placement. With the default 16x16 blocks and two-tile corridors, these reserved crossings repeat on
-the same regular block pitch. The current compiler reserves the space but does not yet emit power
-entities into it.
+Do these after target-graph improvements and measure them on the benchmark circuits.
 
-Placement/router improvements to revisit later include:
+## Timing/state directions
 
-- making the placement objective reflect actual relay routability/congestion rather than only an
-  idealized net-level relay/MST estimate;
-- feeding failed routes back into subsequent placement attempts;
-- routing one electrical group jointly so relay infrastructure may be shared safely inside that
-  group instead of greedily allocating independent relay chains edge by edge.
+The current periodic state-domain realization is correct for level-like inputs sampled at logical
+boundaries. The most important semantic extension under consideration is event-triggered activation:
+interpret inferred `P` as a minimum initiation interval and snapshot external inputs when an activation
+is accepted. See `docs/timing-open-problems.md`.
 
-## Near-term experiments
+Other postponed ideas include explicit clock-domain crossing, temporal resource sharing, processor /
+interpreter synthesis, additional state packing, and explicit physical-tick constraints. They should
+return only when a representative circuit demonstrates a concrete need.
 
-1. introduce semantic write-time anchoring for timer-like updates using the existing commit solver;
-2. design a stateful timer/pulse representative test before fixing the public `at=` syntax;
-3. define startup/warm-up semantics for future-sampled feedback inputs;
-4. test whether explicit update handles materially improve real circuits;
-5. exploit accumulator commutativity where observations cannot distinguish update order;
-6. only then revisit additional state types or state packing.
+## Benchmark discipline
 
-Interleaving, temporal resource sharing, and processor/interpreter architectures remain postponed.
+Use `benchmarks/README.md` and the parameterized examples as the measurement baseline. Compare at least
+combinator count, latency/output phases, state periods, placement/routing metrics, footprint, and
+synthesis runtime where relevant. Exact metric assertions should be reserved for intentional regression
+guards; exploratory heuristics should remain easy to replace.

@@ -14,10 +14,9 @@ y = (x + 1) * 2
 c.output("y", y)
 ```
 
-Python execution is elaboration. Symbolic values are logical streams.
-
-Current runtime-open vector operations include arithmetic, `.positive()`, `.any()`, `.gate(...)`, and
-selector `.max()`.
+Python execution is elaboration. Symbolic values are logical streams. Runtime-open vector operations
+include arithmetic, `.positive()`, `.any()`, `.gate(...)`, and selector `.max()`, including on
+register-derived vectors.
 
 ## Logical time vocabulary
 
@@ -33,12 +32,13 @@ x1 = input.sample()
 s1 = register.sample()
 ```
 
-`step(n)` advances logical time. It is not a Factorio-tick delay. `Circuit.tick()` is reserved for
-future explicit physical scheduling and currently raises. `register.value` is compatibility-only.
+`step(n)` advances logical time. It is separate from Factorio game ticks. `Circuit.tick()` is reserved
+for future explicit physical scheduling and currently raises. `register.value` remains a compatibility
+alias; new code uses `register.sample()`.
 
-## Clock-domain timing milestone
+## Clock-domain timing
 
-Logical and physical time are now separate.
+Logical and physical time are separate.
 
 For a state clock domain with physical period `P`, register/value phase `phi`, and logical index `k`:
 
@@ -49,9 +49,9 @@ physical_time(value[k]) = phi + k*P
 Stateless combinators preserve `k` and add physical latency. Feed-forward latency does not enlarge
 `P`; feedback recurrence constraints do.
 
-Ordinary state dependencies force all involved registers into one logical clock domain, even for
-one-way dependencies. Independent state components may infer different periods. External physical
-inputs do not themselves own a state domain.
+Ordinary state dependencies force the involved registers into one logical clock domain. Independent
+state components may infer different periods. External physical inputs do not themselves own a state
+domain.
 
 A state dependency with source logical offset `r`, target commit offset `c`, physical latency `L`, and
 shared period `P` gives:
@@ -70,42 +70,40 @@ old = memory.sample()
 memory.set(data, when=old.any())
 ```
 
-now infers `P=3` rather than being rejected.
+infers `P=3` in the current realization rather than being rejected.
 
 ## Physical realization of multicycle state
 
-For each `P>1` domain, vector lowering synthesizes a modulo-`P` clock. Register gates open only on
-the scheduled residue:
+For each `P>1` domain, vector lowering synthesizes a modulo-`P` clock. Register gates open only on the
+scheduled residue:
 
 - `FreezeReg` holds on intermediate physical ticks;
 - `AccumulatorReg` suppresses adds and ignores clear between logical boundaries while retaining
   memory.
 
-Thus only one physical input sample per logical window can affect that domain's next state.
-
 Independent state domains with different periods are supported when they use current-step physical
-inputs. Nonzero-step external samples across heterogeneous domains are currently rejected until
+inputs. Nonzero-step external samples across heterogeneous domains remain deferred until
 context-sensitive input realization / explicit resampling is implemented.
 
-## State primitives
+## State structures
 
-`AccumulatorReg` and `FreezeReg` remain the foundational whole-vector state primitives. Higher
-structures should first be built from them rather than added as compiler primitives.
+`AccumulatorReg` and `FreezeReg` are the foundational whole-vector state primitives. Higher structures
+should first be built from them rather than added as compiler primitives.
 
-A depth-4 FIFO example exists in `examples/vector_fifo.py`. It uses four `FreezeReg`s plus one
-`AccumulatorReg` length counter. It now protects full/empty internally, including simultaneous
-full-pop+push, and intentionally exercises the new multicycle recurrence. Current timing analysis
-expects the FIFO domain to infer `P=5`.
+`examples/vector_fifo.py` and `examples/vector_stack.py` are composition regressions. The stack is also
+used by the autonomous-market controller.
 
-The autonomous-market direction remains:
+## Autonomous market status
 
-```python
-missing = (required - stock).positive()
-request = missing.max()
-```
+`examples/autonomous_market_controller.py` has been compiled to a routed blueprint and tested in game
+with one recipe-reader assembler and one worker assembler. Recursive prerequisite discovery and
+production work. The reader protocol includes one explicit logical settling interval before consuming
+its ingredient vector.
 
-then store/queue selected requests using general state primitives before connecting one reader and
-one worker assembler.
+The market experiment is intentionally paused at this point. Remaining market-level problems include
+stale external stock after a craft, in-flight logistics, raw/uncraftable resources, dependency cycles,
+stack overflow, multi-worker scheduling under transport delay, and recipe metadata/ROM design. See
+`docs/autonomous-market.md`.
 
 ## Physical pipeline
 
@@ -123,25 +121,29 @@ Layout
 blueprint serialization
 ```
 
-Abstract physical IR owns exact target combinators, abstract nets/signals, and compatibility
-metadata. Physical synthesis owns concrete signal IDs, red/green allocation, placement, wire reach,
-and final layout. Blueprint generation only serializes.
+Abstract physical IR owns exact target combinators, abstract nets/signals, and compatibility metadata.
+Physical synthesis owns concrete signal IDs, red/green allocation, compatible net coalescing,
+net-aware placement, reserved access/power corridors, deterministic placement retries, reach-safe
+routing, and final layout. Blueprint generation only serializes.
 
-## Current validation status
+The old direct-concrete backend remains in `compiler_legacy.py` only as a parity/debugging oracle for
+selected P=1 regressions.
 
-The branch contains focused regressions for:
+## Current validation targets
+
+The regression suite covers, among other things:
 
 - `.step()` / `.sample()` frontend semantics and reserved `.tick()`;
-- P=1 state timing compatibility;
+- P=1 and multicycle state timing;
 - state-derived vector predicates;
-- `P=3` self-feedback;
-- independent heterogeneous domains and domain unification;
-- self-validating FIFO composition;
-- periodic clock combinator structure.
+- heterogeneous independent domains and domain unification;
+- FIFO/stack composition;
+- periodic clock structure;
+- pairwise arithmetic packing and shared-predicate/multi-output-decider fusion;
+- sorting-network and Walsh-Hadamard benchmark circuits;
+- abstract physical synthesis, placement, reach-safe routing, and blueprint serialization.
 
-The assistant environment cannot run the repository locally because GitHub DNS access is unavailable,
-and this branch currently has no GitHub CI statuses. Do not claim the suite is green until local checks
-are run:
+Canonical local checks are:
 
 ```fish
 uv run pytest
@@ -150,6 +152,14 @@ uv run ruff format --check .
 uv run mypy src
 ```
 
-Also validate representative multicycle blueprints in Factorio, especially `vector_fifo.py`.
+Do not infer validation status from this document; run the checks for the branch being changed.
 
-See `docs/semantics.md` and `docs/state-design.md` for the full timing model.
+## Next technical decision
+
+The strongest semantic candidate is triggered logical domains with input snapshots: treat inferred `P`
+as a minimum initiation interval rather than requiring a rigid periodic cadence. This addresses short
+external pulses and device-working intervals that can otherwise fall between logical observations.
+See `docs/timing-open-problems.md`.
+
+In parallel, use the sorting/WHT examples and `benchmarks/README.md` as the measurement baseline for
+future target-graph and physical-synthesis optimization.

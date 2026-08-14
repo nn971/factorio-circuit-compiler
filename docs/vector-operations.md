@@ -1,7 +1,7 @@
 # Whole-vector operations
 
 `SignalsExpr` can represent a sparse Factorio signal map whose lane set is only known at runtime.
-The first vector-algebra slice provides:
+Current vector algebra provides:
 
 ```python
 left + right
@@ -23,6 +23,9 @@ count. Ties follow Factorio's selector-combinator ordering and should not be use
 priority rule. `any()` is a scalar `0/1` predicate for whether the vector contains at least one
 nonzero lane. `gate(condition)` passes the vector when `condition` is nonzero and otherwise produces
 the empty vector.
+
+These operations remain runtime-open when applied to external inputs or register-derived vectors;
+the frontend does not need to know the concrete signal identities carried by the vector.
 
 ## Deficit example
 
@@ -59,5 +62,7 @@ with input-count copying for `positive()`, a selector combinator in select-max/i
 `max()`, and `Anything != 0` for `any()`. Every arithmetic, decider, or selector stage adds one
 physical tick, with ordinary phase alignment inserted when operands arrive at different phases.
 
-This milestone intentionally covers stateless vector algebra. Applying these operations to
-state-derived vectors remains part of the next state-timing milestone.
+State-derived vector predicates and selectors participate in the same logical timing model as scalar
+state dependencies. Their physical latency contributes to recurrence constraints and therefore may
+increase an inferred state-domain period `P`; multicycle state lowering then gates writes at the
+resulting logical boundaries.

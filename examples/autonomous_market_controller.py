@@ -62,9 +62,7 @@ def build_controller() -> Circuit:
     query_evaluating = old_mode.signal(MODE_QUERY_EVAL) != 0
     starting_worker = old_mode.signal(MODE_START_WORKER) != 0
     waiting_worker = old_mode.signal(MODE_WAIT_WORKER) != 0
-    checking = (
-        query_waiting | query_evaluating | starting_worker | waiting_worker
-    ).logical_not()
+    checking = (query_waiting | query_evaluating | starting_worker | waiting_worker).logical_not()
 
     # When the stack is empty, the persistent root target behaves like the bottom recursive call.
     root_missing = (root_target - stock).positive()

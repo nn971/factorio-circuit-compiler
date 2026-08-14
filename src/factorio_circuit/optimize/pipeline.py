@@ -7,7 +7,7 @@ from factorio_circuit.optimize.simplify import simplify_module
 
 
 def optimize_semantic(module: CircuitModule) -> CircuitModule:
-    """Run the conservative Phase-I semantic optimization pipeline."""
+    """Run the conservative semantic simplification/CSE/DCE pipeline."""
 
     module = simplify_module(module)
     module = eliminate_common_subexpressions(module)
