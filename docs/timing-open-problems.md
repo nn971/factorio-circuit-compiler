@@ -6,6 +6,8 @@ The current multicycle scheduler infers a minimum physical initiation interval `
 
 Example: a FIFO domain with `P=5` samples an external `push` pulse only on its periodic activation ticks. A one-game-tick pulse between those activations may therefore disappear completely from the logical stream.
 
+The same issue can affect short-lived levels. The autonomous-market worker now uses an assembler's `Read working` output rather than a synthetic completion signal. If an entire craft's working interval begins and ends between two logical observations, a slow controller can miss that interval just as it can miss a pulse. The first prototype therefore assumes the worker's working interval is long enough to be observed; this is not a general solution.
+
 ### Candidate semantic direction
 
 Interpret the inferred `P` as a **minimum spacing between accepted logical activations**, not necessarily as a rigid period:
@@ -40,4 +42,4 @@ Triggered activation also implies physical input capture. If a logical sample is
 
 ### Deferred decision
 
-Do not block the autonomous-market prototype on this yet. Continue using level/held signals or an explicit environment handshake for events that must survive a multicycle controller. Return to this design before treating arbitrary one-tick external pulses as reliable inputs to `P>1` domains.
+Do not block the autonomous-market prototype on this yet. Continue using level/held signals or an explicit environment handshake for events that must survive a multicycle controller. Return to this design before treating arbitrary one-tick external pulses or short-lived working levels as reliable inputs to `P>1` domains.
