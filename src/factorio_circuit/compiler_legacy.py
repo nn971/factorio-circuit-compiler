@@ -36,11 +36,19 @@ def compile_legacy_circuit(
     optimize: bool = True,
     blueprint_safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN,
 ) -> LegacyCompilationResult:
-    """Compile with the pre-Abstract-Physical direct concrete lowerer."""
+    """Compile one-tick-domain circuits with the pre-Abstract-Physical backend."""
 
     semantic = lower_frontend(source)
     optimized_semantic = optimize_semantic(semantic) if optimize else semantic
     state_timing = analyze_state_timing(optimized_semantic)
+    multicycle = [domain for domain in state_timing.domains if domain.period != 1]
+    if multicycle:
+        details = ", ".join(f"domain {domain.id}: P={domain.period}" for domain in multicycle)
+        raise ValueError(
+            "legacy direct-concrete lowering does not implement periodic state commits; "
+            f"use compile_circuit(...) for {details}"
+        )
+
     naive = lower_naive(optimized_semantic, state_timing=state_timing)
     physical = (
         lower_with_alu_packing(optimized_semantic, state_timing=state_timing) if optimize else naive
