@@ -10,8 +10,8 @@ COUNT_SIGNAL = SignalId("virtual", "signal-Q")
 def _vector_fifo() -> Circuit:
     circuit = Circuit("vector_fifo_test")
     request = circuit.signals("request")
-    push = circuit.input("push") != 0
-    pop = circuit.input("pop") != 0
+    push_requested = circuit.input("push") != 0
+    pop_requested = circuit.input("pop") != 0
 
     plus_one = circuit.constant_signals({COUNT_SIGNAL: 1})
     minus_one = circuit.constant_signals({COUNT_SIGNAL: -1})
@@ -19,8 +19,11 @@ def _vector_fifo() -> Circuit:
     length_reg = circuit.accumulator("length")
     slots = [circuit.freeze(f"slot{index}") for index in range(DEPTH)]
 
-    old_length = length_reg.value.signal(COUNT_SIGNAL)
-    old_slots = [slot.value for slot in slots]
+    old_length = length_reg.sample().signal(COUNT_SIGNAL)
+    old_slots = [slot.sample() for slot in slots]
+
+    pop = pop_requested * (old_length > 0)
+    push = push_requested * ((old_length < DEPTH) | pop_requested)
 
     length_reg.add(plus_one, when=push)
     length_reg.add(minus_one, when=pop)
@@ -35,10 +38,12 @@ def _vector_fifo() -> Circuit:
     circuit.output("front", old_slots[0])
     circuit.output("empty", old_length == 0)
     circuit.output("full", old_length == DEPTH)
+    circuit.output("push_accepted", push)
+    circuit.output("pop_accepted", pop)
 
-    circuit.tick(1)
-    circuit.output("next_front", slots[0].value)
-    circuit.output("next_length", length_reg.value.signal(COUNT_SIGNAL))
+    circuit.step(1)
+    circuit.output("next_front", slots[0].sample())
+    circuit.output("next_length", length_reg.sample().signal(COUNT_SIGNAL))
     return circuit
 
 
@@ -48,10 +53,27 @@ def test_four_slot_vector_fifo_composes_from_existing_registers(optimize: bool) 
     timing = {item.register.name: item for item in result.state_timing.registers}
 
     assert set(timing) == {"length", "slot0", "slot1", "slot2", "slot3"}
+    assert len(result.state_timing.domains) == 1
+    assert result.state_timing.domains[0].period == 5
+    assert all(item.period == 5 for item in timing.values())
+
+    # The shift path is acyclic and is represented by increasing physical phases toward the head.
     assert timing["slot0"].state_phase > timing["slot1"].state_phase
     assert timing["slot1"].state_phase > timing["slot2"].state_phase
     assert timing["slot2"].state_phase > timing["slot3"].state_phase
     assert all(item.commit_offset == 0 for item in timing.values())
 
+    assert any(
+        getattr(entity, "description", "") == "clock domain 0: modulo-5 counter"
+        for entity in result.physical_circuit.entities
+    )
     output_names = {port.name for port in result.physical_circuit.outputs}
-    assert output_names == {"front", "empty", "full", "next_front", "next_length"}
+    assert output_names == {
+        "front",
+        "empty",
+        "full",
+        "push_accepted",
+        "pop_accepted",
+        "next_front",
+        "next_length",
+    }
