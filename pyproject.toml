@@ -19,9 +19,6 @@ dev = [
   "mypy>=1.14",
 ]
 
-[project.scripts]
-fcc = "factorio_circuit.cli:main"
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/factorio_circuit"]
 
