@@ -57,10 +57,13 @@ def test_four_slot_vector_fifo_composes_from_existing_registers(optimize: bool) 
     assert result.state_timing.domains[0].period == 5
     assert all(item.period == 5 for item in timing.values())
 
-    # The shift path is acyclic and is represented by increasing physical phases toward the head.
-    assert timing["slot0"].state_phase > timing["slot1"].state_phase
-    assert timing["slot1"].state_phase > timing["slot2"].state_phase
-    assert timing["slot2"].state_phase > timing["slot3"].state_phase
+    # A shift such as slot1[k] -> slot0[k+1] has one full five-tick logical period available.
+    # It therefore does not require a P=1-style staircase of register phases.  What matters is
+    # that every transition boundary is at or after all of its physical input requirements.
+    assert all(
+        item.transition_input_phase >= item.earliest_transition_input_phase
+        for item in timing.values()
+    )
     assert all(item.commit_offset == 0 for item in timing.values())
 
     assert any(
