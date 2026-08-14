@@ -25,99 +25,104 @@ DEPTH = 4
 MODE_QUERY = SignalId("virtual", "signal-Q")
 MODE_CRAFT = SignalId("virtual", "signal-C")
 
-circuit = Circuit("autonomous_market_controller")
 
-# Persistent/live environment observations.
-stock = circuit.signals("stock")
-root_target = circuit.signals("root_target")
-root_enabled = circuit.input("root_enabled") != 0
-reader_ingredients = circuit.signals("reader_ingredients")
-reader_ready = circuit.input("reader_ready") != 0
-worker_done = circuit.input("worker_done") != 0
+def build_controller() -> Circuit:
+    circuit = Circuit("autonomous_market_controller")
 
-query_mode = circuit.constant_signals({MODE_QUERY: 1})
-craft_mode = circuit.constant_signals({MODE_CRAFT: 1})
+    # Persistent/live environment observations.
+    stock = circuit.signals("stock")
+    root_target = circuit.signals("root_target")
+    root_enabled = circuit.input("root_enabled") != 0
+    reader_ingredients = circuit.signals("reader_ingredients")
+    reader_ready = circuit.input("reader_ready") != 0
+    worker_done = circuit.input("worker_done") != 0
 
-mode = circuit.freeze("mode")
-selected_item = circuit.freeze("selected_item")
-slots = [circuit.freeze(f"slot{index}") for index in range(DEPTH)]
+    query_mode = circuit.constant_signals({MODE_QUERY: 1})
+    craft_mode = circuit.constant_signals({MODE_CRAFT: 1})
 
-old_mode = mode.sample()
-old_selected = selected_item.sample()
-old_slots = [slot.sample() for slot in slots]
+    mode = circuit.freeze("mode")
+    selected_item = circuit.freeze("selected_item")
+    slots = [circuit.freeze(f"slot{index}") for index in range(DEPTH)]
 
-top = old_slots[0]
-stack_nonempty = top.any()
-stack_empty = stack_nonempty.logical_not()
-stack_full = old_slots[-1].any()
-stack_not_full = stack_full.logical_not()
+    old_mode = mode.sample()
+    old_selected = selected_item.sample()
+    old_slots = [slot.sample() for slot in slots]
 
-querying = old_mode.signal(MODE_QUERY) != 0
-crafting = old_mode.signal(MODE_CRAFT) != 0
-checking = (querying | crafting).logical_not()
+    top = old_slots[0]
+    stack_nonempty = top.any()
+    stack_empty = stack_nonempty.logical_not()
+    stack_full = old_slots[-1].any()
+    stack_not_full = stack_full.logical_not()
 
-# When the stack is empty, the persistent root target behaves like the bottom recursive call.  It is
-# pushed only while currently unsatisfied, so an already-satisfied persistent target does not cause
-# a pop/push busy loop.
-root_missing = (root_target - stock).positive()
-root_needs_work = root_missing.any()
-push_root = checking * stack_empty * root_enabled * root_needs_work
+    querying = old_mode.signal(MODE_QUERY) != 0
+    crafting = old_mode.signal(MODE_CRAFT) != 0
+    checking = (querying | crafting).logical_not()
 
-# Normal top-of-stack processing.
-target_missing = (top - stock).positive()
-target_has_missing = target_missing.any()
-check_top = checking * stack_nonempty
-pop_satisfied = check_top * target_has_missing.logical_not()
-start_query = check_top * target_has_missing
-selected_candidate = target_missing.max()
+    # When the stack is empty, the persistent root target behaves like the bottom recursive call.
+    # It is pushed only while currently unsatisfied, so an already-satisfied persistent target does
+    # not cause a pop/push busy loop.
+    root_missing = (root_target - stock).positive()
+    root_needs_work = root_missing.any()
+    push_root = checking * stack_empty * root_enabled * root_needs_work
 
-# Reader response.  If any ingredient threshold is missing, push the entire ingredient vector above
-# the parent task.  Keeping the whole vector avoids needing to reconstruct the selected lane's target
-# count.  A full stack simply leaves the controller in QUERY until space is available.
-ingredient_missing = (reader_ingredients - stock).positive()
-ingredients_have_missing = ingredient_missing.any()
-push_prerequisite = querying * reader_ready * ingredients_have_missing * stack_not_full
-start_craft = querying * reader_ready * ingredients_have_missing.logical_not()
-blocked_on_full_stack = querying * reader_ready * ingredients_have_missing * stack_full
+    # Normal top-of-stack processing.
+    target_missing = (top - stock).positive()
+    target_has_missing = target_missing.any()
+    check_top = checking * stack_nonempty
+    pop_satisfied = check_top * target_has_missing.logical_not()
+    start_query = check_top * target_has_missing
+    selected_candidate = target_missing.max()
 
-# A completed craft does not mutate the task stack.  Returning to CHECK re-evaluates observed stock;
-# this is the feedback mechanism that removes any need to know product quantity per recipe.
-finish_craft = crafting * worker_done
+    # Reader response.  If any ingredient threshold is missing, push the entire ingredient vector
+    # above the parent task.  Keeping the whole vector avoids needing to reconstruct the selected
+    # lane's target count.  A full stack leaves the controller in QUERY until space is available.
+    ingredient_missing = (reader_ingredients - stock).positive()
+    ingredients_have_missing = ingredient_missing.any()
+    push_prerequisite = querying * reader_ready * ingredients_have_missing * stack_not_full
+    start_craft = querying * reader_ready * ingredients_have_missing.logical_not()
+    blocked_on_full_stack = querying * reader_ready * ingredients_have_missing * stack_full
 
-# Mode is ordinary FreezeReg state.  Zero is CHECK/IDLE, signal-Q is QUERY, signal-C is CRAFT.
-mode_change = start_query | push_prerequisite | start_craft | finish_craft
-next_mode = query_mode.gate(start_query) + craft_mode.gate(start_craft)
-mode.set(next_mode, when=mode_change)
+    # A completed craft does not mutate the task stack.  Returning to CHECK re-evaluates observed
+    # stock; this feedback removes any need to know product quantity per recipe.
+    finish_craft = crafting * worker_done
 
-# The selected one-lane item is captured when entering QUERY and survives through CRAFT.
-selected_item.set(selected_candidate, when=start_query)
+    # Mode is ordinary FreezeReg state.  Zero is CHECK/IDLE, signal-Q is QUERY, signal-C is CRAFT.
+    mode_change = start_query | push_prerequisite | start_craft | finish_craft
+    next_mode = query_mode.gate(start_query) + craft_mode.gate(start_craft)
+    mode.set(next_mode, when=mode_change)
 
-# Stack mutation, again using only one .set(...) call per FreezeReg.  The controller's conditions make
-# push and pop mutually exclusive by construction.
-push_stack = push_root | push_prerequisite
-push_data = root_target.gate(push_root) + reader_ingredients.gate(push_prerequisite)
-stack_change = push_stack | pop_satisfied
+    # The selected one-lane item is captured when entering QUERY and survives through CRAFT.
+    selected_item.set(selected_candidate, when=start_query)
 
-for index, slot in enumerate(slots):
-    pushed = push_data.gate(push_stack) if index == 0 else old_slots[index - 1].gate(push_stack)
-    if index + 1 < DEPTH:
-        next_value = pushed + old_slots[index + 1].gate(pop_satisfied)
-    else:
-        next_value = pushed
-    slot.set(next_value, when=stack_change)
+    # Stack mutation, again using only one .set(...) call per FreezeReg.  The controller's conditions
+    # make push and pop mutually exclusive by construction.
+    push_stack = push_root | push_prerequisite
+    push_data = root_target.gate(push_root) + reader_ingredients.gate(push_prerequisite)
+    stack_change = push_stack | pop_satisfied
 
-# External protocol and useful probe outputs.
-circuit.output("top_target", top)
-circuit.output("root_missing", root_missing)
-circuit.output("stack_empty", stack_empty)
-circuit.output("stack_full", stack_full)
-circuit.output("querying", querying)
-circuit.output("crafting", crafting)
-circuit.output("blocked_on_full_stack", blocked_on_full_stack)
-circuit.output("reader_request", querying)
-circuit.output("reader_item", old_selected.gate(querying))
-circuit.output("worker_request", crafting)
-circuit.output("worker_item", old_selected.gate(crafting))
+    for index, slot in enumerate(slots):
+        pushed = push_data.gate(push_stack) if index == 0 else old_slots[index - 1].gate(push_stack)
+        if index + 1 < DEPTH:
+            next_value = pushed + old_slots[index + 1].gate(pop_satisfied)
+        else:
+            next_value = pushed
+        slot.set(next_value, when=stack_change)
 
-result = compile_circuit(circuit)
-print(result.blueprint_string)
+    # External protocol and useful probe outputs.
+    circuit.output("top_target", top)
+    circuit.output("root_missing", root_missing)
+    circuit.output("stack_empty", stack_empty)
+    circuit.output("stack_full", stack_full)
+    circuit.output("querying", querying)
+    circuit.output("crafting", crafting)
+    circuit.output("blocked_on_full_stack", blocked_on_full_stack)
+    circuit.output("reader_request", querying)
+    circuit.output("reader_item", old_selected.gate(querying))
+    circuit.output("worker_request", crafting)
+    circuit.output("worker_item", old_selected.gate(crafting))
+    return circuit
+
+
+if __name__ == "__main__":
+    result = compile_circuit(build_controller())
+    print(result.blueprint_string)
