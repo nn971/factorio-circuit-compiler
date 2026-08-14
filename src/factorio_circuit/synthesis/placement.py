@@ -35,14 +35,14 @@ class PlacementOptions:
     anchors public input/output marker entities in ordered columns on the left/right perimeter;
     an explicit entity anchor overrides the corresponding automatic I/O position.
 
-    Reserved corridors are physical empty space, not routing lanes.  ``block_width_tiles`` and
-    ``block_height_tiles`` describe the dense computation block in Factorio tiles.  Horizontal
-    arithmetic/decider combinators occupy two tiles, so the default 16x16 block contains eight
-    combinator columns and sixteen rows.  ``corridor_width`` is inserted between adjacent blocks.
-    The default fill leaves in-block whitespace for relay entities because corridors themselves are
-    reserved.  Routing retries use deterministic placement basins; later retries also reduce
-    ``target_fill`` by ``retry_fill_scale`` so a circuit can trade compactness for legal relay
-    space.
+    Reserved corridors are empty of ordinary implementation combinators.  They preserve regular
+    walking/power-access gaps between dense computation blocks, while layout-only wire relays are
+    currently allowed to occupy them.  ``block_width_tiles`` and ``block_height_tiles`` describe
+    the dense computation block in Factorio tiles.  Horizontal arithmetic/decider combinators
+    occupy two tiles, so the default 16x16 block contains eight combinator columns and sixteen
+    rows.  ``corridor_width`` is inserted between adjacent blocks.  Routing retries use
+    deterministic placement basins; later retries also reduce ``target_fill`` by
+    ``retry_fill_scale`` so a circuit can trade compactness for legal relay space.
     """
 
     strategy: PlacementStrategy = "net-aware"
@@ -492,18 +492,10 @@ def _candidate_grid(
         y_positions[-1] + 0.5,
     )
 
-    forbidden: list[RelayForbiddenArea] = []
-    if options.reserve_corridors and options.corridor_width > 0:
-        for column in range(columns_per_block, columns, columns_per_block):
-            left_edge = x_positions[column - 1] + 1.0
-            right_edge = x_positions[column] - 1.0
-            forbidden.append((left_edge, right_edge, bounds[2], bounds[3]))
-        for row in range(rows_per_block, rows, rows_per_block):
-            top_edge = y_positions[row - 1] + 0.5
-            bottom_edge = y_positions[row] - 0.5
-            forbidden.append((bounds[0], bounds[1], top_edge, bottom_edge))
-
-    return _GridGeometry(slots, bounds, tuple(forbidden))
+    # Corridors remain absent from implementation slots, but routing relays may occupy them.  A
+    # future power-aware layout may reserve only local 2x2 substation footprints at selected
+    # corridor intersections rather than forbidding relays across the full strips.
+    return _GridGeometry(slots, bounds, ())
 
 
 def _automatic_io_anchors(
