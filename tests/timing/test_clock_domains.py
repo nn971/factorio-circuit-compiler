@@ -1,3 +1,5 @@
+import pytest
+
 from factorio_circuit import SignalId, compile_circuit
 from factorio_circuit.frontend import Circuit
 
@@ -48,3 +50,18 @@ def test_same_index_expression_unifies_clock_domains() -> None:
     assert timings["fast"].clock_domain == timings["slow"].clock_domain
     assert timings["fast"].period == timings["slow"].period == 3
     assert result.state_timing.uniform_period == 3
+
+
+def test_legacy_backend_rejects_multicycle_domains() -> None:
+    from factorio_circuit.compiler_legacy import compile_legacy_circuit
+
+    circuit = Circuit("legacy_multicycle_rejection")
+    data = circuit.signals("data")
+    memory = circuit.freeze("memory")
+    old = memory.sample()
+    memory.set(data, when=old.any())
+    circuit.step()
+    circuit.output("memory", memory.sample())
+
+    with pytest.raises(ValueError, match="does not implement periodic state commits"):
+        compile_legacy_circuit(circuit, optimize=False)
