@@ -3,12 +3,11 @@
 This is deliberately *not* a compiler FSM feature. Four FreezeRegs form a depth-four task stack,
 one FreezeReg stores the controller mode, and one FreezeReg remembers the currently selected item.
 
-The external assembler interface follows the real circuit behavior we want to prototype:
+The external assembler interface follows the real circuit behavior validated by the prototype:
 
 * ``root_target`` is a persistent desired-stock threshold vector while ``root_enabled`` is high;
-* ``reader_item`` directly drives the recipe-reader assembler. For this diagnostic prototype the
-  controller keeps the recipe asserted through a complete QUERY_WAIT logical interval before
-  QUERY_EVAL is allowed to inspect the reader's ingredient output;
+* ``reader_item`` directly drives the recipe-reader assembler. The controller keeps the recipe
+  asserted through a complete QUERY_WAIT logical interval before QUERY_EVAL inspects ingredients;
 * ``worker_item`` directly drives the worker assembler while the controller waits for Read working;
 * once ``worker_working`` is observed high, ``worker_item`` is withdrawn. Factorio applies a
   circuit-set recipe change/removal only after the current craft finishes, so the active craft can
@@ -80,9 +79,9 @@ def build_controller() -> Circuit:
     start_query = check_top * target_has_missing
     selected_candidate = target_missing.max()
 
-    # Diagnostic reader protocol: entering QUERY_WAIT asserts the selected recipe but does not use
-    # the reader response. The next logical transition enters QUERY_EVAL while keeping reader_item
-    # asserted. Only QUERY_EVAL may inspect ingredients and choose prerequisite-vs-worker.
+    # Reader protocol: QUERY_WAIT asserts the selected recipe but deliberately ignores the reader
+    # response. The next logical transition enters QUERY_EVAL while keeping reader_item asserted.
+    # Only QUERY_EVAL may inspect ingredients and choose prerequisite-vs-worker.
     advance_query = query_waiting
     ingredient_missing = (reader_ingredients - stock).positive()
     ingredients_have_missing = ingredient_missing.any()
@@ -141,12 +140,10 @@ def build_controller() -> Circuit:
     circuit.output("reader_item", old_selected.gate(querying_reader))
     circuit.output("worker_item", old_selected.gate(starting_worker))
 
-    # Compact probes for the physical prototype, plus two temporary reader-timing diagnostics.
+    # Compact probes retained for the first physical prototype.
     circuit.output("mode", old_mode)
     circuit.output("top_target", top)
     circuit.output("blocked_on_full_stack", blocked_on_full_stack)
-    circuit.output("debug_reader_ingredients", reader_ingredients)
-    circuit.output("debug_ingredient_missing", ingredient_missing)
     return circuit
 
 
