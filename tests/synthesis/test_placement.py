@@ -93,6 +93,11 @@ def test_overlapping_anchors_are_rejected() -> None:
         )
 
 
+def test_reserved_corridors_must_fit_substations() -> None:
+    with pytest.raises(ValueError, match="at least 2 tiles wide"):
+        PlacementOptions(corridor_width=1.0).validate()
+
+
 def test_reserved_corridors_expand_the_placement_lattice() -> None:
     abstract_circuit, physical, groups = _single_net_fixture(40)
     dense = place_physical_circuit(
@@ -163,7 +168,7 @@ def test_default_io_markers_are_ordered_on_left_and_right_perimeters() -> None:
     assert output_positions[0][0] > max(implementation_x)
 
 
-def test_default_corridor_geometry_is_substation_pitch_aligned_and_relay_open() -> None:
+def test_default_corridor_geometry_reserves_only_substation_crossing() -> None:
     from factorio_circuit.synthesis.placement import _candidate_grid
 
     options = PlacementOptions(iterations=0)
@@ -183,5 +188,24 @@ def test_default_corridor_geometry_is_substation_pitch_aligned_and_relay_open() 
     assert options.block_height_tiles == 16
     assert options.corridor_width == 2.0
 
-    # Corridors are reserved from ordinary implementation placement, not from layout-only relays.
-    assert grid.relay_forbidden_areas == ()
+    # The only relay-forbidden area is the local 2x2 substation footprint at the crossing.
+    assert grid.relay_forbidden_areas == ((15.0, 17.0, 15.5, 17.5),)
+
+
+def test_wider_corridors_still_reserve_only_two_by_two_substation_footprints() -> None:
+    from factorio_circuit.synthesis.placement import _candidate_grid
+
+    grid = _candidate_grid(
+        80,
+        1,
+        PlacementOptions(
+            block_width_tiles=4,
+            block_height_tiles=2,
+            corridor_width=3.0,
+            iterations=0,
+        ),
+    )
+
+    assert grid.relay_forbidden_areas
+    assert all(right - left == 2.0 for left, right, _top, _bottom in grid.relay_forbidden_areas)
+    assert all(bottom - top == 2.0 for _left, _right, top, bottom in grid.relay_forbidden_areas)
