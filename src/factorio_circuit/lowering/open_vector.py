@@ -22,7 +22,6 @@ from factorio_circuit.ir.semantic import (
     CircuitModule,
     Constant,
     InputSample,
-    ScalarValue,
     Value,
     VectorInputSample,
     VectorValue,
@@ -41,6 +40,14 @@ from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, Rea
 from .vector_binary import realize_vector_binary
 from .vector_select import realize_vector_select
 from .vector_unary import realize_vector_filter, realize_vector_scalar
+
+
+type _ConditionBranch = tuple[
+    DeciderCondition,
+    tuple[DeciderCondition, ...],
+    tuple[int, ...],
+    str,
+]
 
 
 class VectorLowerer(_Base):
@@ -156,7 +163,7 @@ class VectorLowerer(_Base):
         if input_phase < 0:  # pragma: no cover - a multicycle transition is at least phase 1
             raise ValueError("multicycle state gate has no preceding physical tick")
         # The feedback net carries constant +1 plus the counter output, so after warm-up the wire
-        # cycles through 1..period.  State gates inspect the tick immediately before their output.
+        # cycles through 1..period. State gates inspect the tick immediately before their output.
         value = input_phase % period + 1
         return (
             DeciderCondition(
@@ -168,6 +175,42 @@ class VectorLowerer(_Base):
             net,
         )
 
+    def _emit_condition_union(
+        self,
+        *,
+        branches: tuple[_ConditionBranch, ...],
+        target_phase: int,
+        label: str,
+    ) -> RealizedValue:
+        """OR mutually exclusive conditions by letting their deciders drive one signal/net."""
+
+        if not branches:
+            raise ValueError("condition union requires at least one branch")
+        signal = self._new_signal(label)
+        output_net: int | None = None
+        for primary, additional, input_nets, description in branches:
+            entity = DeciderCombinator(
+                id=self._take_entity_id(),
+                comparator=primary.comparator,
+                left=primary.left,
+                right=primary.right,
+                output_signal=signal,
+                output_constant=1,
+                additional_conditions=additional,
+                description=description,
+            )
+            self.circuit.entities.append(entity)
+            input_endpoint = Endpoint(entity.id, Connector.INPUT)
+            for net in dict.fromkeys(input_nets):
+                self._attach(net, input_endpoint)
+            output_endpoint = Endpoint(entity.id, Connector.OUTPUT)
+            if output_net is None:
+                output_net = self._new_net((signal,), output_endpoint, label=label)
+            else:
+                self._attach(output_net, output_endpoint)
+        assert output_net is not None
+        return RealizedValue(signal, output_net, target_phase)
+
     def _emit_condition_signal(
         self,
         *,
@@ -177,45 +220,10 @@ class VectorLowerer(_Base):
         target_phase: int,
         label: str,
     ) -> RealizedValue:
-        signal = self._new_signal(label)
-        entity = DeciderCombinator(
-            id=self._take_entity_id(),
-            comparator=primary.comparator,
-            left=primary.left,
-            right=primary.right,
-            output_signal=signal,
-            output_constant=1,
-            additional_conditions=additional,
-            description=label,
-        )
-        self.circuit.entities.append(entity)
-        endpoint = Endpoint(entity.id, Connector.INPUT)
-        for net in dict.fromkeys(input_nets):
-            self._attach(net, endpoint)
-        output_net = self._new_net(
-            (signal,), Endpoint(entity.id, Connector.OUTPUT), label=label
-        )
-        return RealizedValue(signal, output_net, target_phase)
-
-    def _realized_condition(
-        self,
-        value: ScalarValue,
-        *,
-        target_phase: int,
-        nonzero: bool,
-    ) -> tuple[DeciderCondition, int] | None:
-        if isinstance(value, Constant):
-            truth = value.value != 0
-            return None if truth == nonzero else ()  # type: ignore[return-value]
-        realized = self.delay_to(self.realize(value), target_phase - 1)
-        return (
-            DeciderCondition(
-                comparator="!=" if nonzero else "==",
-                left=Operand(signal=realized.signal, nets=(realized.net,)),
-                right=Operand(constant=0),
-                compare_type="and",
-            ),
-            realized.net,
+        return self._emit_condition_union(
+            branches=((primary, additional, input_nets, label),),
+            target_phase=target_phase,
+            label=label,
         )
 
     def _lower_freeze(self, register: FreezeRegister) -> None:
@@ -244,40 +252,35 @@ class VectorLowerer(_Base):
             clock_not_equal, _ = self._clock_condition(register, target_phase, equal=False)
 
         pass_value: RealizedValue | None = None
-        if not constant_inactive:
-            if constant_active and timing.period == 1:
-                pass_value = None
-            else:
-                conditions: list[DeciderCondition] = []
-                input_nets: list[int] = []
-                if not is_constant:
-                    control = self.delay_to(self.realize(spec.when), target_phase - 1)
-                    conditions.append(
-                        DeciderCondition(
-                            comparator="!=",
-                            left=Operand(signal=control.signal, nets=(control.net,)),
-                            right=Operand(constant=0),
-                            compare_type="and",
-                        )
+        if not constant_inactive and not (constant_active and timing.period == 1):
+            conditions: list[DeciderCondition] = []
+            input_nets: list[int] = []
+            if not is_constant:
+                control = self.delay_to(self.realize(spec.when), target_phase - 1)
+                conditions.append(
+                    DeciderCondition(
+                        comparator="!=",
+                        left=Operand(signal=control.signal, nets=(control.net,)),
+                        right=Operand(constant=0),
+                        compare_type="and",
                     )
-                    input_nets.append(control.net)
-                if clock_equal is not None:
-                    conditions.append(clock_equal)
-                    assert clock_net is not None
-                    input_nets.append(clock_net)
-                assert conditions
-                pass_value = self._emit_condition_signal(
-                    primary=conditions[0],
-                    additional=tuple(conditions[1:]),
-                    input_nets=tuple(input_nets),
-                    target_phase=target_phase,
-                    label=f"FreezeReg {register.name}: pass",
                 )
+                input_nets.append(control.net)
+            if clock_equal is not None:
+                conditions.append(clock_equal)
+                assert clock_net is not None
+                input_nets.append(clock_net)
+            assert conditions
+            pass_value = self._emit_condition_signal(
+                primary=conditions[0],
+                additional=tuple(conditions[1:]),
+                input_nets=tuple(input_nets),
+                target_phase=target_phase,
+                label=f"FreezeReg {register.name}: pass",
+            )
 
         hold_value: RealizedValue | None = None
-        if constant_inactive:
-            hold_value = None
-        elif constant_active:
+        if constant_active:
             if clock_not_equal is not None:
                 assert clock_net is not None
                 hold_value = self._emit_condition_signal(
@@ -287,7 +290,7 @@ class VectorLowerer(_Base):
                     target_phase=target_phase,
                     label=f"FreezeReg {register.name}: hold between logical boundaries",
                 )
-        else:
+        elif not constant_inactive:
             control = self.delay_to(self.realize(spec.when), target_phase - 1)
             hold_boundary = DeciderCondition(
                 comparator="==",
@@ -305,25 +308,23 @@ class VectorLowerer(_Base):
                 )
             else:
                 assert clock_not_equal is not None and clock_net is not None
-                boundary = self._emit_condition_signal(
-                    primary=hold_boundary,
-                    additional=(clock_equal,),
-                    input_nets=(control.net, clock_net),
+                hold_value = self._emit_condition_union(
+                    branches=(
+                        (
+                            hold_boundary,
+                            (clock_equal,),
+                            (control.net, clock_net),
+                            f"FreezeReg {register.name}: hold at logical boundary",
+                        ),
+                        (
+                            clock_not_equal,
+                            (),
+                            (clock_net,),
+                            f"FreezeReg {register.name}: hold between logical boundaries",
+                        ),
+                    ),
                     target_phase=target_phase,
-                    label=f"FreezeReg {register.name}: hold at logical boundary",
-                )
-                between = self._emit_condition_signal(
-                    primary=clock_not_equal,
-                    additional=(),
-                    input_nets=(clock_net,),
-                    target_phase=target_phase,
-                    label=f"FreezeReg {register.name}: hold between logical boundaries",
-                )
-                # The two conditions are mutually exclusive, so summing their identical 1-signals
-                # on one net produces a single boolean hold control.
-                self._attach(boundary.net, Endpoint(self._take_entity_id(), Connector.SINGLE))
-                hold_value = self._merge_boolean_controls(
-                    boundary, between, label=f"FreezeReg {register.name}: hold"
+                    label=f"FreezeReg {register.name}: hold",
                 )
 
         memory_id = self.state_memory_ids[register.name]
@@ -396,19 +397,6 @@ class VectorLowerer(_Base):
             self._attach(hold_value.net, Endpoint(memory_id, Connector.INPUT))
         self.circuit.entities.append(memory)
 
-    def _merge_boolean_controls(
-        self, left: RealizedValue, right: RealizedValue, *, label: str
-    ) -> RealizedValue:
-        signal = left.signal
-        if signal != right.signal:
-            self._add_signal_alias(
-                int(signal), int(right.signal), f"{label}: mutually exclusive control lanes"
-            )
-        self._attach(left.net, Endpoint(self._take_entity_id(), Connector.SINGLE))
-        # A zero-entity merge is not representable in the abstract IR.  Materialize OR instead;
-        # both inputs are already phase-aligned boolean signals.
-        return self._emit_binary_from_realized("|", left, right)
-
     def _lower_accumulator(self, register: AccumulatorRegister) -> None:
         adds = [
             op
@@ -475,21 +463,24 @@ class VectorLowerer(_Base):
                 )
             else:
                 assert clock_not_equal is not None and clock_net is not None
-                boundary = self._emit_condition_signal(
-                    primary=clear_is_zero,
-                    additional=(clock_equal,),
-                    input_nets=(clear_realized.net, clock_net),
+                retain = self._emit_condition_union(
+                    branches=(
+                        (
+                            clear_is_zero,
+                            (clock_equal,),
+                            (clear_realized.net, clock_net),
+                            f"AccumulatorReg {register.name}: retain at logical boundary",
+                        ),
+                        (
+                            clock_not_equal,
+                            (),
+                            (clock_net,),
+                            f"AccumulatorReg {register.name}: retain between logical boundaries",
+                        ),
+                    ),
                     target_phase=target_phase,
-                    label=f"AccumulatorReg {register.name}: retain at logical boundary",
+                    label=f"AccumulatorReg {register.name}: retain",
                 )
-                between = self._emit_condition_signal(
-                    primary=clock_not_equal,
-                    additional=(),
-                    input_nets=(clock_net,),
-                    target_phase=target_phase,
-                    label=f"AccumulatorReg {register.name}: retain between logical boundaries",
-                )
-                retain = self._emit_binary_from_realized("|", boundary, between)
 
         for index, add in enumerate(adds):
             if clear_always:
