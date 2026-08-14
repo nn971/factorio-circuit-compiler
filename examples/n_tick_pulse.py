@@ -1,4 +1,4 @@
-"""Representative temporal circuit: stretch a one-tick trigger to N physical output ticks."""
+"""Stateless sample window: N logical samples, which map to physical ticks at P=1."""
 
 from factorio_circuit import Circuit, compile_circuit
 
@@ -7,7 +7,7 @@ circuit = Circuit(f"pulse_{N}")
 trigger = circuit.input("trigger")
 pulse = trigger != 0
 for _ in range(1, N):
-    circuit.tick(1)
+    circuit.step(1)
     pulse = pulse | (trigger.sample() != 0)
 circuit.output("pulse", pulse)
 
