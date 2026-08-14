@@ -1,7 +1,7 @@
 """Public symbolic frontend, including runtime-open vector expressions."""
 
-from .symbolic import AccumulatorReg, CircuitBuildError, Expr, FreezeReg, Input, LogicalTime
-from .vector_circuit import Circuit, SignalsInput
+from .symbolic import CircuitBuildError, Expr, Input, LogicalTime
+from .vector_circuit import AccumulatorReg, Circuit, FreezeReg, SignalsInput
 from .vector_expr import SignalsExpr
 from .vector_nodes import _VectorBinaryOp as _VectorBinaryOp
 from .vector_nodes import _VectorFilter as _VectorFilter
