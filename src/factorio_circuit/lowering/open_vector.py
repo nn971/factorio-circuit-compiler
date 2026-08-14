@@ -1,4 +1,4 @@
-"""Whole-vector lowering plus periodic realization of multicycle state domains."""
+"""Whole-vector lowering plus periodic realization of logical clock domains."""
 
 from __future__ import annotations
 
@@ -20,7 +20,9 @@ from factorio_circuit.ir.abstract_physical import (
 )
 from factorio_circuit.ir.semantic import (
     CircuitModule,
+    Constant,
     InputSample,
+    ScalarValue,
     Value,
     VectorInputSample,
     VectorValue,
@@ -42,7 +44,7 @@ from .vector_unary import realize_vector_filter, realize_vector_scalar
 
 
 class VectorLowerer(_Base):
-    """Lower runtime-open vectors and state domains onto Factorio combinators."""
+    """Lower runtime-open vectors and logical clock domains onto Factorio combinators."""
 
     def __init__(
         self,
@@ -153,8 +155,8 @@ class VectorLowerer(_Base):
         input_phase = target_phase - 1
         if input_phase < 0:  # pragma: no cover - a multicycle transition is at least phase 1
             raise ValueError("multicycle state gate has no preceding physical tick")
-        # The feedback net carries constant +1 plus the counter output.  After warm-up it cycles
-        # through 1..period; compare the value present one tick before the state gate output.
+        # The feedback net carries constant +1 plus the counter output, so after warm-up the wire
+        # cycles through 1..period.  State gates inspect the tick immediately before their output.
         value = input_phase % period + 1
         return (
             DeciderCondition(
@@ -166,12 +168,57 @@ class VectorLowerer(_Base):
             net,
         )
 
-    def _lower_freeze(self, register: FreezeRegister) -> None:
-        timing = self.state_timing.for_register(register)
-        if timing.period == 1:
-            super()._lower_freeze(register)
-            return
+    def _emit_condition_signal(
+        self,
+        *,
+        primary: DeciderCondition,
+        additional: tuple[DeciderCondition, ...],
+        input_nets: tuple[int, ...],
+        target_phase: int,
+        label: str,
+    ) -> RealizedValue:
+        signal = self._new_signal(label)
+        entity = DeciderCombinator(
+            id=self._take_entity_id(),
+            comparator=primary.comparator,
+            left=primary.left,
+            right=primary.right,
+            output_signal=signal,
+            output_constant=1,
+            additional_conditions=additional,
+            description=label,
+        )
+        self.circuit.entities.append(entity)
+        endpoint = Endpoint(entity.id, Connector.INPUT)
+        for net in dict.fromkeys(input_nets):
+            self._attach(net, endpoint)
+        output_net = self._new_net(
+            (signal,), Endpoint(entity.id, Connector.OUTPUT), label=label
+        )
+        return RealizedValue(signal, output_net, target_phase)
 
+    def _realized_condition(
+        self,
+        value: ScalarValue,
+        *,
+        target_phase: int,
+        nonzero: bool,
+    ) -> tuple[DeciderCondition, int] | None:
+        if isinstance(value, Constant):
+            truth = value.value != 0
+            return None if truth == nonzero else ()  # type: ignore[return-value]
+        realized = self.delay_to(self.realize(value), target_phase - 1)
+        return (
+            DeciderCondition(
+                comparator="!=" if nonzero else "==",
+                left=Operand(signal=realized.signal, nets=(realized.net,)),
+                right=Operand(constant=0),
+                compare_type="and",
+            ),
+            realized.net,
+        )
+
+    def _lower_freeze(self, register: FreezeRegister) -> None:
         sets = [
             op
             for op in self.module.state_operations
@@ -182,111 +229,187 @@ class VectorLowerer(_Base):
                 f"FreezeReg {register.name!r} requires exactly one .set(data, when=...) call"
             )
         spec = sets[0]
+        timing = self.state_timing.for_register(register)
         target_phase = timing.transition_input_phase
-        control_input_phase = target_phase - 1
         source = self.delay_vector_to(self.realize_vector(spec.value), target_phase)
-        control = self.delay_to(self.realize(spec.when), control_input_phase)
-        clock_equal, clock_net = self._clock_condition(register, target_phase, equal=True)
-        clock_not_equal, _ = self._clock_condition(register, target_phase, equal=False)
 
-        pass_signal = self._new_signal(f"FreezeReg {register.name}: periodic pass")
-        pass_control = DeciderCombinator(
-            id=self._take_entity_id(),
-            comparator="!=",
-            left=Operand(signal=control.signal, nets=(control.net,)),
-            right=Operand(constant=0),
-            output_signal=pass_signal,
-            output_constant=1,
-            additional_conditions=(clock_equal,),
-            description=f"FreezeReg {register.name}: set!=0 at logical boundary",
-        )
-        self.circuit.entities.append(pass_control)
-        pass_input = Endpoint(pass_control.id, Connector.INPUT)
-        self._attach(control.net, pass_input)
-        self._attach(clock_net, pass_input)
-        pass_net = self._new_net(
-            (pass_signal,),
-            Endpoint(pass_control.id, Connector.OUTPUT),
-            label=f"FreezeReg {register.name}: periodic pass",
-        )
+        is_constant = isinstance(spec.when, Constant)
+        constant_active = is_constant and spec.when.value != 0
+        constant_inactive = is_constant and spec.when.value == 0
+        clock_equal: DeciderCondition | None = None
+        clock_not_equal: DeciderCondition | None = None
+        clock_net: int | None = None
+        if timing.period > 1:
+            clock_equal, clock_net = self._clock_condition(register, target_phase, equal=True)
+            clock_not_equal, _ = self._clock_condition(register, target_phase, equal=False)
 
-        hold_signal = self._new_signal(f"FreezeReg {register.name}: periodic hold")
-        hold_boundary = DeciderCombinator(
-            id=self._take_entity_id(),
-            comparator="==",
-            left=Operand(signal=control.signal, nets=(control.net,)),
-            right=Operand(constant=0),
-            output_signal=hold_signal,
-            output_constant=1,
-            additional_conditions=(clock_equal,),
-            description=f"FreezeReg {register.name}: hold at inactive logical boundary",
-        )
-        hold_between = DeciderCombinator(
-            id=self._take_entity_id(),
-            comparator=clock_not_equal.comparator,
-            left=clock_not_equal.left,
-            right=clock_not_equal.right,
-            output_signal=hold_signal,
-            output_constant=1,
-            description=f"FreezeReg {register.name}: hold between logical boundaries",
-        )
-        self.circuit.entities.extend((hold_boundary, hold_between))
-        boundary_input = Endpoint(hold_boundary.id, Connector.INPUT)
-        self._attach(control.net, boundary_input)
-        self._attach(clock_net, boundary_input)
-        self._attach(clock_net, Endpoint(hold_between.id, Connector.INPUT))
-        hold_net = self._new_net(
-            (hold_signal,),
-            Endpoint(hold_boundary.id, Connector.OUTPUT),
-            label=f"FreezeReg {register.name}: periodic hold",
-        )
-        self._attach(hold_net, Endpoint(hold_between.id, Connector.OUTPUT))
+        pass_value: RealizedValue | None = None
+        if not constant_inactive:
+            if constant_active and timing.period == 1:
+                pass_value = None
+            else:
+                conditions: list[DeciderCondition] = []
+                input_nets: list[int] = []
+                if not is_constant:
+                    control = self.delay_to(self.realize(spec.when), target_phase - 1)
+                    conditions.append(
+                        DeciderCondition(
+                            comparator="!=",
+                            left=Operand(signal=control.signal, nets=(control.net,)),
+                            right=Operand(constant=0),
+                            compare_type="and",
+                        )
+                    )
+                    input_nets.append(control.net)
+                if clock_equal is not None:
+                    conditions.append(clock_equal)
+                    assert clock_net is not None
+                    input_nets.append(clock_net)
+                assert conditions
+                pass_value = self._emit_condition_signal(
+                    primary=conditions[0],
+                    additional=tuple(conditions[1:]),
+                    input_nets=tuple(input_nets),
+                    target_phase=target_phase,
+                    label=f"FreezeReg {register.name}: pass",
+                )
 
-        pass_value = RealizedValue(pass_signal, pass_net, target_phase)
-        hold_value = RealizedValue(hold_signal, hold_net, target_phase)
-        self._add_net_conflict(
-            source.net,
-            pass_value.net,
-            f"FreezeReg {register.name}: transparent data/control isolation",
-        )
-        gate = ArithmeticCombinator(
-            id=self._take_entity_id(),
-            operation="*",
-            left=Operand(each=True, nets=(source.net,)),
-            right=Operand(signal=pass_value.signal, nets=(pass_value.net,)),
-            output_each=True,
-            description=f"FreezeReg {register.name}: periodic input gate",
-        )
-        self.circuit.entities.append(gate)
-        gate_input = Endpoint(gate.id, Connector.INPUT)
-        self._attach(source.net, gate_input)
-        self._attach(pass_value.net, gate_input)
+        hold_value: RealizedValue | None = None
+        if constant_inactive:
+            hold_value = None
+        elif constant_active:
+            if clock_not_equal is not None:
+                assert clock_net is not None
+                hold_value = self._emit_condition_signal(
+                    primary=clock_not_equal,
+                    additional=(),
+                    input_nets=(clock_net,),
+                    target_phase=target_phase,
+                    label=f"FreezeReg {register.name}: hold between logical boundaries",
+                )
+        else:
+            control = self.delay_to(self.realize(spec.when), target_phase - 1)
+            hold_boundary = DeciderCondition(
+                comparator="==",
+                left=Operand(signal=control.signal, nets=(control.net,)),
+                right=Operand(constant=0),
+                compare_type="and",
+            )
+            if clock_equal is None:
+                hold_value = self._emit_condition_signal(
+                    primary=hold_boundary,
+                    additional=(),
+                    input_nets=(control.net,),
+                    target_phase=target_phase,
+                    label=f"FreezeReg {register.name}: hold",
+                )
+            else:
+                assert clock_not_equal is not None and clock_net is not None
+                boundary = self._emit_condition_signal(
+                    primary=hold_boundary,
+                    additional=(clock_equal,),
+                    input_nets=(control.net, clock_net),
+                    target_phase=target_phase,
+                    label=f"FreezeReg {register.name}: hold at logical boundary",
+                )
+                between = self._emit_condition_signal(
+                    primary=clock_not_equal,
+                    additional=(),
+                    input_nets=(clock_net,),
+                    target_phase=target_phase,
+                    label=f"FreezeReg {register.name}: hold between logical boundaries",
+                )
+                # The two conditions are mutually exclusive, so summing their identical 1-signals
+                # on one net produces a single boolean hold control.
+                self._attach(boundary.net, Endpoint(self._take_entity_id(), Connector.SINGLE))
+                hold_value = self._merge_boolean_controls(
+                    boundary, between, label=f"FreezeReg {register.name}: hold"
+                )
 
         memory_id = self.state_memory_ids[register.name]
         memory_net = self.state_memory_nets[register.name]
-        self._attach(memory_net, Endpoint(gate.id, Connector.OUTPUT))
-        self._add_net_conflict(
-            memory_net,
-            hold_value.net,
-            f"FreezeReg {register.name}: memory data/hold isolation",
-        )
-        memory = ArithmeticCombinator(
-            id=memory_id,
-            operation="*",
-            left=Operand(each=True, nets=(memory_net,)),
-            right=Operand(signal=hold_value.signal, nets=(hold_value.net,)),
-            output_each=True,
-            description=f"FreezeReg {register.name}: periodic vector memory",
-        )
-        self._attach(hold_value.net, Endpoint(memory_id, Connector.INPUT))
+
+        if not constant_inactive:
+            if pass_value is None:
+                gate = ArithmeticCombinator(
+                    id=self._take_entity_id(),
+                    operation="+",
+                    left=Operand(each=True, nets=(source.net,)),
+                    right=Operand(constant=0),
+                    output_each=True,
+                    description=f"FreezeReg {register.name}: unconditional input gate",
+                )
+                self.circuit.entities.append(gate)
+                self._attach(source.net, Endpoint(gate.id, Connector.INPUT))
+            else:
+                self._add_net_conflict(
+                    source.net,
+                    pass_value.net,
+                    f"FreezeReg {register.name}: transparent data/control isolation",
+                )
+                gate = ArithmeticCombinator(
+                    id=self._take_entity_id(),
+                    operation="*",
+                    left=Operand(each=True, nets=(source.net,)),
+                    right=Operand(signal=pass_value.signal, nets=(pass_value.net,)),
+                    output_each=True,
+                    description=f"FreezeReg {register.name}: input gate",
+                )
+                self.circuit.entities.append(gate)
+                gate_input = Endpoint(gate.id, Connector.INPUT)
+                self._attach(source.net, gate_input)
+                self._attach(pass_value.net, gate_input)
+            self._attach(memory_net, Endpoint(gate.id, Connector.OUTPUT))
+
+        if constant_inactive:
+            memory = ArithmeticCombinator(
+                id=memory_id,
+                operation="+",
+                left=Operand(each=True, nets=(memory_net,)),
+                right=Operand(constant=0),
+                output_each=True,
+                description=f"FreezeReg {register.name}: held vector memory",
+            )
+        elif hold_value is None:
+            memory = ArithmeticCombinator(
+                id=memory_id,
+                operation="*",
+                left=Operand(each=True, nets=(memory_net,)),
+                right=Operand(constant=0),
+                output_each=True,
+                description=f"FreezeReg {register.name}: replaced vector memory",
+            )
+        else:
+            self._add_net_conflict(
+                memory_net,
+                hold_value.net,
+                f"FreezeReg {register.name}: memory data/hold isolation",
+            )
+            memory = ArithmeticCombinator(
+                id=memory_id,
+                operation="*",
+                left=Operand(each=True, nets=(memory_net,)),
+                right=Operand(signal=hold_value.signal, nets=(hold_value.net,)),
+                output_each=True,
+                description=f"FreezeReg {register.name}: vector memory",
+            )
+            self._attach(hold_value.net, Endpoint(memory_id, Connector.INPUT))
         self.circuit.entities.append(memory)
 
-    def _lower_accumulator(self, register: AccumulatorRegister) -> None:
-        timing = self.state_timing.for_register(register)
-        if timing.period == 1:
-            super()._lower_accumulator(register)
-            return
+    def _merge_boolean_controls(
+        self, left: RealizedValue, right: RealizedValue, *, label: str
+    ) -> RealizedValue:
+        signal = left.signal
+        if signal != right.signal:
+            self._add_signal_alias(
+                int(signal), int(right.signal), f"{label}: mutually exclusive control lanes"
+            )
+        self._attach(left.net, Endpoint(self._take_entity_id(), Connector.SINGLE))
+        # A zero-entity merge is not representable in the abstract IR.  Materialize OR instead;
+        # both inputs are already phase-aligned boolean signals.
+        return self._emit_binary_from_realized("|", left, right)
 
+    def _lower_accumulator(self, register: AccumulatorRegister) -> None:
         adds = [
             op
             for op in self.module.state_operations
@@ -304,132 +427,179 @@ class VectorLowerer(_Base):
         if len(clears) > 1:
             raise ValueError(f"AccumulatorReg {register.name!r} has multiple clear controls")
 
+        timing = self.state_timing.for_register(register)
         target_phase = timing.transition_input_phase
-        control_input_phase = target_phase - 1
-        clock_equal, clock_net = self._clock_condition(register, target_phase, equal=True)
-        clock_not_equal, _ = self._clock_condition(register, target_phase, equal=False)
-        clear = (
-            None
-            if not clears
-            else self.delay_to(self.realize(clears[0].when), control_input_phase)
-        )
+        clock_equal: DeciderCondition | None = None
+        clock_not_equal: DeciderCondition | None = None
+        clock_net: int | None = None
+        if timing.period > 1:
+            clock_equal, clock_net = self._clock_condition(register, target_phase, equal=True)
+            clock_not_equal, _ = self._clock_condition(register, target_phase, equal=False)
 
-        clear_active: RealizedValue | None = None
-        if clear is not None:
-            active_signal = self._new_signal(f"AccumulatorReg {register.name}: periodic clear-active")
-            boundary = DeciderCombinator(
-                id=self._take_entity_id(),
+        clear_value = clears[0].when if clears else None
+        clear_constant = clear_value if isinstance(clear_value, Constant) else None
+        clear_always = clear_constant is not None and clear_constant.value != 0
+        clear_never = clear_value is None or (
+            clear_constant is not None and clear_constant.value == 0
+        )
+        clear_realized: RealizedValue | None = None
+        if clear_value is not None and clear_constant is None:
+            clear_realized = self.delay_to(self.realize(clear_value), target_phase - 1)
+
+        retain: RealizedValue | None = None
+        if clear_always:
+            if clock_not_equal is not None:
+                assert clock_net is not None
+                retain = self._emit_condition_signal(
+                    primary=clock_not_equal,
+                    additional=(),
+                    input_nets=(clock_net,),
+                    target_phase=target_phase,
+                    label=f"AccumulatorReg {register.name}: retain between logical boundaries",
+                )
+        elif not clear_never:
+            assert clear_realized is not None
+            clear_is_zero = DeciderCondition(
                 comparator="==",
-                left=Operand(signal=clear.signal, nets=(clear.net,)),
+                left=Operand(signal=clear_realized.signal, nets=(clear_realized.net,)),
                 right=Operand(constant=0),
-                output_signal=active_signal,
-                output_constant=1,
-                additional_conditions=(clock_equal,),
-                description=f"AccumulatorReg {register.name}: retain at logical boundary",
+                compare_type="and",
             )
-            between = DeciderCombinator(
-                id=self._take_entity_id(),
-                comparator=clock_not_equal.comparator,
-                left=clock_not_equal.left,
-                right=clock_not_equal.right,
-                output_signal=active_signal,
-                output_constant=1,
-                description=f"AccumulatorReg {register.name}: retain between logical boundaries",
-            )
-            self.circuit.entities.extend((boundary, between))
-            boundary_input = Endpoint(boundary.id, Connector.INPUT)
-            self._attach(clear.net, boundary_input)
-            self._attach(clock_net, boundary_input)
-            self._attach(clock_net, Endpoint(between.id, Connector.INPUT))
-            active_net = self._new_net(
-                (active_signal,),
-                Endpoint(boundary.id, Connector.OUTPUT),
-                label=f"AccumulatorReg {register.name}: periodic clear-active",
-            )
-            self._attach(active_net, Endpoint(between.id, Connector.OUTPUT))
-            clear_active = RealizedValue(active_signal, active_net, target_phase)
+            if clock_equal is None:
+                retain = self._emit_condition_signal(
+                    primary=clear_is_zero,
+                    additional=(),
+                    input_nets=(clear_realized.net,),
+                    target_phase=target_phase,
+                    label=f"AccumulatorReg {register.name}: retain",
+                )
+            else:
+                assert clock_not_equal is not None and clock_net is not None
+                boundary = self._emit_condition_signal(
+                    primary=clear_is_zero,
+                    additional=(clock_equal,),
+                    input_nets=(clear_realized.net, clock_net),
+                    target_phase=target_phase,
+                    label=f"AccumulatorReg {register.name}: retain at logical boundary",
+                )
+                between = self._emit_condition_signal(
+                    primary=clock_not_equal,
+                    additional=(),
+                    input_nets=(clock_net,),
+                    target_phase=target_phase,
+                    label=f"AccumulatorReg {register.name}: retain between logical boundaries",
+                )
+                retain = self._emit_binary_from_realized("|", boundary, between)
 
         for index, add in enumerate(adds):
+            if clear_always:
+                break
+            if isinstance(add.when, Constant) and add.when.value == 0:
+                continue
+
             source = self.delay_vector_to(self.realize_vector(add.value), target_phase)
-            add_control = self.delay_to(self.realize(add.when), control_input_phase)
-            additional = [clock_equal]
-            if clear is not None:
-                additional.insert(
-                    0,
+            conditions: list[DeciderCondition] = []
+            input_nets: list[int] = []
+            if not isinstance(add.when, Constant):
+                add_control = self.delay_to(self.realize(add.when), target_phase - 1)
+                conditions.append(
                     DeciderCondition(
-                        comparator="==",
-                        left=Operand(signal=clear.signal, nets=(clear.net,)),
+                        comparator="!=",
+                        left=Operand(signal=add_control.signal, nets=(add_control.net,)),
                         right=Operand(constant=0),
                         compare_type="and",
-                    ),
+                    )
                 )
-            active_signal = self._new_signal(f"AccumulatorReg {register.name}: periodic add[{index}]")
-            active = DeciderCombinator(
-                id=self._take_entity_id(),
-                comparator="!=",
-                left=Operand(signal=add_control.signal, nets=(add_control.net,)),
-                right=Operand(constant=0),
-                output_signal=active_signal,
-                output_constant=1,
-                additional_conditions=tuple(additional),
-                description=f"AccumulatorReg {register.name}: add[{index}] at logical boundary",
-            )
-            self.circuit.entities.append(active)
-            active_input = Endpoint(active.id, Connector.INPUT)
-            self._attach(add_control.net, active_input)
-            if clear is not None:
-                self._attach(clear.net, active_input)
-            self._attach(clock_net, active_input)
-            active_net = self._new_net(
-                (active_signal,),
-                Endpoint(active.id, Connector.OUTPUT),
-                label=f"AccumulatorReg {register.name}: periodic add[{index}]",
-            )
-            gate_active = RealizedValue(active_signal, active_net, target_phase)
+                input_nets.append(add_control.net)
+            if clear_realized is not None:
+                conditions.append(
+                    DeciderCondition(
+                        comparator="==",
+                        left=Operand(signal=clear_realized.signal, nets=(clear_realized.net,)),
+                        right=Operand(constant=0),
+                        compare_type="and",
+                    )
+                )
+                input_nets.append(clear_realized.net)
+            if clock_equal is not None:
+                conditions.append(clock_equal)
+                assert clock_net is not None
+                input_nets.append(clock_net)
 
-            self._add_net_conflict(
-                source.net,
-                gate_active.net,
-                f"AccumulatorReg {register.name}: vector add data/control isolation",
-            )
-            gate = ArithmeticCombinator(
-                id=self._take_entity_id(),
-                operation="*",
-                left=Operand(each=True, nets=(source.net,)),
-                right=Operand(signal=gate_active.signal, nets=(gate_active.net,)),
-                output_each=True,
-                description=f"AccumulatorReg {register.name}: periodic gate add[{index}]",
-            )
-            self.circuit.entities.append(gate)
-            gate_input = Endpoint(gate.id, Connector.INPUT)
-            self._attach(source.net, gate_input)
-            self._attach(gate_active.net, gate_input)
+            active: RealizedValue | None = None
+            if conditions:
+                active = self._emit_condition_signal(
+                    primary=conditions[0],
+                    additional=tuple(conditions[1:]),
+                    input_nets=tuple(input_nets),
+                    target_phase=target_phase,
+                    label=f"AccumulatorReg {register.name}: add[{index}] active",
+                )
+
+            if active is None:
+                gate = ArithmeticCombinator(
+                    id=self._take_entity_id(),
+                    operation="+",
+                    left=Operand(each=True, nets=(source.net,)),
+                    right=Operand(constant=0),
+                    output_each=True,
+                    description=f"AccumulatorReg {register.name}: add[{index}]",
+                )
+                self.circuit.entities.append(gate)
+                self._attach(source.net, Endpoint(gate.id, Connector.INPUT))
+            else:
+                self._add_net_conflict(
+                    source.net,
+                    active.net,
+                    f"AccumulatorReg {register.name}: vector add data/control isolation",
+                )
+                gate = ArithmeticCombinator(
+                    id=self._take_entity_id(),
+                    operation="*",
+                    left=Operand(each=True, nets=(source.net,)),
+                    right=Operand(signal=active.signal, nets=(active.net,)),
+                    output_each=True,
+                    description=f"AccumulatorReg {register.name}: gate add[{index}]",
+                )
+                self.circuit.entities.append(gate)
+                gate_input = Endpoint(gate.id, Connector.INPUT)
+                self._attach(source.net, gate_input)
+                self._attach(active.net, gate_input)
             self._attach(self.state_memory_nets[register.name], Endpoint(gate.id, Connector.OUTPUT))
 
         memory_id = self.state_memory_ids[register.name]
         memory_net = self.state_memory_nets[register.name]
-        if clear_active is None:
+        if clear_never:
             memory = ArithmeticCombinator(
                 id=memory_id,
                 operation="+",
                 left=Operand(each=True, nets=(memory_net,)),
                 right=Operand(constant=0),
                 output_each=True,
-                description=f"AccumulatorReg {register.name}: periodic vector memory",
+                description=f"AccumulatorReg {register.name}: vector memory",
+            )
+        elif retain is None:
+            memory = ArithmeticCombinator(
+                id=memory_id,
+                operation="*",
+                left=Operand(each=True, nets=(memory_net,)),
+                right=Operand(constant=0),
+                output_each=True,
+                description=f"AccumulatorReg {register.name}: cleared vector memory",
             )
         else:
             self._add_net_conflict(
                 memory_net,
-                clear_active.net,
+                retain.net,
                 f"AccumulatorReg {register.name}: memory data/clear isolation",
             )
             memory = ArithmeticCombinator(
                 id=memory_id,
                 operation="*",
                 left=Operand(each=True, nets=(memory_net,)),
-                right=Operand(signal=clear_active.signal, nets=(clear_active.net,)),
+                right=Operand(signal=retain.signal, nets=(retain.net,)),
                 output_each=True,
-                description=f"AccumulatorReg {register.name}: periodic vector memory",
+                description=f"AccumulatorReg {register.name}: vector memory",
             )
-            self._attach(clear_active.net, Endpoint(memory_id, Connector.INPUT))
+            self._attach(retain.net, Endpoint(memory_id, Connector.INPUT))
         self.circuit.entities.append(memory)
