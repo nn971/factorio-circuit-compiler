@@ -1,4 +1,4 @@
-"""Circuit builder hooks for runtime-open whole vectors."""
+"""Circuit builder hooks for runtime-open whole vectors and logical-step timing."""
 
 from __future__ import annotations
 
@@ -28,6 +28,8 @@ class SignalsInput(SignalsExpr):
         return self._source.name
 
     def sample(self) -> SignalsExpr:
+        """Observe this external vector at the current logical step."""
+
         offset = self._circuit.now.offset
         if offset == 0:
             return self
@@ -35,10 +37,11 @@ class SignalsInput(SignalsExpr):
 
 
 class AccumulatorReg(_BaseAccumulatorReg):
-    """Accumulator register whose reads retain runtime-open vector operations."""
+    """Accumulator register whose logical observations retain vector operations."""
 
-    @property
-    def value(self) -> SignalsExpr:
+    def sample(self) -> SignalsExpr:
+        """Observe the accumulator state at the current logical step."""
+
         read = VectorRegisterRead(
             register=self._register,
             offset=self._circuit.now.offset,
@@ -46,13 +49,20 @@ class AccumulatorReg(_BaseAccumulatorReg):
             name=self._register.name,
         )
         return SignalsExpr(self._circuit, read)
+
+    @property
+    def value(self) -> SignalsExpr:
+        """Compatibility alias for :meth:`sample`; new code should use ``sample()``."""
+
+        return self.sample()
 
 
 class FreezeReg(_BaseFreezeReg):
-    """Freeze register whose reads retain runtime-open vector operations."""
+    """Freeze register whose logical observations retain vector operations."""
 
-    @property
-    def value(self) -> SignalsExpr:
+    def sample(self) -> SignalsExpr:
+        """Observe the held state at the current logical step."""
+
         read = VectorRegisterRead(
             register=self._register,
             offset=self._circuit.now.offset,
@@ -61,8 +71,16 @@ class FreezeReg(_BaseFreezeReg):
         )
         return SignalsExpr(self._circuit, read)
 
+    @property
+    def value(self) -> SignalsExpr:
+        """Compatibility alias for :meth:`sample`; new code should use ``sample()``."""
+
+        return self.sample()
+
 
 class Circuit(_Circuit):
+    """Symbolic circuit whose source cursor is measured in logical steps."""
+
     def signals(self, name: str) -> _BaseSignalsInput:
         self._claim_name(name, "input")
         value = VectorInput(name)
@@ -86,3 +104,36 @@ class Circuit(_Circuit):
 
     def freeze(self, name: str | None = None) -> FreezeReg:
         return FreezeReg(self, name=name)
+
+    def step(self, n: int = 1) -> None:
+        """Advance the logical observation cursor by ``n`` steps."""
+
+        if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+            raise CircuitBuildError("step(n) requires a non-negative integer")
+        self._freshness += n
+
+    def step_until(self, n: int) -> None:
+        """Advance the logical observation cursor to absolute step ``n``."""
+
+        if isinstance(n, bool) or not isinstance(n, int) or n < self._freshness:
+            raise CircuitBuildError(
+                f"step_until(n) requires an integer n >= current logical step {self._freshness}"
+            )
+        self._freshness = n
+
+    def tick(self, n: int = 1) -> None:
+        """Reserve the physical-tick spelling for future explicit scheduling controls."""
+
+        del n
+        raise CircuitBuildError(
+            "Circuit.tick() is reserved for future physical-tick control; use Circuit.step() "
+            "to advance logical time"
+        )
+
+    def tick_until(self, n: int) -> None:
+        """Reject the former logical-time spelling; use :meth:`step_until`."""
+
+        del n
+        raise CircuitBuildError(
+            "Circuit.tick_until() no longer denotes logical time; use Circuit.step_until()"
+        )
