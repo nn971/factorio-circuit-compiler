@@ -16,6 +16,11 @@ def test_market_controller_is_composed_only_from_primitive_freeze_registers(opti
     )
     assert len(result.state_timing.domains) == 1
 
+    input_names = {item.name for item in result.semantic_ir.inputs}
+    assert input_names == {"root_enabled", "worker_working"}
+    vector_input_names = {item.name for item in result.semantic_ir.vector_inputs}
+    assert vector_input_names == {"stock", "root_target", "reader_ingredients"}
+
     period = result.state_timing.domains[0].period
     assert period > 1
     assert all(item.period == period for item in timing.values())
@@ -31,15 +36,9 @@ def test_market_controller_is_composed_only_from_primitive_freeze_registers(opti
 
     output_names = {port.name for port in result.physical_circuit.outputs}
     assert output_names == {
-        "top_target",
-        "root_missing",
-        "stack_empty",
-        "stack_full",
-        "querying",
-        "crafting",
-        "blocked_on_full_stack",
-        "reader_request",
         "reader_item",
-        "worker_request",
         "worker_item",
+        "mode",
+        "top_target",
+        "blocked_on_full_stack",
     }
