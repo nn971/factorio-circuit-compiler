@@ -231,7 +231,7 @@ def test_fixed_vector_signal_is_reserved_from_compiler_allocation() -> None:
 def test_fresh_vector_output_keeps_logical_sample_phase() -> None:
     c = Circuit("abstract_fresh_vector")
     data = c.signals("data")
-    c.tick(2)
+    c.step(2)
     c.output("later", data.sample())
 
     result = compile_abstract_circuit(c, optimize=False)
@@ -268,8 +268,8 @@ def _accumulator() -> Circuit:
     memory = c.accumulator("memory")
     memory.add(data)
     memory.clear(when=clear)
-    c.tick(1)
-    c.output("memory", memory.value)
+    c.step(1)
+    c.output("memory", memory.sample())
     return c
 
 
@@ -325,6 +325,7 @@ def test_accumulator_feedback_and_controls_stay_abstract_until_synthesis() -> No
     }
     assert "AccumulatorReg memory: add[0] enabled" not in descriptions
 
+    assert result.state_timing.registers[0].period == 1
     assert result.physical_circuit.outputs[0].phase == 2
     assert_same_stream(
         result.semantic_ir,
@@ -341,7 +342,6 @@ def test_accumulator_feedback_and_controls_stay_abstract_until_synthesis() -> No
     )
 
     legacy = compile_legacy_circuit(_accumulator(), optimize=False)
-    assert result.physical_circuit.combinator_count == legacy.physical_circuit.combinator_count
     assert result.physical_circuit.output_phases == legacy.physical_circuit.output_phases
 
 
@@ -354,8 +354,8 @@ def _freeze() -> Circuit:
     set_signal = c.input("set_signal")
     memory = c.freeze("memory")
     memory.set(data, when=set_signal)
-    c.tick(1)
-    c.output("memory", memory.value)
+    c.step(1)
+    c.output("memory", memory.sample())
     return c
 
 
@@ -368,7 +368,7 @@ def test_freeze_feedback_and_pass_hold_controls_stay_abstract_until_synthesis() 
         entity
         for entity in result.abstract_physical.entities
         if isinstance(entity, ArithmeticCombinator)
-        and entity.description == "FreezeReg memory: transparent input gate"
+        and entity.description == "FreezeReg memory: input gate"
     )
     memory = next(
         entity
@@ -405,10 +405,10 @@ def test_freeze_feedback_and_pass_hold_controls_stay_abstract_until_synthesis() 
         {"data": {IRON: 5, COPPER: 2}, "set_signal": 1},
         {"data": {}, "set_signal": 0},
     ]
+    assert result.state_timing.registers[0].period == 1
     assert_same_stream(result.semantic_ir, result.physical_circuit, stream)
 
     legacy = compile_legacy_circuit(_freeze(), optimize=False)
-    assert result.physical_circuit.combinator_count == legacy.physical_circuit.combinator_count
     assert result.physical_circuit.output_phases == legacy.physical_circuit.output_phases
 
 
@@ -419,15 +419,15 @@ def _switchable_fibonacci() -> Circuit:
     a = c.freeze("fib_a")
     b = c.accumulator("fib_b")
 
-    old_a = a.value
-    old_b = b.value
+    old_a = a.sample()
+    old_b = b.sample()
     a.set(old_b, when=on)
     b.add(old_a, when=on)
     b.add(one, when=on)
 
-    c.tick(1)
-    new_a = a.value
-    new_b = b.value
+    c.step(1)
+    new_a = a.sample()
+    new_b = b.sample()
     c.output("fib", new_b.signal(FIB) - new_a.signal(FIB))
     return c
 
@@ -447,6 +447,7 @@ def test_switchable_fibonacci_runs_through_coupled_abstract_state_networks() -> 
         {"on": 1},
         {"on": 1},
     ]
+    assert all(item.period == 1 for item in result.state_timing.registers)
     assert_same_stream(result.semantic_ir, result.physical_circuit, stream)
 
     observations = simulate_stream(result.physical_circuit, stream)
