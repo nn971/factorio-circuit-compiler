@@ -5,8 +5,11 @@ from factorio_circuit.analysis.state_timing import StateTimingError
 from factorio_circuit.frontend import Circuit
 
 
+@pytest.mark.parametrize("optimize", [False, True])
 @pytest.mark.parametrize("register_kind", ["freeze", "accumulator"])
-def test_state_vector_any_can_control_another_register(register_kind: str) -> None:
+def test_state_vector_any_can_control_another_register(
+    register_kind: str, optimize: bool
+) -> None:
     circuit = Circuit(f"state_vector_any_{register_kind}")
     data = circuit.signals("data")
     load = circuit.input("load")
@@ -27,7 +30,7 @@ def test_state_vector_any_can_control_another_register(register_kind: str) -> No
     circuit.tick(1)
     circuit.output("sink", sink.value)
 
-    result = compile_circuit(circuit, optimize=False)
+    result = compile_circuit(circuit, optimize=optimize)
     source_timing, sink_timing = result.state_timing.registers
 
     assert source_timing.register.name == "source"
@@ -36,7 +39,8 @@ def test_state_vector_any_can_control_another_register(register_kind: str) -> No
     assert sink_timing.transition_input_phase == source_timing.state_phase + 2
 
 
-def test_state_vector_predicate_can_gate_vector_state_input() -> None:
+@pytest.mark.parametrize("optimize", [False, True])
+def test_state_vector_predicate_can_gate_vector_state_input(optimize: bool) -> None:
     circuit = Circuit("state_vector_gate")
     data = circuit.signals("data")
     load = circuit.input("load")
@@ -51,7 +55,7 @@ def test_state_vector_predicate_can_gate_vector_state_input() -> None:
     circuit.tick(1)
     circuit.output("sink", sink.value)
 
-    result = compile_circuit(circuit, optimize=False)
+    result = compile_circuit(circuit, optimize=optimize)
     source_timing, sink_timing = result.state_timing.registers
 
     assert sink_timing.earliest_transition_input_phase == source_timing.state_phase + 2
