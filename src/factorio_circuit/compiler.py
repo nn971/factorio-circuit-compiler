@@ -15,7 +15,7 @@ from factorio_circuit.frontend import _VectorBinaryOp, _VectorFilter, _VectorSca
 from factorio_circuit.frontend.symbolic import Circuit
 from factorio_circuit.ir.abstract_physical import AbstractPhysicalCircuit
 from factorio_circuit.ir.physical import PhysicalCircuit
-from factorio_circuit.ir.semantic import CircuitModule
+from factorio_circuit.ir.semantic import CircuitModule, reject_event_module
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.lowering.open_vector_pipeline import lower_vectors
 from factorio_circuit.optimize.pipeline import optimize_semantic
@@ -94,6 +94,7 @@ def compile_circuit(
     """Compile through Abstract Physical IR, physical synthesis, and final Layout."""
 
     semantic = lower_frontend(source)
+    reject_event_module(semantic)
     skip_scalar_optimizer = _contains_vector_output(semantic)
     optimized_semantic = (
         optimize_semantic(semantic) if optimize and not skip_scalar_optimizer else semantic

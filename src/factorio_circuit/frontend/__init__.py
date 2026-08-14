@@ -1,6 +1,14 @@
 """Public symbolic frontend, including runtime-open vector expressions."""
 
-from .symbolic import CircuitBuildError, Expr, Input, LogicalTime
+from .symbolic import (
+    CircuitBuildError,
+    Expr,
+    Input,
+    LogicalTime,
+    SampleOnReference,
+    ScalarEvent,
+    VectorEvent,
+)
 from .vector_circuit import AccumulatorReg, Circuit, FreezeReg, SignalsInput
 from .vector_expr import SignalsExpr
 from .vector_nodes import _VectorBinaryOp as _VectorBinaryOp
@@ -18,4 +26,7 @@ __all__ = [
     "LogicalTime",
     "SignalsExpr",
     "SignalsInput",
+    "SampleOnReference",
+    "ScalarEvent",
+    "VectorEvent",
 ]

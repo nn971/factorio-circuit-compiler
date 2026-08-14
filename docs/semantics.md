@@ -40,8 +40,8 @@ circuit.step_until(n)
 `step(n)` advances the logical sequence index by `n`; it does **not** promise `n` Factorio ticks.
 
 `Circuit.tick()` is intentionally reserved for future explicit physical-tick scheduling control and
-currently raises an error. `register.value` remains only as a compatibility alias for
-`register.sample()` while old callers migrate.
+currently raises an error. `register.value` is a deprecated compatibility alias for
+`register.sample()`; new code should use `.sample()`.
 
 ## Stateless expressions
 
@@ -71,6 +71,36 @@ x1 = x.sample()  # x[k+1]
 If the consuming domain has `P=4`, these observations correspond to physical source ticks separated
 by four game ticks. Intermediate physical source values are not separate samples for that domain.
 Pulse-like sources therefore need an appropriate fast domain or explicit event capture/buffering.
+
+### Semantic Event reference path
+
+`Circuit.event(...)` and `Circuit.signal_event(...)` declare scalar/vector Event sources. They are not
+ordinary expressions and cannot be compiled into the current physical pipeline. A semantic reference
+schedule may drive one `FreezeReg.capture_on(...)` per register through `simulate_events(...)`;
+same-timestamp occurrences see one Level row and old state before simultaneous commit. Zero and empty
+payload occurrences remain present, while missing schedule entries represent absence.
+
+Frontend elaboration still constructs a semantic `CircuitModule`, including Event fields and
+`event_state_operations`; these remain semantic/reference records outside `StateTimingPlan`. A
+Level/physical route then raises `EventCompilationError` before state-timing analysis or
+semantic-to-physical lowering, so no abstract physical IR, synthesis, blueprint generation, or
+ordinary Level simulation follows. Use `simulate_events()` for the reference path.
+
+Physical pulse capture, buffering, handshakes, bridges, Event expressions, and periodic/Event mixing
+remain unresolved.
+
+`Circuit.sample_on(level_source, event_target)` is the semantic-only Level/Event crossing. It accepts
+only a raw same-circuit scalar or whole-vector Level input and any same-circuit declared Event clock,
+interns equal declarations, and records observations in Event reactions at the normalized timestamp
+Level snapshot. Its payload shape is always the Level source shape, independent of the target Event.
+A `SampleOn` is a non-expression reference, not a state value, output, or capture value.
+
+`materialize_event_trace(...)` is a separate reference-result transform. Explicit
+`EventMaterializationPolicy.HOLD`, `.ZERO`, and `.VALID` produce independent scalar/vector rows over
+the half-open simulation timestamp domain. HOLD retains the last present value, ZERO uses the
+canonical zero/empty value between occurrences, and VALID additionally reports presence. These
+policies are reference transforms, not hardware: they do not create physical storage, pulse generation,
+bridges, output ports, or Factorio valid wiring.
 
 Purely external stateless circuits use the default `P=1` schedule.
 

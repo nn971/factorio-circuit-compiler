@@ -33,8 +33,21 @@ s1 = register.sample()
 ```
 
 `step(n)` advances logical time. It is separate from Factorio game ticks. `Circuit.tick()` is reserved
-for future explicit physical scheduling and currently raises. `register.value` remains a compatibility
-alias; new code uses `register.sample()`.
+for future explicit physical scheduling and currently raises. `register.value` remains a deprecated
+compatibility alias; new code uses `register.sample()`.
+
+## Semantic Event/reference lane
+
+Event-bearing circuits undergo frontend elaboration and semantic `CircuitModule` construction, then
+use a separate reference lane. `simulate_events()` runs their declared schedules and same-timestamp
+semantic reactions; `Circuit.sample_on(...)` records raw Level snapshots on Event activations; and
+`materialize_event_trace(...)` returns reference-only HOLD/ZERO/VALID results. Event captures and
+SampleOn crossings are outside `StateTimingPlan` and are not physical outputs.
+
+Level/physical routes raise `EventCompilationError` before `StateTimingPlan` or semantic-to-physical
+lowering; no abstract physical IR, synthesis, blueprint generation, or Level simulation follows.
+Physical Event pulses, storage, buffering, bridges, output policies, valid wiring, and Factorio Event
+support are not implemented.
 
 ## Clock-domain timing
 
@@ -105,7 +118,7 @@ stale external stock after a craft, in-flight logistics, raw/uncraftable resourc
 stack overflow, multi-worker scheduling under transport delay, and recipe metadata/ROM design. See
 `docs/autonomous-market.md`.
 
-## Physical pipeline
+## Level/physical compilation pipeline
 
 ```text
 symbolic/logical circuit
@@ -142,17 +155,21 @@ The regression suite covers, among other things:
 - pairwise arithmetic packing and shared-predicate/multi-output-decider fusion;
 - sorting-network and Walsh-Hadamard benchmark circuits;
 - abstract physical synthesis, placement, reach-safe routing, and blueprint serialization.
+- semantic Event/SampleOn reference schedules and materialization (`tests/integration/test_events.py`).
 
 Canonical local checks are:
 
 ```fish
 uv run pytest
+uv run pytest tests/integration/test_events.py
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
 ```
 
 Do not infer validation status from this document; run the checks for the branch being changed.
+Factorio blueprint validation applies to Level/stateful modules only; Event behavior has no physical
+blueprint validation path.
 
 ## Next technical decision
 

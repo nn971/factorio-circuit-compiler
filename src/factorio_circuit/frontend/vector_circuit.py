@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import cast
 
 from factorio_circuit.ir.physical import SignalId
-from factorio_circuit.ir.semantic import VectorConstant, VectorInput
+from factorio_circuit.ir.semantic import Flow, PayloadShape, VectorConstant, VectorInput
 from factorio_circuit.ir.state import VectorRegisterRead
 
 from .symbolic import AccumulatorReg as _BaseAccumulatorReg
@@ -26,6 +26,12 @@ class SignalsInput(SignalsExpr):
     @property
     def name(self) -> str:
         return self._source.name
+
+    @property
+    def flow(self) -> Flow:
+        """Return the Level-flow metadata attached to this legacy source."""
+
+        return self._circuit._input_flow(self._source, PayloadShape.VECTOR)
 
     def sample(self) -> SignalsExpr:
         """Observe this external vector at the current logical step."""

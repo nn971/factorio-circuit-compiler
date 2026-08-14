@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import cast
 
+from factorio_circuit.events import EventCrossingError
 from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.ir.semantic import Compare, Constant, VectorSignal, VectorValue
 
-from .symbolic import CircuitBuildError, Expr
+from .symbolic import CircuitBuildError, Expr, SampleOnReference
 from .symbolic import SignalsExpr as _SignalsExpr
 from .vector_nodes import (
     _VectorBinaryOp,
@@ -25,6 +26,8 @@ class SignalsExpr(_SignalsExpr):
         return SignalsExpr(self._circuit, cast(VectorValue, value))
 
     def _coerce_vector(self, other: object) -> VectorValue:
+        if isinstance(other, SampleOnReference):
+            raise EventCrossingError("SampleOn references cannot be used in vector expressions")
         if not isinstance(other, _SignalsExpr):
             raise CircuitBuildError(
                 f"expected whole-vector SignalsExpr, got {type(other).__name__}"

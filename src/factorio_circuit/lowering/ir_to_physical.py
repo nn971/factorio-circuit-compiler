@@ -35,6 +35,7 @@ from factorio_circuit.ir.semantic import (
     VectorSignal,
     VectorValue,
     dependencies,
+    reject_event_module,
 )
 from factorio_circuit.ir.state import (
     AccumulatorAdd,
@@ -87,6 +88,7 @@ class PhysicalLowerer:
         enable_packing: bool,
         state_timing: StateTimingPlan | None = None,
     ) -> None:
+        reject_event_module(module)
         self.module = module
         self.enable_packing = enable_packing
         self.state_timing = state_timing or analyze_state_timing(module)
@@ -857,6 +859,7 @@ def lower_naive(
 ) -> PhysicalCircuit:
     """Lower the semantic DAG without lane packing."""
 
+    reject_event_module(module)
     return PhysicalLowerer(module, enable_packing=False, state_timing=state_timing).lower()
 
 
@@ -865,6 +868,7 @@ def lower_with_alu_packing(
 ) -> PhysicalCircuit:
     """Lower with conservative compatibility-group ``Each`` packing."""
 
+    reject_event_module(module)
     return PhysicalLowerer(module, enable_packing=True, state_timing=state_timing).lower()
 
 

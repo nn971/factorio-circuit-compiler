@@ -7,6 +7,14 @@ from .compiler import (
     compile_abstract_circuit,
     compile_circuit,
 )
+from .events import (
+    EventCausalityError,
+    EventCompilationError,
+    EventCrossingError,
+    EventMaterializationError,
+    EventScheduleError,
+    EventThroughputError,
+)
 from .frontend import (
     AccumulatorReg,
     Circuit,
@@ -15,10 +23,26 @@ from .frontend import (
     FreezeReg,
     Input,
     LogicalTime,
+    SampleOnReference,
+    ScalarEvent,
     SignalsExpr,
     SignalsInput,
+    VectorEvent,
 )
 from .ir.physical import SignalId
+from .simulate.events import (
+    EventActivation,
+    EventMaterializationPolicy,
+    EventOccurrence,
+    EventReaction,
+    EventSchedule,
+    EventSimulationResult,
+    MaterializedEventTrace,
+    SampleOnObservation,
+    TimestampDomain,
+    materialize_event_trace,
+    simulate_events,
+)
 from .synthesis.placement import PlacementMetrics, PlacementOptions, placement_metrics
 
 __all__ = [
@@ -29,6 +53,18 @@ __all__ = [
     "ClockDomainTiming",
     "CompilationResult",
     "Expr",
+    "EventCausalityError",
+    "EventActivation",
+    "EventCompilationError",
+    "EventCrossingError",
+    "EventOccurrence",
+    "EventReaction",
+    "EventSchedule",
+    "EventScheduleError",
+    "EventSimulationResult",
+    "EventMaterializationError",
+    "EventMaterializationPolicy",
+    "EventThroughputError",
     "FreezeReg",
     "Input",
     "LogicalTime",
@@ -36,10 +72,18 @@ __all__ = [
     "PlacementOptions",
     "SignalsExpr",
     "SignalsInput",
+    "SampleOnReference",
+    "ScalarEvent",
     "SignalId",
     "StateTimingError",
     "StateTimingPlan",
     "compile_abstract_circuit",
     "compile_circuit",
     "placement_metrics",
+    "simulate_events",
+    "materialize_event_trace",
+    "MaterializedEventTrace",
+    "SampleOnObservation",
+    "TimestampDomain",
+    "VectorEvent",
 ]

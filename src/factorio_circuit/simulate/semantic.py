@@ -20,6 +20,7 @@ from factorio_circuit.ir.semantic import (
     VectorInputSample,
     VectorSignal,
     VectorValue,
+    reject_event_module,
 )
 from factorio_circuit.ir.state import (
     AccumulatorAdd,
@@ -39,6 +40,7 @@ type LogicalOutput = int | SignalMap
 def evaluate(module: CircuitModule, inputs: dict[str, int]) -> tuple[int, ...]:
     """Evaluate one logical tick for a scalar stateless circuit with held external inputs."""
 
+    reject_event_module(module)
     if module.state_registers or module.vector_inputs:
         raise ValueError(
             "single-tick evaluate() is scalar/stateless; use simulate_stream() for state"
@@ -54,6 +56,7 @@ def simulate_stream(
 ) -> list[tuple[LogicalOutput, ...]]:
     """Evaluate logical output streams, including fresh samples and vector state."""
 
+    reject_event_module(module)
     histories: dict[str, list[SignalMap]] = {}
     if module.state_registers:
         _validate_state_startup_model(module)

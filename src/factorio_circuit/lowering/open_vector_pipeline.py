@@ -8,6 +8,7 @@ from factorio_circuit.ir.semantic import (
     VectorConstant,
     VectorInput,
     VectorInputSample,
+    reject_event_module,
 )
 from factorio_circuit.ir.state import AccumulatorRegister, FreezeRegister, VectorRegisterRead
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
@@ -33,6 +34,7 @@ def lower_vectors(
 ) -> AbstractPhysicalCircuit:
     """Lower scalar/vector logic and the current vector-register state subset together."""
 
+    reject_event_module(module)
     unsupported_registers = [
         register
         for register in module.state_registers

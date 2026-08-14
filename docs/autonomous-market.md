@@ -26,6 +26,11 @@ policy.
 
 This prototype is intentionally paused at this point.
 
+The Phase 3/4 Event work does not migrate this controller. It adds only semantic/reference schedules,
+captures, SampleOn observations, and reference materialization; physical completion pulses, buffering,
+handshakes, and Event-to-periodic integration remain unresolved. There is no deployed autonomous-
+market Event migration; the market continues to use its existing Level-based protocol.
+
 ## Task representation
 
 A task is an arbitrary runtime-open threshold vector `T`:

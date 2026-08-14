@@ -88,6 +88,9 @@ def simplify_module(module: CircuitModule) -> CircuitModule:
         module.vector_inputs,
         module.state_registers,
         tuple(state_ops),
+        module.event_inputs,
+        module.event_state_operations,
+        module.sample_on_crossings,
     )
     return CircuitModule(
         provisional.name,
@@ -97,6 +100,9 @@ def simplify_module(module: CircuitModule) -> CircuitModule:
         provisional.vector_inputs,
         provisional.state_registers,
         provisional.state_operations,
+        provisional.event_inputs,
+        provisional.event_state_operations,
+        provisional.sample_on_crossings,
     )
 
 

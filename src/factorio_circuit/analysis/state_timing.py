@@ -24,6 +24,7 @@ from factorio_circuit.ir.semantic import (
     VectorInputSample,
     VectorSignal,
     VectorValue,
+    reject_event_module,
 )
 from factorio_circuit.ir.state import (
     AccumulatorAdd,
@@ -35,6 +36,8 @@ from factorio_circuit.ir.state import (
     StateRegister,
     VectorRegisterRead,
 )
+
+from .causality import CausalityEdge, CausalityEdgeKind, CausalityGraph, has_nonpositive_cycle
 
 
 class StateTimingError(ValueError):
@@ -146,6 +149,7 @@ def analyze_state_timing(module: CircuitModule) -> StateTimingPlan:
     yet.
     """
 
+    reject_event_module(module)
     if not module.state_registers:
         return StateTimingPlan((), ())
 
@@ -158,6 +162,23 @@ def analyze_state_timing(module: CircuitModule) -> StateTimingPlan:
 
     specs_by_name = {spec.register.name: spec for spec in specs}
     groups = _infer_clock_domain_registers(module)
+    causality = _causality_graph(tuple(specs))
+    for registers in groups:
+        register_set = set(registers)
+        domain_graph = CausalityGraph(
+            registers=registers,
+            edges=tuple(
+                edge
+                for edge in causality.edges
+                if edge.source in register_set and edge.target in register_set
+            ),
+        )
+        if has_nonpositive_cycle(domain_graph):
+            names = ", ".join(register.name for register in registers)
+            raise StateTimingError(
+                "state recurrence has no finite logical clock period: ordinary same-step "
+                f"dependencies form a noncausal/zero-distance physical cycle in domain {{{names}}}"
+            )
 
     domain_timings: list[ClockDomainTiming] = []
     phase_by_name: dict[str, int] = {}
@@ -366,6 +387,29 @@ def _analyze_register_semantics(
         first_update_order=first_order,
         last_update_order=last_order,
         requirements=tuple(requirements),
+    )
+
+
+def _causality_graph(specs: tuple[_RegisterSpec, ...]) -> CausalityGraph:
+    """Project state-bearing timing requirements into the internal causality graph."""
+
+    edges: list[CausalityEdge] = []
+    for spec in specs:
+        for requirement in spec.requirements:
+            if requirement.source is None:
+                continue
+            edges.append(
+                CausalityEdge(
+                    source=requirement.source,
+                    target=spec.register,
+                    kind=CausalityEdgeKind.ORDINARY_STATE_DEPENDENCY,
+                    logical_displacement=spec.commit_offset + 1 - requirement.logical_offset,
+                    physical_latency=requirement.latency + 1,
+                )
+            )
+    return CausalityGraph(
+        registers=tuple(spec.register for spec in specs),
+        edges=tuple(edges),
     )
 
 

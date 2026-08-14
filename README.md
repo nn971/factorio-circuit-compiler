@@ -3,6 +3,9 @@
 Experimental compiler from a symbolic Python EDSL to optimized Factorio 2.x combinator circuits and
 blueprints.
 
+The following is the Level/physical compilation pipeline; Event-bearing circuits branch to the
+semantic/reference lane after frontend elaboration and semantic `CircuitModule` construction.
+
 ```text
 ordinary Python elaboration
         ↓
@@ -21,6 +24,14 @@ Layout
         ↓
 blueprint JSON/string serialization
 ```
+
+Event-bearing modules use a separate semantic/reference lane. Frontend elaboration still constructs a
+semantic `CircuitModule`; `simulate_events()` runs declared Event schedules, `Circuit.sample_on(...)`
+records Level snapshots on Event activations, and `materialize_event_trace(...)` applies reference-only
+HOLD/ZERO/VALID policies. Level/physical routes then raise `EventCompilationError` before
+`StateTimingPlan` or semantic-to-physical lowering, so no abstract physical IR, synthesis, blueprints,
+or Level simulation follows. They do not provide physical Event pulses, storage, bridges, or valid
+wiring.
 
 Start with:
 
@@ -130,7 +141,7 @@ set != 0   pass/track at a logical boundary
 set == 0   hold the previous vector
 ```
 
-`register.value` remains a compatibility alias while old callers migrate; new code uses
+`register.value` is a deprecated compatibility alias retained for old callers; new code uses
 `register.sample()`.
 
 ## Runtime-open vectors
@@ -170,5 +181,11 @@ uv run python examples/state_vector_predicate.py
 uv run python examples/vector_fifo.py
 ```
 
-The compiler should be validated both with tick-level physical simulation and with generated
-blueprints in Factorio for representative stateful circuits.
+Level modules should be validated with tick-level physical simulation and generated blueprints in
+Factorio for representative stateful circuits. Event/reference behavior is validated separately with:
+
+```fish
+uv run pytest tests/integration/test_events.py
+```
+
+Blueprint validation is Level-module-only; this project does not claim Factorio physical Event support.

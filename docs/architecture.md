@@ -1,5 +1,9 @@
 # Architecture
 
+The following is the Level/physical compilation pipeline. Event-bearing circuits still undergo
+frontend elaboration and semantic `CircuitModule` construction, then leave this route at its explicit
+Event boundary.
+
 ```text
 ordinary Python elaboration
         ↓
@@ -41,6 +45,24 @@ Python runs once as elaboration. Symbolic operators create logical stream nodes.
 - `Circuit.tick()` is reserved for future physical-tick constraints.
 - scalar/vector operators create logical expressions without exposing physical execution ticks.
 - state objects create explicit read/update IR records.
+
+Event sources and `FreezeReg.capture_on(...)` form a separate semantic/reference lane. Its
+`simulate_events(...)` schedule runner is intentionally outside the ordinary Level compiler path.
+Frontend elaboration constructs the semantic `CircuitModule`; Level/physical routes then raise
+`EventCompilationError` before `StateTimingPlan` or semantic-to-physical lowering. No abstract
+physical IR, synthesis, blueprint generation, or Level-only simulation follows. Physical Event
+capture, buffering, bridges, output policies, valid wiring, and blueprint realization are not
+implemented.
+
+The reference lane also supports semantic-only `Circuit.sample_on(...)` crossings from raw Level
+inputs to any same-Circuit declared Event clock. Activations carry declaration-ordered observations
+from the same normalized Level snapshot, with payload shape determined by the Level source.
+`materialize_event_trace(...)` applies explicit HOLD/ZERO/VALID
+policies only to reference results over a half-open timestamp domain; it never adds semantic streams,
+physical bridges, storage, pulse generation, valid wiring, or blueprint output.
+
+`SampleOnReference` is a non-expression reference. Event captures and SampleOn crossings remain outside
+the periodic state-timing plan; materialization is a reference transform, not hardware.
 
 Derived expressions are already sampled logical streams and therefore have no `.sample()` operation.
 

@@ -43,6 +43,7 @@ from factorio_circuit.ir.semantic import (
     VectorSignal,
     VectorValue,
     dependencies,
+    reject_event_module,
 )
 from factorio_circuit.ir.state import (
     AccumulatorAdd,
@@ -94,6 +95,7 @@ class AbstractPhysicalLowerer:
         enable_packing: bool,
         state_timing: StateTimingPlan | None = None,
     ) -> None:
+        reject_event_module(module)
         self.module = module
         self.enable_packing = enable_packing
         self.state_timing = state_timing or analyze_state_timing(module)
@@ -1429,6 +1431,7 @@ def lower_abstract_physical(
 ) -> AbstractPhysicalCircuit:
     """Lower the supported target subset to target-specific abstract physical IR."""
 
+    reject_event_module(module)
     return AbstractPhysicalLowerer(
         module, enable_packing=enable_packing, state_timing=state_timing
     ).lower()

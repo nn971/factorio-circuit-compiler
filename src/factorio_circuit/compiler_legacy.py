@@ -9,7 +9,7 @@ from factorio_circuit.blueprint.encode import encode_blueprint_string, to_bluepr
 from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
 from factorio_circuit.frontend.symbolic import Circuit
 from factorio_circuit.ir.physical import PhysicalCircuit
-from factorio_circuit.ir.semantic import CircuitModule
+from factorio_circuit.ir.semantic import CircuitModule, reject_event_module
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.lowering.ir_to_physical import lower_naive, lower_with_alu_packing
 from factorio_circuit.optimize.pipeline import optimize_semantic
@@ -39,6 +39,7 @@ def compile_legacy_circuit(
     """Compile one-tick-domain circuits with the pre-Abstract-Physical backend."""
 
     semantic = lower_frontend(source)
+    reject_event_module(semantic)
     optimized_semantic = optimize_semantic(semantic) if optimize else semantic
     state_timing = analyze_state_timing(optimized_semantic)
     multicycle = [domain for domain in state_timing.domains if domain.period != 1]

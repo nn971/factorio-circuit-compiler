@@ -1,5 +1,31 @@
 # Timing open problems
 
+## Semantic Event/SampleOn reference boundary
+
+The compiler now has a semantic/reference-only Event path: declared Event schedules can trigger
+`FreezeReg.capture_on(...)` in `simulate_events(...)` with deterministic same-timestamp snapshots and
+REJECT-only declared-throughput validation. This path does not produce physical pulses or blueprints.
+
+Event captures and SampleOn crossings are outside `StateTimingPlan`. Frontend elaboration constructs
+the semantic `CircuitModule`; a Level/physical route then raises `EventCompilationError` before
+state-timing analysis or semantic-to-physical lowering. `simulate_events()` and reference
+materialization are the supported path; no abstract physical IR, synthesis, blueprint generation, or
+Level simulation follows.
+
+Physical pulse capture, buffering/FIFO behavior, latching, ready/handshake protocols, periodic/Event
+mixing, and output alignment remain open. No implementation may silently drop or retain an Event to
+make a physical schedule fit.
+
+Phase 4 closes only the semantic observation boundary: `SampleOn` is a non-expression reference that
+samples an existing raw Level at a declared Event activation, and the reference runner exposes explicit
+HOLD/ZERO/VALID materialization of Event and SampleOn values over a validated half-open timestamp
+domain. The rows and optional VALID presence flag are independent reference data, not hardware. None
+of these policies imply physical cadence, storage, pulse retention, bridges, activation gates, or
+Factorio valid wiring; all Event/SampleOn modules remain rejected by physical and Level-only routes.
+
+Event clock taxonomy, periodic/Event mixing, SumInto/HoldInto/EventMerge, physical bridges, bridge
+CSE/packing, physical output policies, valid wiring, and pulse buffering remain deferred.
+
 ## Triggered logical domains and pulse capture
 
 The current multicycle scheduler infers a minimum physical initiation interval `P` for each logical clock domain and realizes it as a periodic cadence. This is sufficient for continuously sampled/level-like inputs, but it can miss short physical pulses that occur between logical activations.

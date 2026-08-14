@@ -12,4 +12,7 @@ def eliminate_dead_code(module: CircuitModule) -> CircuitModule:
         module.vector_inputs,
         module.state_registers,
         module.state_operations,
+        module.event_inputs,
+        module.event_state_operations,
+        module.sample_on_crossings,
     )
