@@ -30,9 +30,16 @@ def test_fresh_vector_sample_can_feed_state_after_later_logical_step() -> None:
     c.output("memory", memory.sample())
 
     result = compile_circuit(c, optimize=False)
-    assert result.state_timing.registers[0].period == 1
+    timing = result.state_timing.registers[0]
+
+    assert timing.period == 1
+    assert timing.state_phase == 3
+    assert timing.earliest_transition_input_phase == 3
+    assert timing.transition_input_phase == 3
     assert result.physical_circuit.connections
-    assert any(
+    # The source sample itself already lives at physical phase 3, so no explicit vector-delay
+    # combinator is required merely to align it with this transition.
+    assert not any(
         getattr(entity, "description", None) == "vector phase alignment delay"
         for entity in result.physical_circuit.entities
     )
