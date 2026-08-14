@@ -62,6 +62,7 @@ class VectorLowerer(_Base):
     ) -> None:
         super().__init__(module, enable_packing=enable_packing, state_timing=state_timing)
         self._clock_counters: dict[int, tuple[int, int, int]] = {}
+        self._startup_source: RealizedValue | None = None
         self._external_sample_period = self.state_timing.uniform_period
 
     def realize(self, value: Value) -> RealizedValue:
@@ -175,6 +176,42 @@ class VectorLowerer(_Base):
             net,
         )
 
+    def _startup_ready(self, target_phase: int) -> RealizedValue:
+        """Return a level that becomes one at the first valid state-gate input tick.
+
+        A modulo clock has the right steady-state cadence but repeats its residue before a long
+        acyclic pipeline has produced logical step zero.  Delaying a constant one to the state
+        gate's input phase suppresses those premature residues without changing steady-state P.
+        """
+
+        input_phase = target_phase - 1
+        if input_phase < 0:  # pragma: no cover - multicycle transitions have a preceding tick
+            raise ValueError("multicycle state startup has no preceding physical tick")
+        if self._startup_source is None:
+            signal = self._new_signal("logical state startup")
+            entity = ConstantCombinator(
+                id=self._take_entity_id(),
+                signals=((signal, 1),),
+                description="logical state startup: constant one",
+            )
+            self.circuit.entities.append(entity)
+            net = self._new_net(
+                (signal,),
+                Endpoint(entity.id, Connector.SINGLE),
+                label="logical state startup",
+            )
+            self._startup_source = RealizedValue(signal, net, 0)
+        return self.delay_to(self._startup_source, input_phase)
+
+    @staticmethod
+    def _boolean_condition(value: RealizedValue, *, nonzero: bool) -> DeciderCondition:
+        return DeciderCondition(
+            comparator="!=" if nonzero else "==",
+            left=Operand(signal=value.signal, nets=(value.net,)),
+            right=Operand(constant=0),
+            compare_type="and",
+        )
+
     def _emit_condition_union(
         self,
         *,
@@ -241,31 +278,33 @@ class VectorLowerer(_Base):
         target_phase = timing.transition_input_phase
         source = self.delay_vector_to(self.realize_vector(spec.value), target_phase)
 
-        is_constant = isinstance(spec.when, Constant)
-        constant_active = is_constant and spec.when.value != 0
-        constant_inactive = is_constant and spec.when.value == 0
+        constant_when = spec.when if isinstance(spec.when, Constant) else None
+        constant_active = constant_when is not None and constant_when.value != 0
+        constant_inactive = constant_when is not None and constant_when.value == 0
+
         clock_equal: DeciderCondition | None = None
         clock_not_equal: DeciderCondition | None = None
         clock_net: int | None = None
+        ready: RealizedValue | None = None
         if timing.period > 1:
             clock_equal, clock_net = self._clock_condition(register, target_phase, equal=True)
             clock_not_equal, _ = self._clock_condition(register, target_phase, equal=False)
+            ready = self._startup_ready(target_phase)
+
+        control: RealizedValue | None = None
+        if constant_when is None:
+            control = self.delay_to(self.realize(spec.when), target_phase - 1)
 
         pass_value: RealizedValue | None = None
         if not constant_inactive and not (constant_active and timing.period == 1):
             conditions: list[DeciderCondition] = []
             input_nets: list[int] = []
-            if not is_constant:
-                control = self.delay_to(self.realize(spec.when), target_phase - 1)
-                conditions.append(
-                    DeciderCondition(
-                        comparator="!=",
-                        left=Operand(signal=control.signal, nets=(control.net,)),
-                        right=Operand(constant=0),
-                        compare_type="and",
-                    )
-                )
+            if control is not None:
+                conditions.append(self._boolean_condition(control, nonzero=True))
                 input_nets.append(control.net)
+            if ready is not None:
+                conditions.append(self._boolean_condition(ready, nonzero=True))
+                input_nets.append(ready.net)
             if clock_equal is not None:
                 conditions.append(clock_equal)
                 assert clock_net is not None
@@ -280,52 +319,49 @@ class VectorLowerer(_Base):
             )
 
         hold_value: RealizedValue | None = None
-        if constant_active:
-            if clock_not_equal is not None:
-                assert clock_net is not None
+        if constant_inactive:
+            hold_value = None
+        elif timing.period == 1:
+            if control is not None:
                 hold_value = self._emit_condition_signal(
-                    primary=clock_not_equal,
-                    additional=(),
-                    input_nets=(clock_net,),
-                    target_phase=target_phase,
-                    label=f"FreezeReg {register.name}: hold between logical boundaries",
-                )
-        elif not constant_inactive:
-            control = self.delay_to(self.realize(spec.when), target_phase - 1)
-            hold_boundary = DeciderCondition(
-                comparator="==",
-                left=Operand(signal=control.signal, nets=(control.net,)),
-                right=Operand(constant=0),
-                compare_type="and",
-            )
-            if clock_equal is None:
-                hold_value = self._emit_condition_signal(
-                    primary=hold_boundary,
+                    primary=self._boolean_condition(control, nonzero=False),
                     additional=(),
                     input_nets=(control.net,),
                     target_phase=target_phase,
                     label=f"FreezeReg {register.name}: hold",
                 )
-            else:
-                assert clock_not_equal is not None and clock_net is not None
-                hold_value = self._emit_condition_union(
-                    branches=(
-                        (
-                            hold_boundary,
-                            (clock_equal,),
-                            (control.net, clock_net),
-                            f"FreezeReg {register.name}: hold at logical boundary",
-                        ),
-                        (
-                            clock_not_equal,
-                            (),
-                            (clock_net,),
-                            f"FreezeReg {register.name}: hold between logical boundaries",
-                        ),
-                    ),
-                    target_phase=target_phase,
-                    label=f"FreezeReg {register.name}: hold",
+        else:
+            assert ready is not None
+            assert clock_equal is not None and clock_not_equal is not None and clock_net is not None
+            ready_true = self._boolean_condition(ready, nonzero=True)
+            branches: list[_ConditionBranch] = [
+                (
+                    self._boolean_condition(ready, nonzero=False),
+                    (),
+                    (ready.net,),
+                    f"FreezeReg {register.name}: hold before startup",
+                ),
+                (
+                    ready_true,
+                    (clock_not_equal,),
+                    (ready.net, clock_net),
+                    f"FreezeReg {register.name}: hold between logical boundaries",
+                ),
+            ]
+            if control is not None:
+                branches.append(
+                    (
+                        self._boolean_condition(control, nonzero=False),
+                        (ready_true, clock_equal),
+                        (control.net, ready.net, clock_net),
+                        f"FreezeReg {register.name}: hold at inactive logical boundary",
+                    )
                 )
+            hold_value = self._emit_condition_union(
+                branches=tuple(branches),
+                target_phase=target_phase,
+                label=f"FreezeReg {register.name}: hold",
+            )
 
         memory_id = self.state_memory_ids[register.name]
         memory_net = self.state_memory_nets[register.name]
@@ -417,12 +453,15 @@ class VectorLowerer(_Base):
 
         timing = self.state_timing.for_register(register)
         target_phase = timing.transition_input_phase
+
         clock_equal: DeciderCondition | None = None
         clock_not_equal: DeciderCondition | None = None
         clock_net: int | None = None
+        ready: RealizedValue | None = None
         if timing.period > 1:
             clock_equal, clock_net = self._clock_condition(register, target_phase, equal=True)
             clock_not_equal, _ = self._clock_condition(register, target_phase, equal=False)
+            ready = self._startup_ready(target_phase)
 
         clear_value = clears[0].when if clears else None
         clear_constant = clear_value if isinstance(clear_value, Constant) else None
@@ -435,52 +474,51 @@ class VectorLowerer(_Base):
             clear_realized = self.delay_to(self.realize(clear_value), target_phase - 1)
 
         retain: RealizedValue | None = None
-        if clear_always:
-            if clock_not_equal is not None:
-                assert clock_net is not None
+        if clear_never:
+            retain = None
+        elif timing.period == 1:
+            if not clear_always:
+                assert clear_realized is not None
                 retain = self._emit_condition_signal(
-                    primary=clock_not_equal,
-                    additional=(),
-                    input_nets=(clock_net,),
-                    target_phase=target_phase,
-                    label=f"AccumulatorReg {register.name}: retain between logical boundaries",
-                )
-        elif not clear_never:
-            assert clear_realized is not None
-            clear_is_zero = DeciderCondition(
-                comparator="==",
-                left=Operand(signal=clear_realized.signal, nets=(clear_realized.net,)),
-                right=Operand(constant=0),
-                compare_type="and",
-            )
-            if clock_equal is None:
-                retain = self._emit_condition_signal(
-                    primary=clear_is_zero,
+                    primary=self._boolean_condition(clear_realized, nonzero=False),
                     additional=(),
                     input_nets=(clear_realized.net,),
                     target_phase=target_phase,
                     label=f"AccumulatorReg {register.name}: retain",
                 )
-            else:
-                assert clock_not_equal is not None and clock_net is not None
-                retain = self._emit_condition_union(
-                    branches=(
-                        (
-                            clear_is_zero,
-                            (clock_equal,),
-                            (clear_realized.net, clock_net),
-                            f"AccumulatorReg {register.name}: retain at logical boundary",
-                        ),
-                        (
-                            clock_not_equal,
-                            (),
-                            (clock_net,),
-                            f"AccumulatorReg {register.name}: retain between logical boundaries",
-                        ),
-                    ),
-                    target_phase=target_phase,
-                    label=f"AccumulatorReg {register.name}: retain",
+        else:
+            assert ready is not None
+            assert clock_equal is not None and clock_not_equal is not None and clock_net is not None
+            ready_true = self._boolean_condition(ready, nonzero=True)
+            branches: list[_ConditionBranch] = [
+                (
+                    self._boolean_condition(ready, nonzero=False),
+                    (),
+                    (ready.net,),
+                    f"AccumulatorReg {register.name}: retain before startup",
+                ),
+                (
+                    ready_true,
+                    (clock_not_equal,),
+                    (ready.net, clock_net),
+                    f"AccumulatorReg {register.name}: retain between logical boundaries",
+                ),
+            ]
+            if not clear_always:
+                assert clear_realized is not None
+                branches.append(
+                    (
+                        self._boolean_condition(clear_realized, nonzero=False),
+                        (ready_true, clock_equal),
+                        (clear_realized.net, ready.net, clock_net),
+                        f"AccumulatorReg {register.name}: retain at logical boundary",
+                    )
                 )
+            retain = self._emit_condition_union(
+                branches=tuple(branches),
+                target_phase=target_phase,
+                label=f"AccumulatorReg {register.name}: retain",
+            )
 
         for index, add in enumerate(adds):
             if clear_always:
@@ -489,43 +527,43 @@ class VectorLowerer(_Base):
                 continue
 
             source = self.delay_vector_to(self.realize_vector(add.value), target_phase)
-            conditions: list[DeciderCondition] = []
-            input_nets: list[int] = []
-            if not isinstance(add.when, Constant):
-                add_control = self.delay_to(self.realize(add.when), target_phase - 1)
-                conditions.append(
-                    DeciderCondition(
-                        comparator="!=",
-                        left=Operand(signal=add_control.signal, nets=(add_control.net,)),
-                        right=Operand(constant=0),
-                        compare_type="and",
-                    )
-                )
-                input_nets.append(add_control.net)
-            if clear_realized is not None:
-                conditions.append(
-                    DeciderCondition(
-                        comparator="==",
-                        left=Operand(signal=clear_realized.signal, nets=(clear_realized.net,)),
-                        right=Operand(constant=0),
-                        compare_type="and",
-                    )
-                )
-                input_nets.append(clear_realized.net)
-            if clock_equal is not None:
-                conditions.append(clock_equal)
-                assert clock_net is not None
-                input_nets.append(clock_net)
-
             active: RealizedValue | None = None
-            if conditions:
-                active = self._emit_condition_signal(
-                    primary=conditions[0],
-                    additional=tuple(conditions[1:]),
-                    input_nets=tuple(input_nets),
-                    target_phase=target_phase,
-                    label=f"AccumulatorReg {register.name}: add[{index}] active",
-                )
+
+            # In the common P=1, unconditional-add + dynamic-clear case, the retain signal is
+            # already exactly clear==0 and can gate the addition without a duplicate decider.
+            if (
+                timing.period == 1
+                and isinstance(add.when, Constant)
+                and add.when.value != 0
+                and clear_realized is not None
+                and retain is not None
+            ):
+                active = retain
+            else:
+                conditions: list[DeciderCondition] = []
+                input_nets: list[int] = []
+                if not isinstance(add.when, Constant):
+                    add_control = self.delay_to(self.realize(add.when), target_phase - 1)
+                    conditions.append(self._boolean_condition(add_control, nonzero=True))
+                    input_nets.append(add_control.net)
+                if clear_realized is not None:
+                    conditions.append(self._boolean_condition(clear_realized, nonzero=False))
+                    input_nets.append(clear_realized.net)
+                if ready is not None:
+                    conditions.append(self._boolean_condition(ready, nonzero=True))
+                    input_nets.append(ready.net)
+                if clock_equal is not None:
+                    conditions.append(clock_equal)
+                    assert clock_net is not None
+                    input_nets.append(clock_net)
+                if conditions:
+                    active = self._emit_condition_signal(
+                        primary=conditions[0],
+                        additional=tuple(conditions[1:]),
+                        input_nets=tuple(input_nets),
+                        target_phase=target_phase,
+                        label=f"AccumulatorReg {register.name}: add[{index}] active",
+                    )
 
             if active is None:
                 gate = ArithmeticCombinator(
