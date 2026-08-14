@@ -36,6 +36,33 @@ logic is freely pipelined. State accesses carry strict v1 order identities. The 
 reads into a legal semantic commit window and independently computes the physical state phase required
 by operand availability. The current scope is one compound transition per trusted vector register.
 
+## Physical synthesis priority exposed by the autonomous market
+
+The autonomous-market controller is now large and interconnected enough to expose a gap between the
+current placement objective and the concrete relay router: a placement can have a good hyperedge/MST
+score yet still leave no collision-free relay chain for the router's chosen point-to-point edges.
+This is a useful physical-synthesis/layout stress case, not a reason to simplify the market semantics.
+
+Development priority is nevertheless **physical synthesis first**. Before investing in a substantially
+more sophisticated placer/router, improve Factorio-native realization choices: combinator selection,
+shared predicates, red/green network use, signal allocation/packing, state realization, and other
+transformations that reduce or reshape the physical graph before placement.
+
+The block corridors are intentional physical space for player access and power distribution. Ordinary
+implementation combinators must continue to stay out of them. For now, however, layout-only wire
+relays are allowed in the corridors so the routing experiment is not constrained by reserving the
+entire strip. A future power-aware layout should preferably reserve only local 2x2 footprints at
+selected corridor intersections for substations, leaving the remainder available for walking and
+relay placement.
+
+Placement/router improvements to revisit later include:
+
+- making the placement objective reflect actual relay routability/congestion rather than only an
+  idealized net-level relay/MST estimate;
+- feeding failed routes back into subsequent placement attempts;
+- routing one electrical group jointly so relay infrastructure may be shared safely inside that
+  group instead of greedily allocating independent relay chains edge by edge.
+
 ## Near-term experiments
 
 1. introduce semantic write-time anchoring for timer-like updates using the existing commit solver;
