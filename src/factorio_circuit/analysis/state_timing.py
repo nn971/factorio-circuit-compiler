@@ -438,7 +438,7 @@ def _collect_state_reads(module: CircuitModule) -> tuple[VectorRegisterRead, ...
             add_scalar(value.when_false, visited)
 
     for output in module.output.values:
-        if not add_vector(output):
+        if not add_vector(output) and isinstance(output, ScalarValue):
             add_scalar(output)
     for op in module.state_operations:
         if isinstance(op, (AccumulatorAdd, FreezeSet)):

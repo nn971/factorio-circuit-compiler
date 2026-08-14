@@ -55,7 +55,7 @@ class PlacementOptions:
     target_fill: float = 0.72
     iterations: int | None = None
     random_seed: int = 0
-    restarts: int = 2
+    restarts: int = 3
     retry_fill_scale: float = 0.9
 
     def validate(self) -> None:

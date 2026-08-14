@@ -29,10 +29,7 @@ def _vector_fifo() -> Circuit:
     for index, slot in enumerate(slots):
         push_here = push * (tail_index == index)
         injected = request.gate(push_here)
-        if index + 1 < DEPTH:
-            next_value = old_slots[index + 1].gate(pop) + injected
-        else:
-            next_value = injected
+        next_value = old_slots[index + 1].gate(pop) + injected if index + 1 < DEPTH else injected
         slot.set(next_value, when=pop | push_here)
 
     circuit.output("front", old_slots[0])
