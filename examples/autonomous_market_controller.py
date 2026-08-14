@@ -101,7 +101,10 @@ def build_controller() -> Circuit:
     stack_change = push_stack | pop_satisfied
 
     for index, slot in enumerate(slots):
-        pushed = push_data.gate(push_stack) if index == 0 else old_slots[index - 1].gate(push_stack)
+        if index == 0:
+            pushed = push_data.gate(push_stack)
+        else:
+            pushed = old_slots[index - 1].gate(push_stack)
         if index + 1 < DEPTH:
             next_value = pushed + old_slots[index + 1].gate(pop_satisfied)
         else:
