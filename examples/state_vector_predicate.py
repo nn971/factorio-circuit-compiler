@@ -9,15 +9,13 @@ accept = circuit.input("accept")
 pending = circuit.freeze("pending")
 worker = circuit.freeze("worker")
 
-# Read the previous pending request, then use its runtime-open occupancy as ordinary
-# scalar control for another state transition.
-old_pending = pending.value
+old_pending = pending.sample()
 pending.set(request, when=enqueue)
 worker.set(old_pending, when=accept * old_pending.any())
 
-circuit.tick(1)
-circuit.output("pending", pending.value)
-circuit.output("worker", worker.value)
+circuit.step(1)
+circuit.output("pending", pending.sample())
+circuit.output("worker", worker.sample())
 
 result = compile_circuit(circuit)
 print(result.blueprint_string)
