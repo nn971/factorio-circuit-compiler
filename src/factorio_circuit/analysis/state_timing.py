@@ -94,12 +94,16 @@ class _RegisterSpec:
     state_dependencies: tuple[tuple[StateRegister, int], ...]
 
 
+_Requirements = tuple[int, tuple[tuple[StateRegister, int], ...]]
+
+
 def analyze_state_timing(module: CircuitModule) -> StateTimingPlan:
     """Solve semantic commit windows and physical phases for the current vector state.
 
-    State-to-state vector feeds produce ordinary difference constraints between register phases.
-    Zero-weight feedback cycles are valid (and are important for mutually coupled registers); a
-    positive-weight cycle is rejected because it would require a value to arrive before itself.
+    State-to-state scalar/vector feeds produce ordinary difference constraints between register
+    phases.  Zero-weight feedback cycles are valid (and are important for mutually coupled
+    registers); a positive-weight cycle is rejected because it would require a value to arrive
+    before itself.
     """
 
     reads = _collect_state_reads(module)
@@ -138,42 +142,76 @@ def analyze_state_timing(module: CircuitModule) -> StateTimingPlan:
     return StateTimingPlan(tuple(timings))
 
 
+def _merge_requirements(*requirements: _Requirements) -> _Requirements:
+    if not requirements:
+        return 0, ()
+    absolute = max(item[0] for item in requirements)
+    dependencies = tuple(
+        dependency
+        for _absolute, item_dependencies in requirements
+        for dependency in item_dependencies
+    )
+    return absolute, dependencies
+
+
+def _delay_requirements(requirements: _Requirements, ticks: int) -> _Requirements:
+    absolute, dependencies = requirements
+    return absolute + ticks, tuple((register, offset + ticks) for register, offset in dependencies)
+
+
 def earliest_scalar_phase(value: ScalarValue) -> int:
     """Earliest phase of scalar logic that has no state-read dependency."""
 
-    memo: dict[int, int] = {}
-
-    def visit(item: ScalarValue) -> int:
-        cached = memo.get(id(item))
-        if cached is not None:
-            return cached
-        if isinstance(item, Input):
-            result = 0
-        elif isinstance(item, InputSample):
-            result = item.offset
-        elif isinstance(item, Constant):
-            result = 0
-        elif isinstance(item, VectorSignal):
-            result = earliest_vector_phase(item.vector)
-        elif isinstance(item, (BinaryOp, Compare)):
-            result = max(visit(item.left), visit(item.right)) + 1
-        elif isinstance(item, Select):
-            false_phase = visit(item.when_false)
-            diff_phase = max(visit(item.when_true), false_phase) + 1
-            gated_phase = max(diff_phase, visit(item.condition)) + 1
-            result = max(false_phase, gated_phase) + 1
-        else:  # pragma: no cover
-            raise TypeError(item)
-        memo[id(item)] = result
-        return result
-
-    return visit(value)
+    absolute, dependencies = _scalar_requirements(value)
+    if dependencies:
+        raise StateTimingError("state-dependent scalar phases require analyze_state_timing(...)")
+    return absolute
 
 
-def _normalized_when_phase(value: ScalarValue) -> int:
+def _scalar_requirements(value: ScalarValue) -> _Requirements:
+    if isinstance(value, Input):
+        return 0, ()
+    if isinstance(value, InputSample):
+        return value.offset, ()
     if isinstance(value, Constant):
-        return 0
-    return earliest_scalar_phase(value) + 1
+        return 0, ()
+    if isinstance(value, VectorSignal):
+        return _vector_requirements(value.vector)
+    if isinstance(value, (BinaryOp, Compare)):
+        return _delay_requirements(
+            _merge_requirements(
+                _scalar_requirements(value.left),
+                _scalar_requirements(value.right),
+            ),
+            1,
+        )
+    if isinstance(value, Select):
+        false_requirements = _scalar_requirements(value.when_false)
+        diff_requirements = _delay_requirements(
+            _merge_requirements(
+                _scalar_requirements(value.when_true),
+                false_requirements,
+            ),
+            1,
+        )
+        gated_requirements = _delay_requirements(
+            _merge_requirements(
+                diff_requirements,
+                _scalar_requirements(value.condition),
+            ),
+            1,
+        )
+        return _delay_requirements(
+            _merge_requirements(false_requirements, gated_requirements),
+            1,
+        )
+    raise TypeError(value)
+
+
+def _normalized_when_requirements(value: ScalarValue) -> _Requirements:
+    if isinstance(value, Constant):
+        return 0, ()
+    return _delay_requirements(_scalar_requirements(value), 1)
 
 
 def earliest_vector_phase(value: VectorValue) -> int:
@@ -190,15 +228,7 @@ def earliest_vector_phase(value: VectorValue) -> int:
     return absolute
 
 
-def _delay_vector_requirements(
-    requirements: tuple[int, tuple[tuple[StateRegister, int], ...]],
-    ticks: int,
-) -> tuple[int, tuple[tuple[StateRegister, int], ...]]:
-    absolute, dependencies = requirements
-    return absolute + ticks, tuple((register, offset + ticks) for register, offset in dependencies)
-
-
-def _vector_requirements(value: object) -> tuple[int, tuple[tuple[StateRegister, int], ...]]:
+def _vector_requirements(value: object) -> _Requirements:
     from factorio_circuit.frontend import _VectorBinaryOp, _VectorFilter, _VectorScalarOp
 
     if isinstance(value, (VectorInput, VectorConstant)):
@@ -208,24 +238,23 @@ def _vector_requirements(value: object) -> tuple[int, tuple[tuple[StateRegister,
     if isinstance(value, VectorRegisterRead):
         return 0, ((value.register, value.offset),)
     if isinstance(value, _VectorBinaryOp):
-        left_abs, left_dependencies = _vector_requirements(value.left)
-        right_abs, right_dependencies = _vector_requirements(value.right)
-        return (
-            max(left_abs, right_abs) + 1,
-            tuple(
-                (register, offset + 1)
-                for register, offset in (*left_dependencies, *right_dependencies)
+        return _delay_requirements(
+            _merge_requirements(
+                _vector_requirements(value.left),
+                _vector_requirements(value.right),
             ),
+            1,
         )
     if isinstance(value, _VectorScalarOp):
-        vector_abs, dependencies = _vector_requirements(value.vector)
-        scalar_phase = earliest_scalar_phase(value.scalar)
-        return (
-            max(vector_abs, scalar_phase) + 1,
-            tuple((register, offset + 1) for register, offset in dependencies),
+        return _delay_requirements(
+            _merge_requirements(
+                _vector_requirements(value.vector),
+                _scalar_requirements(value.scalar),
+            ),
+            1,
         )
     if isinstance(value, _VectorFilter):
-        return _delay_vector_requirements(_vector_requirements(value.vector), 1)
+        return _delay_requirements(_vector_requirements(value.vector), 1)
     raise TypeError(value)
 
 
@@ -278,16 +307,32 @@ def _analyze_register_semantics(
             )
         if len(clears) > 1:
             raise StateTimingError(f"AccumulatorReg {register.name!r} has multiple clear controls")
-        clear_phase = _normalized_when_phase(clears[0].when) if clears else 0
+
+        clear_requirements = (
+            _normalized_when_requirements(clears[0].when) if clears else (0, ())
+        )
         for add in adds:
-            source_abs, source_deps = _vector_requirements(add.value)
-            add_phase = _normalized_when_phase(add.when)
-            absolute = max(absolute, source_abs, add_phase)
-            if clears and not (isinstance(add.when, Constant) and add.when.value != 0):
-                absolute = max(absolute, max(add_phase, clear_phase) + 1)
-            dependencies.extend(source_deps)
+            source_requirements = _vector_requirements(add.value)
+            add_requirements = _normalized_when_requirements(add.when)
+            if clears:
+                if isinstance(add.when, Constant) and add.when.value != 0:
+                    gate_requirements = clear_requirements
+                else:
+                    gate_requirements = _delay_requirements(
+                        _merge_requirements(add_requirements, clear_requirements),
+                        1,
+                    )
+            else:
+                gate_requirements = add_requirements
+
+            for requirement in (source_requirements, gate_requirements):
+                absolute = max(absolute, requirement[0])
+                dependencies.extend(requirement[1])
+
         if clears:
-            absolute = max(absolute, clear_phase)
+            absolute = max(absolute, clear_requirements[0])
+            dependencies.extend(clear_requirements[1])
+
     elif isinstance(register, FreezeRegister):
         freeze_sets: list[FreezeSet] = [op for op in operations if isinstance(op, FreezeSet)]
         freeze_unexpected = [op for op in operations if not isinstance(op, FreezeSet)]
@@ -297,9 +342,13 @@ def _analyze_register_semantics(
             raise StateTimingError(
                 f"FreezeReg {register.name!r} requires exactly one .set(data, when=...) call"
             )
-        source_abs, source_deps = _vector_requirements(freeze_sets[0].value)
-        absolute = max(absolute, source_abs, _normalized_when_phase(freeze_sets[0].when))
-        dependencies.extend(source_deps)
+
+        source_requirements = _vector_requirements(freeze_sets[0].value)
+        control_requirements = _normalized_when_requirements(freeze_sets[0].when)
+        for requirement in (source_requirements, control_requirements):
+            absolute = max(absolute, requirement[0])
+            dependencies.extend(requirement[1])
+
     else:  # pragma: no cover
         raise TypeError(register)
 
