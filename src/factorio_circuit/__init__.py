@@ -1,13 +1,13 @@
 """Public API for factorio-circuit-compiler."""
 
-from .analysis.state_timing import StateTimingError, StateTimingPlan
+from .analysis.state_timing import ClockDomainTiming, StateTimingError, StateTimingPlan
 from .compiler import (
     AbstractCompilationResult,
     CompilationResult,
     compile_abstract_circuit,
     compile_circuit,
 )
-from .frontend.symbolic import (
+from .frontend import (
     AccumulatorReg,
     Circuit,
     CircuitBuildError,
@@ -26,6 +26,7 @@ __all__ = [
     "AccumulatorReg",
     "Circuit",
     "CircuitBuildError",
+    "ClockDomainTiming",
     "CompilationResult",
     "Expr",
     "FreezeReg",
