@@ -11,11 +11,10 @@ def _independent_domains(*, connect_outputs: bool) -> Circuit:
     fast = circuit.accumulator("fast")
     slow = circuit.freeze("slow")
 
-    old_fast = fast.sample()
     old_slow = slow.sample()
 
     # The accumulator has no state-dependent control, so it can accept one logical transition per
-    # physical tick.  The freeze recurrence uses old_slow.any(), which requires P=3.
+    # physical tick. The freeze recurrence uses old_slow.any(), which requires P=3.
     fast.add(data)
     slow.set(data, when=old_slow.any())
 
