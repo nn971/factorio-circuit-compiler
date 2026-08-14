@@ -3,12 +3,28 @@
 ## Goal
 
 Build a first autonomous market with exactly one recipe-reader assembler and one worker assembler.
-The prototype should discover and satisfy intermediate requirements from live stock/recipe feedback
+The prototype discovers and satisfies intermediate requirements from live stock/recipe feedback
 without storing product quantity per recipe or a full static recipe database.
 
 The market controller is ordinary circuit source. Do **not** add an FSM, stack, or queue primitive to
 the compiler. Control state and recursive task storage are composed from the existing register and
 runtime-open vector operations.
+
+## Status
+
+The prototype has been compiled to a routed Factorio blueprint and tested in game with a real recipe
+reader and worker. Recursive prerequisite discovery and production work. The reader required one
+explicit logical settling interval before its ingredient vector could be consumed reliably; this is
+now part of the controller protocol.
+
+The current scheduler may overproduce when the worker finishes the last required craft because the
+new product can sit in the assembler output or logistics system before the external `stock` signal
+reflects it. The controller can therefore observe stale stock and request another craft. This is a
+market scheduling/observation limitation, not a compiler bug. Future work should either count worker
+output/in-flight inventory in effective stock or introduce a more explicit completion/availability
+policy.
+
+This prototype is intentionally paused at this point.
 
 ## Task representation
 
@@ -61,10 +77,10 @@ so no length accumulator is needed. `examples/vector_stack.py` realizes this dir
 - `mode`: one-hot controller mode in a `FreezeReg`;
 - `selected_item`: one-lane selected item held across reader/worker interaction.
 
-There is no compiler FSM object. Zero `mode` means CHECK/IDLE. Three virtual lanes represent QUERY,
-START_WORKER, and WAIT_WORKER. Because the mode and stack transitions depend on one another, timing
-analysis naturally places them in the same inferred logical clock domain and synthesizes the
-required physical scheduling clock.
+There is no compiler FSM object. Zero `mode` means CHECK/IDLE. Four virtual lanes represent
+QUERY_WAIT, QUERY_EVAL, START_WORKER, and WAIT_WORKER. Because the mode and stack transitions depend
+on one another, timing analysis naturally places them in the same inferred logical clock domain and
+synthesizes the required physical scheduling clock.
 
 ## Control algorithm
 
@@ -79,7 +95,11 @@ CHECK top
   `-- missing -> choose missing.max()
                     |
                     v
-                  QUERY reader
+               QUERY_WAIT
+            assert reader_item
+                    |
+                    v
+               QUERY_EVAL
                     |
                     +-- prerequisites missing --> PUSH prerequisite -> CHECK
                     |
@@ -98,19 +118,25 @@ CHECK top
 ```
 
 After an observed craft the task is deliberately **not** decremented by a predicted product
-quantity. The controller simply re-reads stock and evaluates the same threshold again. This is the
-central feedback mechanism of the prototype.
+quantity. The controller re-reads stock and evaluates the same threshold again. This is the central
+feedback mechanism of the prototype.
 
 ## Reader interface
 
-There is no `reader_ready` handshake. `reader_item` itself is the recipe request: it is a one-lane
-vector while the controller is in QUERY and empty otherwise. The reader assembler is expected to
-react to a circuit-set recipe within at most one physical game tick and expose the corresponding
-ingredient vector. QUERY lasts until the next logical controller transition, so this response has
-ample physical time to settle before `reader_ingredients` is used.
+There is no `reader_ready` handshake. `reader_item` itself is the recipe request. The controller
+keeps it asserted across two logical phases:
 
-If real in-game probing contradicts the one-tick assumption, revisit this protocol rather than
-silently adding a generic ready signal.
+1. QUERY_WAIT: assert the selected recipe and deliberately ignore `reader_ingredients`;
+2. QUERY_EVAL: keep the same recipe asserted and then evaluate the ingredient vector.
+
+The first in-game version tried to assert the recipe and evaluate ingredients in the same logical
+query phase. Although the reader assembler switched to the correct recipe, the controller could
+consume the previous/empty ingredient vector before the external assembler response had propagated.
+Adding one complete logical settling interval fixed the behavior in game. This is concrete evidence
+that external device latency is not represented by the compiler's internal combinator timing model.
+
+The reader's Set-recipe input and Read-ingredients output should remain on separated circuit networks
+so its output is not fed back into recipe selection.
 
 ## Worker interface via Read working
 
@@ -121,15 +147,19 @@ The controller uses the worker assembler's `Read working` level in two phases:
 1. START_WORKER: assert `worker_item` until `worker_working != 0` is observed;
 2. WAIT_WORKER: withdraw `worker_item` and wait until `worker_working == 0` again.
 
-Factorio only applies circuit-set recipe changes/removal when the current craft finishes, so
-withdrawing the recipe after observing `working=1` does not cancel that craft; it prevents another
-craft from starting afterwards. The falling working level then sends the controller back to CHECK.
+Withdrawing the circuit-set recipe after observing `working=1` lets the already-started craft finish
+while preventing another craft from being intentionally requested. The falling working level sends
+the controller back to CHECK.
 
-This still has a timing caveat: `Read working` is a level, not a completion pulse. If an entire craft
-starts and finishes between two logical controller observations, the slow domain can miss the
-working interval. This is another instance of the triggered-domain/input-capture problem recorded in
-`docs/timing-open-problems.md`. For the first prototype, use worker recipes/conditions whose working
-interval is observable by the inferred controller period. Do not hide this with compiler FSM logic.
+Two scheduling caveats remain:
+
+- `Read working` is a level. If an entire craft starts and finishes between logical controller
+  observations, a slow domain could miss the working interval. This is related to the triggered
+  domain/input-capture problem in `docs/timing-open-problems.md`.
+- A completed product may not yet be visible in external `stock` when working falls to zero. If the
+  product is still in the assembler output slot or in logistics transit, CHECK may see a stale
+  deficit and start an unnecessary extra craft. A stronger scheduler should define effective stock
+  to include locally owned/in-flight material or otherwise wait for availability feedback.
 
 ## Current physical I/O
 
@@ -140,25 +170,22 @@ Inputs:
 
 Outputs:
 
-- `reader_item`: selected recipe while querying;
+- `reader_item`: selected recipe throughout QUERY_WAIT and QUERY_EVAL;
 - `worker_item`: selected recipe until worker working is observed;
-- `mode`, `top_target`, `blocked_on_full_stack`: temporary prototype probes.
+- `mode`, `top_target`, `blocked_on_full_stack`: prototype probes.
 
 The recipe vectors themselves are the requests; separate `reader_request`/`worker_request` booleans
 are unnecessary.
 
-## Next milestone: fake environment
+## Deferred market-level work
 
-Build a tiny controlled environment around the controller before wiring real assemblers:
+The working prototype intentionally leaves several problems for later:
 
-1. provide a persistent root threshold such as `electronic-circuit >= 5`;
-2. make the fake reader update its ingredient vector one physical tick after `reader_item` changes;
-3. make the fake worker expose a held working interval for each accepted `worker_item` request and
-   update stock when that craft completes;
-4. deliberately give at least one recipe product quantity greater than one (for example cable
-   producing two units per craft);
-5. verify that the controller recursively pushes prerequisites, resumes parents, and converges using
-   stock feedback without knowing the product quantity.
-
-Keep raw/base resources pre-stocked for this first environment; detecting uncraftable/raw leaves and
-recipe dependency cycles are later market-level problems.
+- count assembler output and material in logistics transit as effective stock to avoid feedback
+  overproduction;
+- handle uncraftable/raw missing items instead of assuming sufficient base stock;
+- detect recipe dependency cycles;
+- handle stack overflow more gracefully;
+- generalize from one worker to multiple workers without oscillation under robot transport delay;
+- decide which recipe metadata must be stored in ROM versus inferred dynamically, including product
+  quantity, machine compatibility, productivity eligibility, and fluid inputs/outputs.
