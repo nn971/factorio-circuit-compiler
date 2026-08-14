@@ -63,9 +63,9 @@ Raw scalar/vector inputs are physical sources rather than stateful logical clock
 samples them at that domain's activation cadence.
 
 ```python
-x0 = x.sample()       # x[k]
+x0 = x.sample()  # x[k]
 circuit.step()
-x1 = x.sample()       # x[k+1]
+x1 = x.sample()  # x[k+1]
 ```
 
 If the consuming domain has `P=4`, these observations correspond to physical source ticks separated
@@ -79,10 +79,10 @@ Purely external stateless circuits use the default `P=1` schedule.
 A register observation is a logical state sample:
 
 ```python
-old = state.sample()      # S[k]
+old = state.sample()  # S[k]
 state.set(next_value, when=enable)
 circuit.step()
-new = state.sample()      # S[k+1]
+new = state.sample()  # S[k+1]
 ```
 
 The update methods describe the transition; `step()` only moves the logical observation cursor.

@@ -6,9 +6,7 @@ from factorio_circuit.frontend import Circuit
 
 @pytest.mark.parametrize("optimize", [False, True])
 @pytest.mark.parametrize("register_kind", ["freeze", "accumulator"])
-def test_state_vector_any_can_control_another_register(
-    register_kind: str, optimize: bool
-) -> None:
+def test_state_vector_any_can_control_another_register(register_kind: str, optimize: bool) -> None:
     circuit = Circuit(f"state_vector_any_{register_kind}")
     data = circuit.signals("data")
     load = circuit.input("load")

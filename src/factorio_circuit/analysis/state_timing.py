@@ -409,9 +409,7 @@ def _solve_domain(specs: list[_RegisterSpec]) -> tuple[int, dict[str, int]]:
     )
 
 
-def _solve_phases_for_period(
-    specs: list[_RegisterSpec], period: int
-) -> dict[str, int] | None:
+def _solve_phases_for_period(specs: list[_RegisterSpec], period: int) -> dict[str, int] | None:
     phases: dict[str, int] = {}
     names = {spec.register.name for spec in specs}
 
