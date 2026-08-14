@@ -19,8 +19,8 @@ def _accumulator() -> Circuit:
     memory = c.accumulator("memory")
     memory.add(data)
     memory.clear(when=clear)
-    c.tick(1)
-    c.output("memory", memory.value)
+    c.step(1)
+    c.output("memory", memory.sample())
     return c
 
 
@@ -30,8 +30,8 @@ def _freeze() -> Circuit:
     set_signal = c.input("set_signal")
     memory = c.freeze("memory")
     memory.set(data, when=set_signal)
-    c.tick(1)
-    c.output("memory", memory.value)
+    c.step(1)
+    c.output("memory", memory.sample())
     return c
 
 
@@ -72,10 +72,10 @@ def test_freeze_has_pass_and_hold_controls() -> None:
     descriptions = [
         getattr(entity, "description", "") or "" for entity in result.physical_circuit.entities
     ]
-    assert any("set!=0 -> pass" in item for item in descriptions)
-    assert any("set=0 -> hold" in item for item in descriptions)
-    assert any("transparent input gate" in item for item in descriptions)
-    assert any("vector memory" in item for item in descriptions)
+    assert "FreezeReg memory: pass" in descriptions
+    assert "FreezeReg memory: hold" in descriptions
+    assert "FreezeReg memory: input gate" in descriptions
+    assert "FreezeReg memory: vector memory" in descriptions
     assert (
         sum(isinstance(entity, DeciderCombinator) for entity in result.physical_circuit.entities)
         >= 2
