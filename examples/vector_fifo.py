@@ -1,9 +1,8 @@
 """Four-slot FIFO composed only from existing vector/register primitives.
 
-The queue stores runtime-open one-lane request vectors.  It deliberately assumes valid commands:
-``push`` must be false when full and ``pop`` must be false when empty.  That keeps the example free
-of queue-specific compiler support and avoids feeding the length register's own predicates back
-into its transition.
+The queue stores runtime-open one-lane request vectors.  Full/empty protection is derived from the
+queue's own length register, so this example intentionally exercises a multicycle state recurrence.
+No queue-specific compiler primitive is involved.
 """
 
 from factorio_circuit import SignalId, compile_circuit
@@ -17,8 +16,8 @@ request = circuit.signals("request")
 push_input = circuit.input("push")
 pop_input = circuit.input("pop")
 
-push = push_input != 0
-pop = pop_input != 0
+push_requested = push_input != 0
+pop_requested = pop_input != 0
 
 plus_one = circuit.constant_signals({COUNT_SIGNAL: 1})
 minus_one = circuit.constant_signals({COUNT_SIGNAL: -1})
@@ -26,25 +25,31 @@ minus_one = circuit.constant_signals({COUNT_SIGNAL: -1})
 length_reg = circuit.accumulator("length")
 slots = [circuit.freeze(f"slot{index}") for index in range(DEPTH)]
 
-# Snapshot the queue state before this invocation's commands are applied.
-old_length_vector = length_reg.value
+# Snapshot one logical queue state.
+old_length_vector = length_reg.sample()
 old_length = old_length_vector.signal(COUNT_SIGNAL)
-old_slots = [slot.value for slot in slots]
+old_slots = [slot.sample() for slot in slots]
+
+empty = old_length == 0
+full = old_length == DEPTH
+pop = pop_requested * (old_length > 0)
+# A pop requested from a full queue frees the tail position in this same logical transition, so a
+# simultaneous push is accepted.  On an empty queue, pop is rejected while push remains accepted.
+push = push_requested * ((old_length < DEPTH) | pop_requested)
 
 circuit.output("front", old_slots[0])
 circuit.output("length", old_length)
-circuit.output("empty", old_length == 0)
-circuit.output("full", old_length == DEPTH)
+circuit.output("empty", empty)
+circuit.output("full", full)
+circuit.output("push_accepted", push)
+circuit.output("pop_accepted", pop)
 
-# The length accumulator is the only bookkeeping state.  Because push/pop are assumed valid,
-# its updates depend only on external commands rather than on its own full/empty predicates.
 length_reg.add(plus_one, when=push)
 length_reg.add(minus_one, when=pop)
 
-# With the compact invariant, the insertion position after an optional pop is simply
-#     old_length - pop.
-# Every pop shifts the cells toward the head.  A simultaneous push is injected into the vacated
-# tail position.  Each FreezeReg still receives exactly one ordinary .set(...) transition.
+# Compactness is maintained after every logical transition.  After an optional accepted pop, the
+# insertion position is old_length-pop.  Every pop shifts toward the head; a simultaneous push is
+# injected into the vacated tail.
 tail_index = old_length - pop
 for index, slot in enumerate(slots):
     push_here = push * (tail_index == index)
@@ -58,10 +63,9 @@ for index, slot in enumerate(slots):
 
     slot.set(next_value, when=pop | push_here)
 
-# Expose the post-transition state as well, which makes the blueprint convenient to probe in game.
-circuit.tick(1)
-new_length = length_reg.value.signal(COUNT_SIGNAL)
-new_slots = [slot.value for slot in slots]
+circuit.step(1)
+new_length = length_reg.sample().signal(COUNT_SIGNAL)
+new_slots = [slot.sample() for slot in slots]
 
 circuit.output("next_front", new_slots[0])
 circuit.output("next_length", new_length)
