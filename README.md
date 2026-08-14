@@ -6,14 +6,12 @@ blueprints.
 ```text
 ordinary Python elaboration
         ↓
-Circuit / Input / Expr objects
+logical stream graph
+  - scalar/vector expressions
+  - logical source samples
+  - explicit state transitions
         ↓
-logical stream DAG
-  - scalar stateless expressions
-  - explicit fresh source samples
-  - built-in whole-vector state components
-        ↓
-optimization + state realization
+logical clock-domain + state timing analysis
         ↓
 abstract physical Factorio IR
         ↓
@@ -26,16 +24,13 @@ blueprint JSON/string serialization
 
 Start with:
 
-- [`docs/HANDOFF.md`](docs/HANDOFF.md) — shortest fresh-chat context
+- [`docs/HANDOFF.md`](docs/HANDOFF.md)
 - [`docs/conventions.md`](docs/conventions.md)
 - [`docs/semantics.md`](docs/semantics.md)
 - [`docs/state-design.md`](docs/state-design.md)
 - [`docs/architecture.md`](docs/architecture.md)
-- [`docs/optimizer-notes.md`](docs/optimizer-notes.md)
 
 ## Symbolic frontend
-
-Python executes normally and constructs a circuit graph through symbolic objects:
 
 ```python
 from factorio_circuit import Circuit, compile_circuit
@@ -52,28 +47,48 @@ c.output("result", result)
 compiled = compile_circuit(c)
 ```
 
-`a`, `b`, `total`, and `result` represent logical signal streams. Arithmetic and comparison operators
-construct semantic-IR nodes. Physical combinator phases remain opaque until compilation.
+Symbolic values are logical streams. Arithmetic and comparisons construct semantic IR; physical
+combinator phases remain compiler concerns.
 
-Python `if` and loops remain ordinary elaboration-time Python. Runtime circuit selection uses
-`condition.select(when_true, when_false)`.
+## Logical sampling and steps
 
-## Fresh source sampling
-
-Raw input objects are temporal sources and provide `.sample()`:
+Inputs and state use the same observation vocabulary:
 
 ```python
-c = Circuit("fresh")
-x = c.input("x")
+x0 = input.sample()
+s0 = state.sample()
 
-x0 = x  # stream X[t]
-c.tick(3)  # freshness cursor becomes +3
-x3 = x.sample()  # stream X[t+3]
+c.step(1)
 
-c.output("sum", x0 + x3)
+x1 = input.sample()
+s1 = state.sample()
 ```
 
-A derived `Expr` has opaque execution timing and therefore has no `.sample()` method.
+`step(n)` advances **logical** time. It does not mean `n` Factorio game ticks. `Circuit.tick()` is
+reserved for future explicit physical scheduling and currently raises an error.
+
+Derived expressions do not have `.sample()` because they already denote a sampled logical stream.
+
+## Inferred physical period
+
+A stateful logical clock domain has an inferred physical period `P`. Logical state `S[k]` is realized
+at physical times separated by `P` game ticks. Feed-forward pipeline latency does not increase `P`;
+feedback recurrences do.
+
+For example:
+
+```python
+old = memory.sample()
+memory.set(data, when=old.any())
+```
+
+is legal even though the state decision needs several combinator ticks. The current realization
+infers `P=3` and gates the register so intermediate physical ticks hold state.
+
+Ordinary state dependencies share one logical clock domain. Independent state components may infer
+different periods; explicit cross-domain state resampling is future work.
+
+See [`docs/semantics.md`](docs/semantics.md) for the timing equations and domain rules.
 
 ## Whole-vector state
 
@@ -89,18 +104,11 @@ memory = c.accumulator("memory")
 
 memory.add(data)
 memory.clear(when=clear)
-c.tick(1)
-c.output("memory", memory.value)
+c.step()
+c.output("memory", memory.sample())
 ```
 
-An accumulator may have multiple commutative additive sources, each with an independent enable:
-
-```python
-memory.add(source_a, when=enable_a)
-memory.add(source_b, when=enable_b)
-```
-
-All adds and the optional clear belong to one compound transition per invocation.
+An accumulator may have multiple commutative additive sources with independent enables.
 
 ### `FreezeReg`
 
@@ -111,44 +119,32 @@ set_signal = c.input("set_signal")
 memory = c.freeze("memory")
 
 memory.set(data, when=set_signal)
-c.tick(1)
-c.output("memory", memory.value)
+c.step()
+c.output("memory", memory.sample())
 ```
 
-Agreed polarity:
+Polarity:
 
 ```text
-set != 0   pass/track
-set == 0   freeze/hold last passed vector
+set != 0   pass/track at a logical boundary
+set == 0   hold the previous vector
 ```
 
-State accesses are strictly ordered by Python elaboration order in the v1 source semantics. A state
-read names an exact logical boundary. Therefore a post-update read normally advances the freshness
-cursor at least one tick, while a previous value can be captured before issuing the update. The IR
-already assigns individual order identities to reads and writes so a future explicit update-event API
-can relax this without replacing the state representation.
+`register.value` remains a compatibility alias while old callers migrate; new code uses
+`register.sample()`.
 
-## Implemented prototype
+## Runtime-open vectors
 
-- scalar arithmetic/bitwise expression DAGs;
-- comparisons and symbolic `select`;
-- multiple named outputs;
-- fresh scalar and whole-vector external sampling;
-- simplification, CSE, DCE, conservative `Each` ALU packing;
-- phase-aware lowering and tick-accurate physical simulation;
-- an abstract state-timing plan with compiler-chosen elastic commit offsets;
-- a reference semantic simulator for the current vector registers;
-- mutually coupled state-to-state whole-vector feeds;
-- multiple conditional commutative `AccumulatorReg.add(...)` sources;
-- constant whole-vector streams and direct observation of concrete signal lanes with `.signal(...)`;
-- a switchable Fibonacci reference circuit exercising coupled state, post-transition reads, and hold/resume behavior;
-- strict feasibility errors for same-boundary post-update reads and reads splitting compound updates;
-- abstract physical lowering plus late net-color and concrete-signal synthesis;
-- reach-safe blueprint routing with intentionally simple deterministic row placement;
-- working in-game `AccumulatorReg` and `FreezeReg` vector-state prototypes.
+Current whole-vector operations include:
 
-The physical backend is intentionally frozen at this simple placement policy while development returns
-to semantic features. See `docs/architecture.md` and `docs/state-design.md`.
+```python
+missing = (required - stock).positive()
+has_missing = missing.any()
+request = missing.max()
+gated = request.gate(enable)
+```
+
+The vector remains runtime-open: signal identities need not be known during frontend elaboration.
 
 ## Development
 
@@ -162,14 +158,17 @@ uv run ruff format --check .
 uv run mypy src
 ```
 
-Examples:
+Representative examples:
 
 ```fish
-uv run python examples/three_adds.py
-uv run python examples/branching.py
 uv run python examples/fresh_sample.py
-uv run python examples/n_tick_pulse.py
 uv run python examples/accumulator_reg.py
 uv run python examples/freeze_reg.py
 uv run python examples/fibonacci.py
+uv run python examples/vector_deficit.py
+uv run python examples/state_vector_predicate.py
+uv run python examples/vector_fifo.py
 ```
+
+The compiler should be validated both with tick-level physical simulation and with generated
+blueprints in Factorio for representative stateful circuits.
