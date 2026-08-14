@@ -1,70 +1,79 @@
-# Development Conventions v0.6
+# Development Conventions v0.7
 
 ## Scope
 
-Compile symbolic Python circuit descriptions into Factorio combinator blueprints, with
-Factorio-specific optimization aimed primarily at reducing combinator count while preserving timed
-stream behavior.
+Compile symbolic Python circuit descriptions into Factorio combinator blueprints while preserving
+logical stream behavior independently from physical timing.
 
 ## Source/frontend
 
 - `Circuit` is the primary behavioral unit.
-- Python itself is the elaboration/metaprogramming language.
-- `Input`, `SignalsInput`, and state objects are temporal/source objects.
-- `Expr` represents a derived scalar logical stream.
-- overloaded scalar operators construct logical IR.
+- Python is the elaboration/metaprogramming language.
+- `Input`, `SignalsInput`, and state objects are source objects.
+- `Expr` is a derived scalar logical stream; `SignalsExpr` is a runtime-open vector stream.
+- overloaded operators construct logical IR.
 - runtime branching uses `condition.select(when_true, when_false)`.
-- Python `if`, `for`, functions, collections, and other control structures operate at elaboration time.
-- derived expressions expose no `.sample()` operation.
-- the former `@circuit` AST frontend is retired.
+- Python control structures remain elaboration-time Python.
+- derived expressions expose no `.sample()` because they already denote sampled streams.
 
-## Timing/freshness
+## Logical time
 
-- logical invocations are indexed by game tick `t`;
-- a base scalar input `x` denotes stream sample `X[t]`;
-- `Circuit.tick(n)` / `tick_until(n)` advance the freshness cursor only;
-- `x.sample()` at cursor `τ` denotes `X[t+τ]`;
-- previously constructed expressions keep their original sample provenance;
+- logical streams are indexed by logical step `k`, not by Factorio game tick;
+- inputs and registers are observed uniformly with `.sample()`;
+- `Circuit.step(n)` / `step_until(n)` advance the logical observation cursor;
+- previously constructed expressions keep their original logical sample provenance;
+- `Circuit.tick()` is reserved for future explicit physical scheduling and currently raises;
+- `register.value` is compatibility-only; new code uses `register.sample()`.
+
+## Physical timing and clock domains
+
+- Factorio combinators add one physical game tick;
 - stateless physical latency and operand alignment are compiler-inferred;
-- state `.value` observations carry the current freshness offset;
-- physical implementation phase remains distinct from semantic freshness.
+- each ordinary connected state component has an inferred logical clock-domain period `P`;
+- a value with physical phase `phi` realizes logical step `k` at `phi + k*P`;
+- feed-forward latency does not enlarge `P`; recurrences do;
+- ordinary state dependencies union registers into one domain, even for one-way dependencies;
+- independent state components may have different periods;
+- a genuine zero-logical-distance positive-latency cycle remains illegal;
+- state communication between genuinely different periods requires explicit future rate-crossing
+  semantics rather than implicit same-index arithmetic.
+
+For source logical offset `r`, target commit offset `c`, physical latency `L`, shared period `P`, and
+register phases `phi`, the analyzer uses:
+
+```text
+phi_target >= phi_source + (r - c - 1) * P + L + 1
+```
+
+The smallest feasible positive integer `P` is chosen per domain.
 
 ## State ordering
 
-For v1, operations on one state object follow strict Python elaboration order. Reads and updates each
-receive an internal order identity. This total order is intentionally stronger than the likely final
-partial-order semantics, because it keeps the public model simple while preserving a migration path to
-explicit update events later.
+Operations on one state object follow strict Python elaboration order. Reads and updates receive an
+internal order identity. Reads before one compound transition observe the old state; post-transition
+reads require a later logical step; a read cannot split one compound transition.
 
-State update operands may have inferred physical latency. The compiler now solves a first strict-v1
-state timing plan for the trusted vector registers. One compound transition receives an elastic
-semantic commit offset constrained by surrounding state reads; a separate physical state phase absorbs
-implementation latency where possible. Infeasible same-boundary post-update reads and reads splitting a
-compound transition are compile-time errors.
+The compiler chooses semantic commit offsets, physical phases, and clock periods. Source code does not
+name a register write's physical game tick.
 
 ## State components
 
 ```text
 AccumulatorReg
     whole-vector additive memory
-    one or more commutative add sources, each optionally enabled
-    clear control
+    one or more commutative add sources
+    optional clear control
 
 FreezeReg
     whole-vector replacement/hold memory
-    set != 0 -> pass/track
-    set == 0 -> freeze/hold
+    set != 0 -> pass/track at logical boundary
+    set == 0 -> hold
 ```
 
-Both have working in-game prototypes. Their physical feedback circuits are implementation choices.
+For `P>1`, lowering synthesizes a modulo-domain clock and gates state writes so intermediate physical
+ticks hold state.
 
-Whole-vector state observations may feed other state transitions directly. The state scheduler solves
-the resulting register-phase difference constraints jointly; zero-weight feedback cycles are valid,
-while positive-latency cycles are rejected by the current one-transition-per-tick model.
-
-A whole-vector value denotes a concrete red-wire network. `.signal(...)` extracts a lane through an
-isolating combinator before scalar arithmetic. This keeps scalar expressions from electrically merging
-independent vector or feedback networks.
+Higher structures such as queues should first be expressed using these general state primitives.
 
 ## Factorio substrate
 
@@ -73,11 +82,12 @@ independent vector or feedback networks.
 - same-name contributions add;
 - arithmetic/decider combinators have one-tick latency;
 - `Each` is a major vectorization mechanism;
-- selector-combinator support remains postponed;
+- selector combinators are available for the current vector `max()` operation;
 - blueprint layout must respect finite circuit-wire reach.
 
 ## Optimization
 
-Keep the logical DAG and state primitives recognizable for simplification, CSE, DCE, compatibility
-partitioning, `Each` packing, phase alignment, state realization, and late signal allocation. Avoid
-turning the latency of a convenient first lowering into a semantic requirement.
+Keep logical streams and state primitives recognizable through simplification, CSE, DCE,
+compatibility partitioning, `Each` packing, phase alignment, state realization, and late signal
+allocation. Never turn the latency or clocking of one convenient lowering into a source-language
+semantic requirement.
