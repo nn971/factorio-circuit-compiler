@@ -6,8 +6,8 @@ set_signal = circuit.input("set_signal")
 memory = circuit.freeze("memory")
 
 memory.set(data, when=set_signal)
-circuit.tick(1)
-circuit.output("memory", memory.value)
+circuit.step(1)
+circuit.output("memory", memory.sample())
 
 
 if __name__ == "__main__":
