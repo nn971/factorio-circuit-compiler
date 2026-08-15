@@ -68,6 +68,17 @@ def test_vector_step_is_local_compositional_and_keeps_vectors_packed() -> None:
     assert isinstance(later_normalized.left, FlowVectorInputSample)
 
 
+def test_flow_local_step_does_not_introduce_state() -> None:
+    circuit = Circuit("stateless_local_step")
+    source = circuit.input("source")
+    circuit.output("later", (source + 1).step(2))
+
+    result = compile_circuit(circuit, optimize=False)
+
+    assert result.semantic_ir.state_registers == ()
+    assert result.state_timing.registers == ()
+
+
 def test_register_step_reindexes_the_read_without_advancing_circuit_cursor() -> None:
     circuit = Circuit("register_local_step")
     memory = circuit.freeze("memory")
