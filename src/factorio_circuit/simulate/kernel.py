@@ -311,8 +311,7 @@ def run_timestamp_kernel(
         lambda source, indexed: tuple(
             transition
             for transition in transitions_by_source.get(source, ())
-            if transition.logical_offset
-            <= cast(_IndexedEventPayload, indexed).occurrence_index
+            if transition.logical_offset <= cast(_IndexedEventPayload, indexed).occurrence_index
         ),
         lambda level_row, state, source, indexed: context_factory(
             level_row,
