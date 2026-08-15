@@ -1,12 +1,13 @@
 """Public symbolic frontend, including runtime-open vector expressions."""
 
-from .symbolic import CircuitBuildError, LogicalTime, SampleOnReference
+from .symbolic import CircuitBuildError, LogicalTime
 from .vector_circuit import (
     AccumulatorReg,
     Circuit,
     Expr,
     FreezeReg,
     Input,
+    SampleOnReference,
     ScalarEvent,
     SignalsInput,
     VectorEvent,
