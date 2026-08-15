@@ -32,6 +32,7 @@ from .symbolic import FreezeReg as _BaseFreezeReg
 from .symbolic import Input as _BaseInput
 from .symbolic import SampleOnReference as _BaseSampleOnReference
 from .symbolic import ScalarEvent as _BaseScalarEvent
+from .symbolic import SignalsExpr as _BaseSignalsExpr
 from .symbolic import SignalsInput as _BaseSignalsInput
 from .symbolic import VectorEvent as _BaseVectorEvent
 from .vector_expr import SignalsExpr
@@ -258,7 +259,7 @@ class Circuit(_Circuit):
 
     def sample_on(
         self,
-        source: _BaseInput | _BaseExpr | SignalsExpr,
+        source: _BaseInput | _BaseExpr | _BaseSignalsExpr,
         target: _BaseScalarEvent | _BaseVectorEvent,
     ) -> SampleOnReference:
         reference = super().sample_on(source, target)
