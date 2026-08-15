@@ -2,14 +2,12 @@
 
 from .symbolic import (
     CircuitBuildError,
-    Expr,
-    Input,
     LogicalTime,
     SampleOnReference,
     ScalarEvent,
     VectorEvent,
 )
-from .vector_circuit import AccumulatorReg, Circuit, FreezeReg, SignalsInput
+from .vector_circuit import AccumulatorReg, Circuit, Expr, FreezeReg, Input, SignalsInput
 from .vector_expr import SignalsExpr
 from .vector_nodes import (
     VectorBinaryOp,
