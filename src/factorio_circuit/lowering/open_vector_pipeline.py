@@ -1,13 +1,21 @@
 """Whole-vector lowering pipeline."""
 
+from typing import cast
+
 from factorio_circuit.analysis.state_timing import StateTimingPlan
-from factorio_circuit.frontend import _VectorBinaryOp, _VectorFilter, _VectorScalarOp
 from factorio_circuit.ir.abstract_physical import AbstractNet, AbstractPhysicalCircuit
 from factorio_circuit.ir.semantic import (
     CircuitModule,
+    ScalarValue,
+    VectorBinaryOp,
     VectorConstant,
+    VectorFilter,
     VectorInput,
     VectorInputSample,
+    VectorScalarOp,
+    VectorSelect,
+    reject_event_module,
+    validate_canonical_module,
 )
 from factorio_circuit.ir.state import AccumulatorRegister, FreezeRegister, VectorRegisterRead
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
@@ -19,9 +27,10 @@ _VECTOR_OUTPUTS = (
     VectorInputSample,
     VectorConstant,
     VectorRegisterRead,
-    _VectorBinaryOp,
-    _VectorScalarOp,
-    _VectorFilter,
+    VectorBinaryOp,
+    VectorScalarOp,
+    VectorFilter,
+    VectorSelect,
 )
 
 
@@ -31,8 +40,38 @@ def lower_vectors(
     enable_packing: bool,
     state_timing: StateTimingPlan,
 ) -> AbstractPhysicalCircuit:
-    """Lower scalar/vector logic and the current vector-register state subset together."""
+    """Lower a canonical module; raw compatibility modules must use the compiler boundary."""
 
+    return lower_normalized_vectors(
+        module, enable_packing=enable_packing, state_timing=state_timing
+    )
+
+
+def lower_legacy_vectors(
+    module: CircuitModule,
+    *,
+    enable_packing: bool,
+    state_timing: StateTimingPlan,
+) -> AbstractPhysicalCircuit:
+    """Compatibility wrapper for callers holding a legacy semantic module."""
+
+    from .frontend_to_ir import normalize_module
+
+    return lower_normalized_vectors(
+        normalize_module(module), enable_packing=enable_packing, state_timing=state_timing
+    )
+
+
+def lower_normalized_vectors(
+    module: CircuitModule,
+    *,
+    enable_packing: bool,
+    state_timing: StateTimingPlan,
+) -> AbstractPhysicalCircuit:
+    """Lower a module that has already crossed the canonical Level boundary."""
+
+    reject_event_module(module)
+    validate_canonical_module(module)
     unsupported_registers = [
         register
         for register in module.state_registers
@@ -60,7 +99,7 @@ def lower_vectors(
         if isinstance(value, _VECTOR_OUTPUTS):
             outputs.append(lowerer.realize_vector(value))
         else:
-            outputs.append(lowerer.realize(value))
+            outputs.append(lowerer.realize(cast(ScalarValue, value)))
     lowerer._create_output_markers(outputs)
     lowerer.circuit.nets = [
         AbstractNet(

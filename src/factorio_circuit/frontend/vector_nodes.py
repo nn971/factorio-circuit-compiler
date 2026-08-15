@@ -1,35 +1,31 @@
-"""Internal runtime-open vector expression nodes."""
+"""Compatibility aliases for the canonical public vector semantic nodes.
 
-from dataclasses import dataclass
+Vector nodes used to be owned by the symbolic frontend.  The semantic IR now owns them so a
+normalized module does not depend on frontend-private classes.  The underscored aliases remain for
+source compatibility with existing backend and user/test imports.
+"""
 
-from factorio_circuit.ir.semantic import ScalarValue, VectorValue
+from factorio_circuit.ir.semantic import (
+    VectorBinaryOp,
+    VectorFilter,
+    VectorScalarOp,
+    VectorSelect,
+)
 
+_VectorBinaryOp = VectorBinaryOp
+_VectorScalarOp = VectorScalarOp
+_VectorFilter = VectorFilter
+_VectorSelect = VectorSelect
+_VectorNode = VectorBinaryOp | VectorScalarOp | VectorFilter | VectorSelect
 
-@dataclass(frozen=True, slots=True)
-class _VectorBinaryOp:
-    op: str
-    left: VectorValue
-    right: VectorValue
-
-
-@dataclass(frozen=True, slots=True)
-class _VectorScalarOp:
-    op: str
-    vector: VectorValue
-    scalar: ScalarValue
-
-
-@dataclass(frozen=True, slots=True)
-class _VectorFilter:
-    op: str
-    vector: VectorValue
-    right: int
-
-
-@dataclass(frozen=True, slots=True)
-class _VectorSelect(_VectorFilter):
-    select_max: bool = True
-    index: int = 0
-
-
-_VectorNode = _VectorBinaryOp | _VectorScalarOp | _VectorFilter | _VectorSelect
+__all__ = [
+    "VectorBinaryOp",
+    "VectorFilter",
+    "VectorScalarOp",
+    "VectorSelect",
+    "_VectorBinaryOp",
+    "_VectorFilter",
+    "_VectorNode",
+    "_VectorScalarOp",
+    "_VectorSelect",
+]

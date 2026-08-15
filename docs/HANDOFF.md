@@ -5,161 +5,179 @@
 Compile a symbolic Python circuit EDSL to optimized Factorio 2.x combinator blueprints while keeping
 logical stream semantics independent from physical combinator timing.
 
-## Canonical frontend
+## Current milestone status
 
-```python
-c = Circuit("example")
-x = c.input("x")
-y = (x + 1) * 2
-c.output("y", y)
+The Clocked Flow Semantics milestone is implemented on the merge-preparation line. Both ordinary
+Level/state circuits and the implemented Event/clock-crossing subset reach Abstract Physical IR,
+physical synthesis, Layout, and blueprint serialization.
+
+The semantic reference Event simulator remains an independent oracle for irregular schedules and is
+used by integration tests to check physical lowering.
+
+The authoritative milestone closeout is:
+
+- `docs/clocked-flow-milestone-closeout.md`
+
+The original milestone design remains in:
+
+- `docs/clocked-flow-semantics-milestone.md`
+
+## Canonical semantic model
+
+Canonical values are clocked flows with:
+
+```text
+payload shape
+modality: Level or Event
+structural clock identity
+logical occurrence offset
 ```
 
-Python execution is elaboration. Symbolic values are logical streams. Runtime-open vector operations
-include arithmetic, `.positive()`, `.any()`, `.gate(...)`, and selector `.max()`, including on
-register-derived vectors.
+Clock identity is separate from timing knowledge. `ClockContract` carries the known minimum
+separation guarantee, while causality/timing analysis derives the physical requirement.
+
+Logical causality and physical throughput are separate questions:
+
+- same-clock zero-advance feedback is rejected semantically;
+- legal feedback may require a slower inferred clock or a larger Event separation;
+- external/fixed clocks are checked against the derived requirement.
 
 ## Logical time vocabulary
 
-Inputs and registers use the same observation operation:
+Inputs and registers use `.sample()` for Level observation. Expression `.step(n)` is pure flow-local
+occurrence reindexing.
 
-```python
-x0 = input.sample()
-s0 = register.sample()
+For an Event flow, positive `.step(n)` suppresses the first `n` occurrences and then preserves the
+current payload on every surviving occurrence. Physical lowering implements this with a shared
+occurrence counter and valid gating; it does not translate logical steps into game-tick delays.
 
-c.step()
+`Circuit.step()` remains as compatibility syntax for the older Level/state frontend. `Circuit.tick()`
+is reserved for future explicit physical scheduling. `register.value` remains a deprecated alias for
+`register.sample()`.
 
-x1 = input.sample()
-s1 = register.sample()
-```
-
-`step(n)` advances logical time. It is separate from Factorio game ticks. `Circuit.tick()` is reserved
-for future explicit physical scheduling and currently raises. `register.value` remains a compatibility
-alias; new code uses `register.sample()`.
-
-## Clock-domain timing
-
-Logical and physical time are separate.
-
-For a state clock domain with physical period `P`, register/value phase `phi`, and logical index `k`:
+## Level/periodic route
 
 ```text
-physical_time(value[k]) = phi + k*P
-```
-
-Stateless combinators preserve `k` and add physical latency. Feed-forward latency does not enlarge
-`P`; feedback recurrence constraints do.
-
-Ordinary state dependencies force the involved registers into one logical clock domain. Independent
-state components may infer different periods. External physical inputs do not themselves own a state
-domain.
-
-A state dependency with source logical offset `r`, target commit offset `c`, physical latency `L`, and
-shared period `P` gives:
-
-```text
-phi_target >= phi_source + (r - c - 1) * P + L + 1
-```
-
-The analyzer tests integer periods from 1 upward and takes the first feasible one. A positive-latency
-same-step combinational cycle remains impossible for every `P`.
-
-Canonical regression:
-
-```python
-old = memory.sample()
-memory.set(data, when=old.any())
-```
-
-infers `P=3` in the current realization rather than being rejected.
-
-## Physical realization of multicycle state
-
-For each `P>1` domain, vector lowering synthesizes a modulo-`P` clock. Register gates open only on the
-scheduled residue:
-
-- `FreezeReg` holds on intermediate physical ticks;
-- `AccumulatorReg` suppresses adds and ignores clear between logical boundaries while retaining
-  memory.
-
-Independent state domains with different periods are supported when they use current-step physical
-inputs. Nonzero-step external samples across heterogeneous domains remain deferred until
-context-sensitive input realization / explicit resampling is implemented.
-
-## State structures
-
-`AccumulatorReg` and `FreezeReg` are the foundational whole-vector state primitives. Higher structures
-should first be built from them rather than added as compiler primitives.
-
-`examples/vector_fifo.py` and `examples/vector_stack.py` are composition regressions. The stack is also
-used by the autonomous-market controller.
-
-## Autonomous market status
-
-`examples/autonomous_market_controller.py` has been compiled to a routed blueprint and tested in game
-with one recipe-reader assembler and one worker assembler. Recursive prerequisite discovery and
-production work. The reader protocol includes one explicit logical settling interval before consuming
-its ingredient vector.
-
-The market experiment is intentionally paused at this point. Remaining market-level problems include
-stale external stock after a craft, in-flight logistics, raw/uncraftable resources, dependency cycles,
-stack overflow, multi-worker scheduling under transport delay, and recipe metadata/ROM design. See
-`docs/autonomous-market.md`.
-
-## Physical pipeline
-
-```text
-symbolic/logical circuit
+symbolic circuit
     ↓
-semantic IR + state timing / clock domains
+canonical semantic IR
+    ↓
+logical causality + state timing
     ↓
 AbstractPhysicalCircuit
     ↓
-physical synthesis
+physical synthesis + Layout
     ↓
-Layout
-    ↓
-blueprint serialization
+blueprint
 ```
 
-Abstract physical IR owns exact target combinators, abstract nets/signals, and compatibility metadata.
-Physical synthesis owns concrete signal IDs, red/green allocation, compatible net coalescing,
-net-aware placement, reserved access/power corridors, deterministic placement retries, reach-safe
-routing, and final layout. Blueprint generation only serializes.
+Periodic state may infer a multicycle physical period. Feed-forward latency does not itself enlarge
+the period; recurrence constraints do. Independent state domains may infer different periods where
+supported by the existing Level path.
 
-The old direct-concrete backend remains in `compiler_legacy.py` only as a parity/debugging oracle for
-selected P=1 regressions.
+`AccumulatorReg` and `FreezeReg` remain the foundational whole-vector state primitives.
 
-## Current validation targets
+## Event/clocked route
 
-The regression suite covers, among other things:
+External Events use a payload-plus-valid ABI:
 
-- `.step()` / `.sample()` frontend semantics and reserved `.tick()`;
-- P=1 and multicycle state timing;
-- state-derived vector predicates;
-- heterogeneous independent domains and domain unification;
-- FIFO/stack composition;
-- periodic clock structure;
-- pairwise arithmetic packing and shared-predicate/multi-output-decider fusion;
-- sorting-network and Walsh-Hadamard benchmark circuits;
-- abstract physical synthesis, placement, reach-safe routing, and blueprint serialization.
+```text
+name
+name__valid
+```
 
-Canonical local checks are:
+The implemented semantic/physical vocabulary includes:
+
+- scalar/vector external Events;
+- `sample_on(level, event_clock)`;
+- `gate_clock(parent, when=...)`;
+- additive `event_merge(...)`;
+- stateful vector `hold_into(source, target)`;
+- stateful vector `sum_into(source, target)`;
+- Event `.step(n)` occurrence-tail semantics;
+- explicit HOLD/ZERO/VALID boundary materialization;
+- Event Freeze updates;
+- direct unconditional Event accumulation;
+- physical synthesis and blueprint generation for the supported subset.
+
+Important simultaneous-boundary rules:
+
+```text
+HoldInto: strict-prior source value
+SumInto:  (previous target, current target]
+```
+
+Thus a source occurrence simultaneous with a target is excluded from the current `HoldInto` sample
+but included in the current `SumInto` interval.
+
+## Output materialization
+
+Sparse Event outputs explicitly select:
+
+```text
+HOLD
+ZERO
+VALID
+```
+
+VALID exposes aligned payload and `<output>__valid` ports. Zero payload and absent occurrence remain
+semantically distinct.
+
+## Flagship acceptance test
+
+`tests/integration/test_multi_rate_event_ledger.py` combines:
+
+- three irregular vector Event producers;
+- simultaneous producer occurrences;
+- shared `EventMerge`;
+- a gated reporting clock;
+- three `SumInto` bridges;
+- direct lifetime Event accumulation;
+- VALID Event outputs and held Level state.
+
+It compares the compiled physical circuit timestamp-by-timestamp against `simulate_events(...)` and
+also checks that shared EventMerge/bridge work is not duplicated per downstream use.
+
+## In-game pre-merge smoke
+
+Generate:
 
 ```fish
-uv run pytest
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src
+uv run python examples/clocked_flow_ingame_smoke.py
 ```
 
-Do not infer validation status from this document; run the checks for the branch being changed.
+Then follow `docs/clocked-flow-merge-smoke.md`. The test intentionally combines Event `.step(1)`, a
+gated target clock, `HoldInto`, `SumInto`, and VALID materialization so one in-game circuit checks the
+most timing-sensitive boundaries before merging.
 
-## Next technical decision
+## Current validation baseline
 
-The strongest semantic candidate is triggered logical domains with input snapshots: treat inferred `P`
-as a minimum initiation interval rather than requiring a rigid periodic cadence. This addresses short
-external pulses and device-working intervals that can otherwise fall between logical observations.
-See `docs/timing-open-problems.md`.
+The final implementation head before merge preparation passed:
 
-In parallel, use the sorting/WHT examples and `benchmarks/README.md` as the measurement baseline for
-future target-graph and physical-synthesis optimization.
+```text
+pytest: 310 passed
+ruff check: passed
+ruff format --check: passed
+mypy src: passed
+```
+
+Run the same full checks on the exact merge candidate; do not infer green status from this handoff.
+
+## Deliberately deferred work
+
+These are follow-up milestones rather than Clocked Flow merge blockers:
+
+- general Event queues/FIFOs and overload buffering;
+- ready/valid backpressure protocols for external devices;
+- richer burst/rate clock contracts beyond minimum separation;
+- arbitrary combinations of Event add/clear/replace updates;
+- a general Event/state fusion optimizer;
+- clock-aware packing across every Event expression family;
+- retirement of all compatibility sampled wrappers and `Circuit.step()`;
+- stable-vs-experimental Factorio capability profiles.
+
+## Autonomous market
+
+The temporal substrate needed to replace short-pulse polling workarounds now exists. Migrating the
+autonomous-market controller to Event-oriented device protocols is a separate application milestone,
+not unfinished Clocked Flow semantics.

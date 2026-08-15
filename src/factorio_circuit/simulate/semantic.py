@@ -2,43 +2,110 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from typing import SupportsInt, cast
 
-from factorio_circuit.analysis.state_timing import StateTimingPlan, analyze_state_timing
+from factorio_circuit.analysis.state_timing import (
+    StateTimingPlan,
+    analyze_normalized_state_timing,
+)
 from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.ir.semantic import (
     BinaryOp,
     CircuitModule,
     Compare,
     Constant,
+    EventScalarFlow,
+    EventVectorFlow,
     Input,
     InputSample,
+    SampleOn,
     ScalarValue,
     Select,
-    VectorConstant,
     VectorInput,
     VectorInputSample,
     VectorSignal,
     VectorValue,
+    is_vector_value,
+    reject_event_module,
+    validate_canonical_module,
 )
 from factorio_circuit.ir.state import (
-    AccumulatorAdd,
-    AccumulatorClear,
-    AccumulatorRegister,
-    FreezeRegister,
-    FreezeSet,
-    VectorRegisterRead,
+    StateRegister,
+    state_transitions,
 )
-from factorio_circuit.target.factorio.semantics import apply_binary, apply_compare, i32
+from factorio_circuit.lowering.frontend_to_ir import normalize_module
+from factorio_circuit.simulate.kernel import (
+    EvaluationContext,
+    TimestampReaction,
+    evaluate_scalar,
+    evaluate_vector,
+    run_reaction_kernel,
+)
+from factorio_circuit.target.factorio.semantics import i32
 
 type SignalMap = dict[SignalId, int]
 type LogicalInputRow = dict[str, object]
 type LogicalOutput = int | SignalMap
 
 
+class _LevelEvaluationContext(EvaluationContext):
+    def __init__(
+        self,
+        input_stream: list[LogicalInputRow],
+        logical_tick: int = 0,
+        histories: dict[str, list[SignalMap]] | None = None,
+    ) -> None:
+        self.input_stream = input_stream
+        self.logical_tick = logical_tick
+        self.histories = histories
+
+    def scalar_input(self, source: Input, offset: int) -> int:
+        return _lookup_stream_input(self.input_stream, self.logical_tick + offset, source.name)
+
+    def vector_input(self, source: VectorInput, offset: int) -> SignalMap:
+        return _lookup_vector_input(self.input_stream, self.logical_tick + offset, source.name)
+
+    def state_vector(self, register: StateRegister, offset: int) -> SignalMap:
+        if self.histories is None:
+            raise ValueError("state reads require stream simulation context")
+        boundary = self.logical_tick + offset
+        history = self.histories[register.name]
+        if boundary < 0 or boundary >= len(history):
+            raise ValueError(
+                f"state read {register.name!r} requests unavailable boundary {boundary}"
+            )
+        return dict(history[boundary])
+
+    def event_scalar(self, source: EventScalarFlow) -> int:
+        raise ValueError("Event values are not valid on the Level simulation route")
+
+    def event_vector(self, source: EventVectorFlow) -> SignalMap:
+        raise ValueError("Event values are not valid on the Level simulation route")
+
+    def sample_on_scalar(self, source: SampleOn) -> int:
+        raise ValueError("SampleOn values are not valid on the Level simulation route")
+
+    def sample_on_vector(self, source: SampleOn) -> SignalMap:
+        raise ValueError("SampleOn values are not valid on the Level simulation route")
+
+    def active_event_vector(self) -> SignalMap:
+        raise ValueError("Event values are not valid on the Level simulation route")
+
+
 def evaluate(module: CircuitModule, inputs: dict[str, int]) -> tuple[int, ...]:
     """Evaluate one logical tick for a scalar stateless circuit with held external inputs."""
 
+    reject_event_module(module)
+    module = normalize_module(module)
+    return evaluate_normalized(module, inputs)
+
+
+def evaluate_normalized(module: CircuitModule, inputs: dict[str, int]) -> tuple[int, ...]:
+    """Evaluate a module that already satisfies the canonical Level invariant."""
+
+    reject_event_module(module)
+    validate_canonical_module(module)
     if module.state_registers or module.vector_inputs:
         raise ValueError(
             "single-tick evaluate() is scalar/stateless; use simulate_stream() for state"
@@ -54,24 +121,45 @@ def simulate_stream(
 ) -> list[tuple[LogicalOutput, ...]]:
     """Evaluate logical output streams, including fresh samples and vector state."""
 
+    reject_event_module(module)
+    module = normalize_module(module)
+    return simulate_normalized_stream(module, input_stream, state_timing=state_timing)
+
+
+def simulate_normalized_stream(
+    module: CircuitModule,
+    input_stream: list[LogicalInputRow],
+    *,
+    state_timing: StateTimingPlan | None = None,
+) -> list[tuple[LogicalOutput, ...]]:
+    """Simulate a module that already satisfies the canonical Level invariant."""
+
+    reject_event_module(module)
+    validate_canonical_module(module)
     histories: dict[str, list[SignalMap]] = {}
     if module.state_registers:
         _validate_state_startup_model(module)
-        timing = state_timing or analyze_state_timing(module)
+        timing = state_timing or analyze_normalized_state_timing(module)
         histories = _simulate_state_histories(module, input_stream, timing)
     result: list[tuple[LogicalOutput, ...]] = []
     for logical_tick in range(len(input_stream)):
         scalar_memo: dict[tuple[int, int], int] = {}
         row: list[LogicalOutput] = []
         for value in module.output.values:
-            if isinstance(
-                value, (VectorInput, VectorInputSample, VectorConstant, VectorRegisterRead)
-            ):
-                row.append(_evaluate_output_vector(value, input_stream, logical_tick, histories))
+            if is_vector_value(value):
+                row.append(
+                    _evaluate_output_vector(
+                        cast(VectorValue, value), input_stream, logical_tick, histories
+                    )
+                )
             else:
                 row.append(
                     _evaluate_stream_value(
-                        value, input_stream, logical_tick, scalar_memo, histories
+                        cast(ScalarValue, value),
+                        input_stream,
+                        logical_tick,
+                        scalar_memo,
+                        histories,
                     )
                 )
         result.append(tuple(row))
@@ -102,19 +190,21 @@ def _validate_state_startup_model(module: CircuitModule) -> None:
             )
         raise TypeError(value)
 
-    for op in module.state_operations:
+    for transition in state_transitions(module):
+        if transition.trigger is not None:
+            continue
         if (
-            isinstance(op, (AccumulatorAdd, FreezeSet))
-            and isinstance(op.value, VectorInputSample)
-            and op.value.offset > 0
+            transition.kind in {"add", "set"}
+            and isinstance(transition.value, VectorInputSample)
+            and transition.value.offset > 0
         ):
             raise ValueError(
                 "zero-initial state simulation does not yet define startup/warm-up semantics for "
                 "future-sampled vector update sources"
             )
         controls: list[ScalarValue] = []
-        if isinstance(op, (AccumulatorAdd, AccumulatorClear, FreezeSet)):
-            controls.append(op.when)
+        if transition.kind in {"add", "clear", "set"} and transition.when is not None:
+            controls.append(transition.when)
         if any(scalar_has_future_sample(control) for control in controls):
             raise ValueError(
                 "zero-initial state simulation does not yet define startup/warm-up semantics for "
@@ -139,86 +229,50 @@ def _simulate_state_histories(
     histories: dict[str, list[SignalMap]] = {
         register.name: [{}] for register in module.state_registers
     }
-    operations = {
-        register.name: tuple(op for op in module.state_operations if op.register == register)
+    transitions = {
+        register.name: tuple(
+            transition
+            for transition in state_transitions(module)
+            if transition.register == register and transition.trigger is None
+        )
         for register in module.state_registers
     }
 
-    # Advance all registers together so cross-register reads at one boundary see the same old state.
-    for boundary in range(max_boundary):
-        next_states: dict[str, SignalMap] = {}
-        for register in module.state_registers:
-            current = histories[register.name][boundary]
-            register_timing = timing.for_register(register)
-            invocation = boundary - register_timing.commit_offset
-            if invocation < 0:
-                next_states[register.name] = dict(current)
-                continue
-            if isinstance(register, AccumulatorRegister):
-                next_states[register.name] = _step_accumulator(
-                    current,
-                    operations[register.name],
-                    input_stream,
-                    invocation,
-                    histories,
-                )
-            elif isinstance(register, FreezeRegister):
-                next_states[register.name] = _step_freeze(
-                    current,
-                    operations[register.name],
-                    input_stream,
-                    invocation,
-                    histories,
-                )
-            else:  # pragma: no cover
-                raise TypeError(register)
-        for register in module.state_registers:
-            histories[register.name].append(next_states[register.name])
-    return histories
+    def batches() -> Iterable[tuple[int, Sequence[tuple[int, object, object]]]]:
+        for boundary in range(max_boundary):
+            entries: list[tuple[int, object, object]] = []
+            for index, register in enumerate(module.state_registers):
+                invocation = boundary - timing.for_register(register).commit_offset
+                if invocation >= 0:
+                    entries.append((index, register, invocation))
+            yield boundary, tuple(entries)
 
-
-def _step_accumulator(
-    current: SignalMap,
-    operations: tuple[object, ...],
-    input_stream: list[LogicalInputRow],
-    invocation: int,
-    histories: dict[str, list[SignalMap]],
-) -> SignalMap:
-    adds = [op for op in operations if isinstance(op, AccumulatorAdd)]
-    clear = next((op for op in operations if isinstance(op, AccumulatorClear)), None)
-    memo: dict[tuple[int, int], int] = {}
-    if (
-        clear is not None
-        and _evaluate_stream_value(clear.when, input_stream, invocation, memo, histories) != 0
-    ):
+    def level_snapshot(boundary: int) -> Mapping[str, object]:
+        if 0 <= boundary < len(input_stream):
+            return input_stream[boundary]
         return {}
 
-    result = dict(current)
-    for add in adds:
-        if _evaluate_stream_value(add.when, input_stream, invocation, memo, histories) == 0:
-            continue
-        value = _evaluate_vector_source(add.value, input_stream, invocation, histories)
-        for signal, amount in value.items():
-            updated = i32(result.get(signal, 0) + amount)
-            if updated == 0:
-                result.pop(signal, None)
-            else:
-                result[signal] = updated
-    return result
+    def context_factory(
+        _level_row: Mapping[str, object],
+        _before: dict[str, SignalMap],
+        _source: object,
+        invocation: object,
+    ) -> EvaluationContext:
+        return _LevelEvaluationContext(input_stream, int(cast(int, invocation)), histories)
 
+    def after_frame(frame: TimestampReaction) -> None:
+        for register in module.state_registers:
+            histories[register.name].append(dict(frame.state_after[register.name]))
 
-def _step_freeze(
-    current: SignalMap,
-    operations: tuple[object, ...],
-    input_stream: list[LogicalInputRow],
-    invocation: int,
-    histories: dict[str, list[SignalMap]],
-) -> SignalMap:
-    spec = next(op for op in operations if isinstance(op, FreezeSet))
-    memo: dict[tuple[int, int], int] = {}
-    if _evaluate_stream_value(spec.when, input_stream, invocation, memo, histories) == 0:
-        return dict(current)
-    return _evaluate_vector_source(spec.value, input_stream, invocation, histories)
+    run_reaction_kernel(
+        batches(),
+        level_snapshot,
+        {register.name: {} for register in module.state_registers},
+        lambda source, _invocation: transitions[cast(StateRegister, source).name],
+        context_factory,
+        after_frame,
+    )
+    return histories
 
 
 def _evaluate_output_vector(
@@ -236,21 +290,10 @@ def _evaluate_vector_source(
     logical_tick: int,
     histories: dict[str, list[SignalMap]],
 ) -> SignalMap:
-    if isinstance(value, VectorInput):
-        return _lookup_vector_input(input_stream, logical_tick, value.name)
-    if isinstance(value, VectorInputSample):
-        return _lookup_vector_input(input_stream, logical_tick + value.offset, value.source.name)
-    if isinstance(value, VectorConstant):
-        return {signal: i32(amount) for signal, amount in value.signals if i32(amount) != 0}
-    if isinstance(value, VectorRegisterRead):
-        boundary = logical_tick + value.offset
-        history = histories[value.register.name]
-        if boundary < 0 or boundary >= len(history):
-            raise ValueError(
-                f"state read {value.register.name!r} requests unavailable boundary {boundary}"
-            )
-        return dict(history[boundary])
-    raise TypeError(value)
+    return evaluate_vector(
+        value,
+        _LevelEvaluationContext(input_stream, logical_tick, histories),
+    )
 
 
 def _evaluate_value(
@@ -258,46 +301,8 @@ def _evaluate_value(
     inputs: dict[str, int],
     memo: dict[int, int] | None = None,
 ) -> int:
-    if memo is None:
-        memo = {}
-    key = id(value)
-    if key in memo:
-        return memo[key]
-    if isinstance(value, Input):
-        result = _lookup_input(inputs, value.name)
-    elif isinstance(value, InputSample):
-        result = _lookup_input(inputs, value.source.name)
-    elif isinstance(value, Constant):
-        result = i32(value.value)
-    elif isinstance(value, VectorSignal):
-        if not isinstance(value.vector, VectorConstant):
-            raise ValueError("single-tick scalar evaluation cannot read dynamic vector state")
-        result = dict(value.vector.signals).get(value.signal, 0)
-    elif isinstance(value, BinaryOp):
-        result = apply_binary(
-            value.op,
-            _evaluate_value(value.left, inputs, memo),
-            _evaluate_value(value.right, inputs, memo),
-        )
-    elif isinstance(value, Compare):
-        result = int(
-            apply_compare(
-                value.op,
-                _evaluate_value(value.left, inputs, memo),
-                _evaluate_value(value.right, inputs, memo),
-            )
-        )
-    elif isinstance(value, Select):
-        branch = (
-            value.when_true
-            if _evaluate_value(value.condition, inputs, memo) != 0
-            else value.when_false
-        )
-        result = _evaluate_value(branch, inputs, memo)
-    else:  # pragma: no cover
-        raise TypeError(value)
-    memo[key] = result
-    return result
+    row: LogicalInputRow = dict(inputs)
+    return evaluate_scalar(value, _LevelEvaluationContext([row]))
 
 
 def _evaluate_stream_value(
@@ -311,41 +316,10 @@ def _evaluate_stream_value(
     cached = memo.get(key)
     if cached is not None:
         return cached
-    if isinstance(value, Input):
-        result = _lookup_stream_input(input_stream, logical_tick, value.name)
-    elif isinstance(value, InputSample):
-        result = _lookup_stream_input(input_stream, logical_tick + value.offset, value.source.name)
-    elif isinstance(value, Constant):
-        result = i32(value.value)
-    elif isinstance(value, VectorSignal):
-        if histories is None:
-            raise ValueError("vector signal extraction requires vector/state stream context")
-        vector = _evaluate_vector_source(value.vector, input_stream, logical_tick, histories)
-        result = vector.get(value.signal, 0)
-    elif isinstance(value, BinaryOp):
-        result = apply_binary(
-            value.op,
-            _evaluate_stream_value(value.left, input_stream, logical_tick, memo, histories),
-            _evaluate_stream_value(value.right, input_stream, logical_tick, memo, histories),
-        )
-    elif isinstance(value, Compare):
-        result = int(
-            apply_compare(
-                value.op,
-                _evaluate_stream_value(value.left, input_stream, logical_tick, memo, histories),
-                _evaluate_stream_value(value.right, input_stream, logical_tick, memo, histories),
-            )
-        )
-    elif isinstance(value, Select):
-        branch = (
-            value.when_true
-            if _evaluate_stream_value(value.condition, input_stream, logical_tick, memo, histories)
-            != 0
-            else value.when_false
-        )
-        result = _evaluate_stream_value(branch, input_stream, logical_tick, memo, histories)
-    else:  # pragma: no cover
-        raise TypeError(value)
+    result = evaluate_scalar(
+        value,
+        _LevelEvaluationContext(input_stream, logical_tick, histories),
+    )
     memo[key] = result
     return result
 

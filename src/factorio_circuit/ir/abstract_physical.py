@@ -156,7 +156,7 @@ class DeciderCondition:
 class DeciderOutput:
     """One additional normal output of a Factorio decider combinator."""
 
-    signal: int
+    signal: SignalRef
     constant: int = 1
     copy_count_from_input: bool = False
     copy_count_nets: tuple[int, ...] = ()
@@ -172,13 +172,13 @@ class DeciderCombinator:
     comparator: str
     left: Operand
     right: Operand
-    output_signal: int
+    output_signal: SignalRef
     output_constant: int = 1
     output_copy_count_from_input: bool = False
     copy_count_nets: tuple[int, ...] = ()
     additional_conditions: tuple[DeciderCondition, ...] = ()
     additional_outputs: tuple[DeciderOutput, ...] = ()
-    else_output_signal: int | None = None
+    else_output_signal: SignalRef | None = None
     else_output_constant: int = 1
     else_copy_count_from_input: bool = False
     else_copy_count_nets: tuple[int, ...] = ()
@@ -303,16 +303,16 @@ class AbstractPhysicalCircuit:
             elif isinstance(entity, DeciderCombinator):
                 self._validate_operand(entity.left, signal_ids, net_ids)
                 self._validate_operand(entity.right, signal_ids, net_ids)
-                _require(signal_ids, entity.output_signal, "signal")
+                self._validate_signal_ref(entity.output_signal, signal_ids)
                 self._validate_net_refs(entity.copy_count_nets, net_ids)
                 for condition in entity.additional_conditions:
                     self._validate_operand(condition.left, signal_ids, net_ids)
                     self._validate_operand(condition.right, signal_ids, net_ids)
                 for output in entity.additional_outputs:
-                    _require(signal_ids, output.signal, "signal")
+                    self._validate_signal_ref(output.signal, signal_ids)
                     self._validate_net_refs(output.copy_count_nets, net_ids)
                 if entity.else_output_signal is not None:
-                    _require(signal_ids, entity.else_output_signal, "signal")
+                    self._validate_signal_ref(entity.else_output_signal, signal_ids)
                     self._validate_net_refs(entity.else_copy_count_nets, net_ids)
             else:
                 for signal_ref, _count in entity.signals:

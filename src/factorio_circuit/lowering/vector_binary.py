@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from factorio_circuit.frontend import _VectorBinaryOp
+from factorio_circuit.analysis.latency import FACTORIO_LATENCY
 from factorio_circuit.ir.abstract_physical import ArithmeticCombinator, Connector, Endpoint, Operand
 from factorio_circuit.ir.physical import SignalId
+from factorio_circuit.ir.semantic import VectorBinaryOp
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedVector
 
 
@@ -19,7 +20,7 @@ def vector_metadata(lowerer: Any, *net_ids: int) -> tuple[tuple[SignalId, ...], 
     return tuple(sorted(fixed, key=lambda signal: (signal.kind, signal.name))), False
 
 
-def realize_vector_binary(lowerer: Any, value: _VectorBinaryOp) -> RealizedVector:
+def realize_vector_binary(lowerer: Any, value: VectorBinaryOp) -> RealizedVector:
     left = lowerer.realize_vector(value.left)
     right = lowerer.realize_vector(value.right)
     phase = max(left.phase, right.phase)
@@ -51,4 +52,6 @@ def realize_vector_binary(lowerer: Any, value: _VectorBinaryOp) -> RealizedVecto
         fixed_signals=fixed,
         carries_dynamic_vector=dynamic,
     )
-    return RealizedVector(net, phase + 1)
+    return RealizedVector(
+        net, phase + FACTORIO_LATENCY.operation_latency("vector_binary", value.op)
+    )

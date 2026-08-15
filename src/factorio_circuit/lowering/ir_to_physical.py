@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from typing import cast
 
+from factorio_circuit.analysis.latency import FACTORIO_LATENCY
 from factorio_circuit.analysis.state_timing import StateTimingPlan, analyze_state_timing
 from factorio_circuit.ir.physical import (
     ArithmeticCombinator,
@@ -35,6 +37,7 @@ from factorio_circuit.ir.semantic import (
     VectorSignal,
     VectorValue,
     dependencies,
+    reject_event_module,
 )
 from factorio_circuit.ir.state import (
     AccumulatorAdd,
@@ -87,6 +90,7 @@ class PhysicalLowerer:
         enable_packing: bool,
         state_timing: StateTimingPlan | None = None,
     ) -> None:
+        reject_event_module(module)
         self.module = module
         self.enable_packing = enable_packing
         self.state_timing = state_timing or analyze_state_timing(module)
@@ -118,7 +122,7 @@ class PhysicalLowerer:
             ):
                 realized_outputs.append(self.realize_vector(value))
             else:
-                realized_outputs.append(self.realize(value))
+                realized_outputs.append(self.realize(cast(Value, value)))
         self._create_output_markers(realized_outputs)
         return self.circuit
 
@@ -180,7 +184,9 @@ class PhysicalLowerer:
             )
             self._connect(clear.endpoint, WireEndpoint(active.id, Connector.INPUT))
             clear_active = RealizedValue(
-                active_signal, WireEndpoint(active.id, Connector.OUTPUT), clear.phase + 1
+                active_signal,
+                WireEndpoint(active.id, Connector.OUTPUT),
+                clear.phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "clear"),
             )
 
         gated_outputs: list[WireEndpoint] = []
@@ -294,7 +300,9 @@ class PhysicalLowerer:
         for entity in (pass_control, hold_control):
             self._connect(control.endpoint, WireEndpoint(entity.id, Connector.INPUT))
 
-        control_phase = control.phase + 1
+        control_phase = control.phase + FACTORIO_LATENCY.operation_latency(
+            "scalar_binary", "control"
+        )
         pass_value = RealizedValue(
             pass_signal, WireEndpoint(pass_control.id, Connector.OUTPUT), control_phase
         )
@@ -479,7 +487,7 @@ class PhysicalLowerer:
             result = RealizedValue(
                 out,
                 WireEndpoint(entity.id, Connector.OUTPUT),
-                vector.phase + 1,
+                vector.phase + FACTORIO_LATENCY.operation_latency("vector_binary", "delay"),
                 clean_single_lane=True,
             )
         else:  # pragma: no cover
@@ -513,7 +521,11 @@ class PhysicalLowerer:
             )
         )
         self._connect(control.endpoint, WireEndpoint(entity.id, Connector.INPUT))
-        return RealizedValue(signal, WireEndpoint(entity.id, Connector.OUTPUT), control.phase + 1)
+        return RealizedValue(
+            signal,
+            WireEndpoint(entity.id, Connector.OUTPUT),
+            control.phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "control"),
+        )
 
     def _materialize_constant(self, value: Constant) -> RealizedValue:
         signal = self.allocator.allocate()
@@ -569,7 +581,7 @@ class PhysicalLowerer:
         for source in aligned:
             self._connect(source.endpoint, input_endpoint)
 
-        phase = target_phase + 1
+        phase = target_phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "delay")
         for op, source in zip(partition.operations, aligned, strict=True):
             # Each→Each preserves the lane identity while moving it onto the output network.
             self.memo[id(op)] = RealizedValue(
@@ -604,7 +616,11 @@ class PhysicalLowerer:
         input_endpoint = WireEndpoint(entity.id, Connector.INPUT)
         for value, color in wiring:
             self._connect_dynamic(value, input_endpoint, color=color)
-        return RealizedValue(out, WireEndpoint(entity.id, Connector.OUTPUT), phase + 1)
+        return RealizedValue(
+            out,
+            WireEndpoint(entity.id, Connector.OUTPUT),
+            phase + FACTORIO_LATENCY.operation_latency("compare", comparison.op),
+        )
 
     def _realize_select(self, select: Select) -> RealizedValue:
         # Implement a scalar mux in i32 arithmetic:
@@ -652,7 +668,11 @@ class PhysicalLowerer:
         input_endpoint = WireEndpoint(entity.id, Connector.INPUT)
         for value, color in wiring:
             self._connect_dynamic(value, input_endpoint, color=color)
-        return RealizedValue(out, WireEndpoint(entity.id, Connector.OUTPUT), phase + 1)
+        return RealizedValue(
+            out,
+            WireEndpoint(entity.id, Connector.OUTPUT),
+            phase + FACTORIO_LATENCY.operation_latency("scalar_binary", operation),
+        )
 
     def _scalar_operand_layout(
         self,
@@ -713,7 +733,11 @@ class PhysicalLowerer:
             raise ValueError("cannot delay backwards in time")
         current = value
         while current.phase < target_phase:
-            key = (current.endpoint, current.signal, current.phase + 1)
+            key = (
+                current.endpoint,
+                current.signal,
+                current.phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "delay"),
+            )
             cached = self.delay_cache.get(key)
             if cached is not None:
                 current = cached
@@ -734,7 +758,7 @@ class PhysicalLowerer:
             current = RealizedValue(
                 out,
                 WireEndpoint(entity.id, Connector.OUTPUT),
-                current.phase + 1,
+                current.phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "delay"),
             )
             self.delay_cache[key] = current
         return current
@@ -757,7 +781,10 @@ class PhysicalLowerer:
             self._connect(
                 current.endpoint, WireEndpoint(entity.id, Connector.INPUT), color=WireColor.RED
             )
-            current = RealizedVector(WireEndpoint(entity.id, Connector.OUTPUT), current.phase + 1)
+            current = RealizedVector(
+                WireEndpoint(entity.id, Connector.OUTPUT),
+                current.phase + FACTORIO_LATENCY.operation_latency("vector_binary", "delay"),
+            )
         return current
 
     def _realize_as_signal(
@@ -782,7 +809,9 @@ class PhysicalLowerer:
                 "is only "
                 f"available at phase {realized.phase} and signal renaming needs one more tick"
             )
-        source = self.delay_to(realized, target_phase - 1)
+        source = self.delay_to(
+            realized, target_phase - FACTORIO_LATENCY.state_transition_latency("commit")
+        )
         entity = self._add_entity(
             ArithmeticCombinator(
                 id=self._take_id(),
@@ -857,6 +886,7 @@ def lower_naive(
 ) -> PhysicalCircuit:
     """Lower the semantic DAG without lane packing."""
 
+    reject_event_module(module)
     return PhysicalLowerer(module, enable_packing=False, state_timing=state_timing).lower()
 
 
@@ -865,6 +895,7 @@ def lower_with_alu_packing(
 ) -> PhysicalCircuit:
     """Lower with conservative compatibility-group ``Each`` packing."""
 
+    reject_event_module(module)
     return PhysicalLowerer(module, enable_packing=True, state_timing=state_timing).lower()
 
 

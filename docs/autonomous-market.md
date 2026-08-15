@@ -24,7 +24,14 @@ market scheduling/observation limitation, not a compiler bug. Future work should
 output/in-flight inventory in effective stock or introduce a more explicit completion/availability
 policy.
 
-This prototype is intentionally paused at this point.
+This Level-based prototype is intentionally paused at this point.
+
+The clocked-flow milestone has now implemented the Event substrate that was missing when this
+prototype was first documented: physical Event payload/valid handling, `SampleOn`, derived clocks,
+`EventMerge`, `SumInto`, `HoldInto`, Event-driven state, flow-local Event reindexing, and
+HOLD/ZERO/VALID output materialization all reach Abstract Physical IR and blueprint compilation.
+The existing market controller has **not** been migrated to that model yet. Such a migration is now
+an external-device protocol/application task rather than unfinished clock semantics.
 
 ## Task representation
 
@@ -138,9 +145,14 @@ that external device latency is not represented by the compiler's internal combi
 The reader's Set-recipe input and Read-ingredients output should remain on separated circuit networks
 so its output is not fed back into recipe selection.
 
+The new clocked-flow semantics does not remove this device latency. A future assembler driver should
+instead describe the request/response timing contract explicitly, potentially producing a response
+Event when the ingredient vector is known to correspond to the requested recipe.
+
 ## Worker interface via Read working
 
-There is no synthetic `worker_done` signal. `worker_item` itself is the recipe request.
+There is no synthetic `worker_done` signal in the current prototype. `worker_item` itself is the
+recipe request.
 
 The controller uses the worker assembler's `Read working` level in two phases:
 
@@ -153,13 +165,42 @@ the controller back to CHECK.
 
 Two scheduling caveats remain:
 
-- `Read working` is a level. If an entire craft starts and finishes between logical controller
-  observations, a slow domain could miss the working interval. This is related to the triggered
-  domain/input-capture problem in `docs/timing-open-problems.md`.
+- `Read working` is genuinely a Level. If an entire craft starts and finishes between controller
+  observations, the Level semantics correctly says the interval was not observed. If completion must
+  be preserved, a future device driver should expose or synthesize a completion Event/latch rather
+  than asking ordinary Level sampling to remember a transient.
 - A completed product may not yet be visible in external `stock` when working falls to zero. If the
   product is still in the assembler output slot or in logistics transit, CHECK may see a stale
   deficit and start an unnecessary extra craft. A stronger scheduler should define effective stock
   to include locally owned/in-flight material or otherwise wait for availability feedback.
+
+## How an Event-oriented migration could look
+
+The compiler can now express a cleaner future worker protocol without changing the existing prototype
+first:
+
+```text
+worker request Level / command
+        ↓
+external assembler driver
+        ↓
+craft_started / craft_finished Event
+        ↓
+SampleOn(Level state, completion clock)
+EventMerge / GateClock as needed
+SumInto when several completions must feed a slower controller
+        ↓
+Event-driven state or periodic controller
+```
+
+If the environment can guarantee a minimum separation between completion events, that guarantee can
+be attached to the Event clock and checked against the controller recurrence. If the worker can
+complete faster than the controller can consume, an explicit `SumInto`, queue, or ready/valid
+protocol is required; the compiler will not silently drop completions.
+
+This gives us a migration path but does not yet choose the concrete Factorio assembler I/O protocol.
+That choice belongs to the external-device protocol milestone, especially because stable and
+experimental Factorio versions expose different assembler/circuit features.
 
 ## Current physical I/O
 
@@ -175,12 +216,14 @@ Outputs:
 - `mode`, `top_target`, `blocked_on_full_stack`: prototype probes.
 
 The recipe vectors themselves are the requests; separate `reader_request`/`worker_request` booleans
-are unnecessary.
+are unnecessary for the current Level protocol.
 
 ## Deferred market-level work
 
 The working prototype intentionally leaves several problems for later:
 
+- migrate reader/worker interaction to explicit external-device protocols now that Event semantics
+  can represent completion/response occurrences;
 - count assembler output and material in logistics transit as effective stock to avoid feedback
   overproduction;
 - handle uncraftable/raw missing items instead of assuming sufficient base stock;

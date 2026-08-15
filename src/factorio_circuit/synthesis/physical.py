@@ -241,6 +241,14 @@ class PhysicalSynthesizer:
                         for condition in entity.additional_conditions
                         for operand in (condition.left, condition.right)
                     )
+                    output_signals = [
+                        entity.output_signal,
+                        *(output.signal for output in entity.additional_outputs),
+                        entity.else_output_signal,
+                    ]
+                    result.update(
+                        signal for signal in output_signals if isinstance(signal, SignalId)
+                    )
                 for operand in operands:
                     if isinstance(operand.signal, SignalId):
                         result.add(operand.signal)
@@ -600,7 +608,7 @@ class PhysicalSynthesizer:
                 comparator=entity.comparator,
                 left=self._operand(entity.left, signals, net_colors),
                 right=self._operand(entity.right, signals, net_colors),
-                output_signal=signals[entity.output_signal],
+                output_signal=self._signal_ref(entity.output_signal, signals),
                 output_constant=entity.output_constant,
                 output_copy_count_from_input=entity.output_copy_count_from_input,
                 output_networks=self._network_selection(entity.copy_count_nets, net_colors),
@@ -615,7 +623,7 @@ class PhysicalSynthesizer:
                 ),
                 additional_outputs=tuple(
                     DeciderOutput(
-                        signal=signals[output.signal],
+                        signal=self._signal_ref(output.signal, signals),
                         constant=output.constant,
                         copy_count_from_input=output.copy_count_from_input,
                         output_networks=self._network_selection(output.copy_count_nets, net_colors),
@@ -625,7 +633,7 @@ class PhysicalSynthesizer:
                 else_output_signal=(
                     None
                     if entity.else_output_signal is None
-                    else signals[entity.else_output_signal]
+                    else self._signal_ref(entity.else_output_signal, signals)
                 ),
                 else_output_constant=entity.else_output_constant,
                 else_copy_count_from_input=entity.else_copy_count_from_input,
