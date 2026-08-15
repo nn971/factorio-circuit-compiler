@@ -154,12 +154,16 @@ def test_event_source_and_derived_step_carry_occurrence_offsets_locally() -> Non
     event = circuit.event("event", guaranteed_min_separation=1)
 
     source_later = event.step(2)
+    continued = source_later + 1
     derived_later = (event + 1).step(3)
 
     assert circuit.now.offset == 0
     assert source_later.flow is not None
     assert source_later.flow.logical_offset == 2
     assert source_later.flow.clock == event.clock
+    assert continued.flow is not None
+    assert continued.flow.logical_offset == 2
+    assert continued.flow.clock == event.clock
     assert derived_later.flow is not None
     assert derived_later.flow.logical_offset == 3
     assert derived_later.flow.clock == event.clock
@@ -237,11 +241,9 @@ def test_sample_on_step_uses_the_reindexed_target_occurrence() -> None:
     ]
 
 
-def test_event_transition_requires_one_aligned_occurrence_offset() -> None:
+def test_event_expression_requires_one_aligned_occurrence_offset() -> None:
     circuit = Circuit("event_offset_mismatch")
     event = circuit.signal_event("event", guaranteed_min_separation=1)
-    accumulator = circuit.accumulator("accumulator")
-    mixed = event.step(1) + event.step(2)
 
     with pytest.raises(EventCausalityError, match="one logical occurrence offset"):
-        accumulator.add(mixed)
+        _ = event.step(1) + event.step(2)
