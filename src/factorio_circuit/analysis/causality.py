@@ -1,19 +1,21 @@
 """Target-independent logical causality analysis for state dependencies.
 
-Causality is expressed only in logical occurrence coordinates. Physical target latency belongs to
-later timing/scheduling analysis and is deliberately absent from the semantic dependency builders.
-The transitional ``CausalityEdge`` subtype retains the old latency annotation for compatibility
-while ``state_timing`` migrates away from constructing logical graphs itself.
+Causality is expressed only in logical occurrence coordinates and structural clock identities.
+Physical target latency belongs to later timing/scheduling analysis and is deliberately absent from
+the semantic dependency builders. The transitional ``CausalityEdge`` subtype retains the old
+latency annotation for compatibility while ``state_timing`` migrates away from constructing logical
+graphs itself.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from factorio_circuit.ir.semantic import (
     BinaryOp,
     CircuitModule,
+    ClockId,
     Compare,
     Constant,
     EventScalarFlow,
@@ -50,18 +52,41 @@ class CausalityEdgeKind(StrEnum):
     EVENT_STATE_DEPENDENCY = "event_state_dependency"
 
 
+class ClockRelation(StrEnum):
+    """Structural relation currently known between dependency endpoint clocks."""
+
+    SAME = "same"
+    CROSS = "cross"
+    UNKNOWN = "unknown"
+
+
 class StateOrderError(ValueError):
     """Raised when elaboration order cannot define one logical state-update boundary."""
 
 
 @dataclass(frozen=True, slots=True)
 class LogicalDependency:
-    """One ordered state-recurrence dependency in logical occurrence coordinates."""
+    """One ordered state-recurrence dependency in logical occurrence coordinates.
+
+    Clock identities are structural and contract-free. They are keyword-only compatibility fields
+    so the original four-position constructor remains valid while Stage 3 gains explicit clock
+    relation information.
+    """
 
     source: StateRegister
     target: StateRegister
     kind: CausalityEdgeKind
     logical_displacement: int
+    source_clock: ClockId | None = field(default=None, kw_only=True)
+    target_clock: ClockId | None = field(default=None, kw_only=True)
+
+    @property
+    def clock_relation(self) -> ClockRelation:
+        if self.source_clock is None or self.target_clock is None:
+            return ClockRelation.UNKNOWN
+        if self.source_clock == self.target_clock:
+            return ClockRelation.SAME
+        return ClockRelation.CROSS
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +108,8 @@ class CausalityEdge(LogicalDependency):
             target=self.target,
             kind=self.kind,
             logical_displacement=self.logical_displacement,
+            source_clock=self.source_clock,
+            target_clock=self.target_clock,
         )
 
 
@@ -124,6 +151,20 @@ def _operation_value(operation: StateOperation | StateTransition) -> object | No
 
 def _operation_when(operation: StateOperation | StateTransition) -> object | None:
     return operation.when
+
+
+def _register_clock_id(module: CircuitModule, register: StateRegister) -> ClockId | None:
+    declared = dict(module.register_clocks).get(register)
+    if declared is not None:
+        return declared.clock_id
+    clocks = {
+        transition.clock.clock_id
+        for transition in state_transitions(module)
+        if transition.register == register
+    }
+    if len(clocks) == 1:
+        return next(iter(clocks))
+    return None
 
 
 def state_read_occurrences(value: object) -> tuple[VectorRegisterRead, ...]:
@@ -252,7 +293,8 @@ def periodic_causality_graph(
     """Build ordinary state recurrence dependencies directly from semantic IR.
 
     The displacement of a read ``S[k+r]`` feeding a transition committed between ``k+c`` and
-    ``k+c+1`` is ``c + 1 - r``. The graph contains no target latency information.
+    ``k+c+1`` is ``c + 1 - r``. The graph contains structural clock identities but no target latency
+    information.
     """
 
     selected = (
@@ -282,6 +324,7 @@ def periodic_causality_graph(
         )
         target_reads = tuple(read for read in reads if read.register == target)
         commit_offset = infer_commit_offset(target, target_operations, target_reads)
+        target_clock = _register_clock_id(module, target)
         for operation in target_operations:
             kind = _operation_kind(operation)
             expressions: list[object] = []
@@ -299,6 +342,8 @@ def periodic_causality_graph(
                             target=target,
                             kind=CausalityEdgeKind.ORDINARY_STATE_DEPENDENCY,
                             logical_displacement=commit_offset + 1 - read.offset,
+                            source_clock=_register_clock_id(module, read.register),
+                            target_clock=target_clock,
                         )
                     )
 
@@ -334,6 +379,8 @@ def event_causality_graph(
                         logical_displacement=(
                             transition.logical_offset + 1 - read.offset
                         ),
+                        source_clock=_register_clock_id(module, read.register),
+                        target_clock=transition.clock.clock_id,
                     )
                 )
     return CausalityGraph(module.state_registers, tuple(dependencies))
