@@ -26,6 +26,7 @@ from .symbolic import CircuitBuildError
 from .symbolic import Expr as _BaseExpr
 from .symbolic import FreezeReg as _BaseFreezeReg
 from .symbolic import Input as _BaseInput
+from .symbolic import SignalsInput as _BaseSignalsInput
 from .vector_expr import SignalsExpr
 
 
@@ -144,11 +145,11 @@ class Circuit(_Circuit):
         self._inputs.append(value)
         return Input(self, value)
 
-    def signals(self, name: str) -> SignalsInput:
+    def signals(self, name: str) -> _BaseSignalsInput:
         self._claim_name(name, "input")
         value = VectorInput(name)
         self._vector_inputs.append(value)
-        return SignalsInput(self, value)
+        return cast(_BaseSignalsInput, SignalsInput(self, value))
 
     def constant_signals(self, signals: dict[SignalId, int]) -> SignalsExpr:
         normalized: list[tuple[SignalId, int]] = []
