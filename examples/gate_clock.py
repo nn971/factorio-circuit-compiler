@@ -2,7 +2,6 @@
 
 from factorio_circuit import Circuit
 
-
 circuit = Circuit("gate_clock")
 tick = circuit.event("tick", guaranteed_min_separation=2)
 enabled = circuit.input("enabled")
