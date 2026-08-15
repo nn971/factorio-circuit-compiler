@@ -181,7 +181,7 @@ class Circuit(_Circuit):
     ) -> SampleOnReference:
         """Hold the latest vector Event payload and expose it on ``target`` occurrences.
 
-        This is an explicitly stateful clock bridge. It elaborates immediately into one hidden
+        This is an explicitly stateful cross-clock bridge. It elaborates immediately into one hidden
         ``FreezeRegister`` updated on the source clock plus one ``SampleOn`` crossing to the target
         clock. Equivalent bridges are interned, so the hidden state is paid for once.
 
@@ -211,6 +211,11 @@ class Circuit(_Circuit):
         flow = value.flow
         if not isinstance(flow, Flow) or flow.modality is not TemporalModality.EVENT:
             raise EventCrossingError("hold_into source must be an Event expression")
+        if flow.clock == target.clock:
+            raise EventCrossingError(
+                "hold_into requires distinct source and target clocks; use the Event value directly "
+                "when no clock crossing is needed"
+            )
         self._event_source(value.ir)  # Require one recoverable trigger before allocating state.
 
         key = (value.ir, target.ir)
