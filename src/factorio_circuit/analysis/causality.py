@@ -1,8 +1,9 @@
-"""Internal weighted causality records for state dependencies.
+"""Target-independent logical causality records for state dependencies.
 
-The same graph is used for periodic Level state and direct external-Event transitions.  External
-payload leaves are not vertices; their timing enters only through the edge latency supplied by the
-target model.
+Causality is expressed only in logical occurrence coordinates.  Physical target latency belongs to
+later timing/scheduling analysis and is deliberately optional at this boundary.  The transitional
+``CausalityEdge`` subtype retains the old latency annotation for callers in ``state_timing`` while
+the graph itself consumes the pure ``LogicalDependency`` base record.
 """
 
 from __future__ import annotations
@@ -14,33 +15,51 @@ from factorio_circuit.ir.state import StateRegister
 
 
 class CausalityEdgeKind(StrEnum):
-    """The source of a state-dependency edge."""
+    """The semantic origin of a state-dependency edge."""
 
     ORDINARY_STATE_DEPENDENCY = "ordinary_state_dependency"
     EVENT_STATE_DEPENDENCY = "event_state_dependency"
 
 
 @dataclass(frozen=True, slots=True)
-class CausalityEdge:
-    """One ordered state-recurrence dependency.
-
-    Graph edge tuples preserve requirement order and duplicate edges.  ``physical_latency`` is
-    carried for later timing extraction, but is deliberately ignored by the causality predicate.
-    """
+class LogicalDependency:
+    """One ordered state-recurrence dependency in logical occurrence coordinates."""
 
     source: StateRegister
     target: StateRegister
     kind: CausalityEdgeKind
     logical_displacement: int
+
+
+@dataclass(frozen=True, slots=True)
+class CausalityEdge(LogicalDependency):
+    """Compatibility timing annotation for one logical dependency.
+
+    New causality code should construct :class:`LogicalDependency` directly.  ``physical_latency``
+    remains here while the physical timing solver is migrated to consume the logical graph plus its
+    separate target-latency requirements.
+    """
+
     physical_latency: int
+
+    @property
+    def logical(self) -> LogicalDependency:
+        """Return the target-independent dependency represented by this timing edge."""
+
+        return LogicalDependency(
+            source=self.source,
+            target=self.target,
+            kind=self.kind,
+            logical_displacement=self.logical_displacement,
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class CausalityGraph:
-    """An immutable ordered multigraph of state recurrence dependencies."""
+    """An immutable ordered multigraph of target-independent recurrence dependencies."""
 
     registers: tuple[StateRegister, ...]
-    edges: tuple[CausalityEdge, ...]
+    edges: tuple[LogicalDependency, ...]
 
     def __post_init__(self) -> None:
         register_set = set(self.registers)
@@ -57,7 +76,7 @@ def has_nonpositive_cycle(graph: CausalityGraph) -> bool:
     A simple cycle has at most ``N`` edges for ``N`` graph registers.  Transforming an edge weight
     ``d`` to ``(N + 1) * d - 1`` makes every non-positive-displacement simple cycle negative while
     every positive-displacement simple cycle remains positive.  Bellman-Ford then detects such a
-    cycle without considering physical latency.
+    cycle using logical displacement alone.
     """
 
     if not graph.registers or not graph.edges:
