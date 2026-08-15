@@ -195,7 +195,7 @@ def apply_state_transitions(
     transitions: Sequence[StateTransition],
     context: EvaluationContext,
 ) -> SignalMap:
-    """Apply one register's transitions while preserving legacy clear-before-add behavior."""
+    """Apply one source reaction's register transitions with legacy clear dominance."""
 
     ordered = sorted(transitions, key=lambda transition: transition.order)
     for transition in ordered:
@@ -223,7 +223,54 @@ class TimestampReaction:
     applied: Mapping[object, tuple[StateTransition, ...]]
 
 
+@dataclass(frozen=True, slots=True)
+class _TransitionGroup:
+    """One active source's compound reaction on one register at a shared timestamp."""
+
+    source_order: int
+    transitions: tuple[StateTransition, ...]
+    context: EvaluationContext
+
+    @property
+    def first_order(self) -> int:
+        return min(transition.order for transition in self.transitions)
+
+    @property
+    def last_order(self) -> int:
+        return max(transition.order for transition in self.transitions)
+
+
 type ReactionBatch = tuple[int, Sequence[tuple[int, object, object]]]
+
+
+def _apply_timestamp_transition_groups(
+    staged: StateSnapshot,
+    groups_by_register: Mapping[str, Sequence[_TransitionGroup]],
+) -> None:
+    """Commit same-timestamp source reactions in canonical register-transition order.
+
+    Every group's expressions observe the shared pre-timestamp snapshot through its context. Groups
+    on the same register are ordered by their canonical transition range, not Event declaration
+    order. Overlapping ranges would require interleaving two compound source reactions, which has no
+    defined meaning under the existing clear-dominance rule, so reject that malformed canonical IR
+    instead of falling back to source order.
+    """
+
+    for register_name, raw_groups in groups_by_register.items():
+        groups = sorted(raw_groups, key=lambda group: (group.first_order, group.source_order))
+        previous: _TransitionGroup | None = None
+        for group in groups:
+            if previous is not None and group.first_order <= previous.last_order:
+                raise ValueError(
+                    f"state {register_name!r} has overlapping same-timestamp transition-order "
+                    "ranges across Event sources"
+                )
+            previous = group
+
+        current = staged.get(register_name, {})
+        for group in groups:
+            current = apply_state_transitions(current, group.transitions, group.context)
+        staged[register_name] = current
 
 
 def run_reaction_kernel(
@@ -245,17 +292,23 @@ def run_reaction_kernel(
         staged = {name: dict(value) for name, value in state.items()}
         entries = tuple(sorted(raw_entries, key=lambda item: item[0]))
         applied: dict[object, tuple[StateTransition, ...]] = {}
-        for _, source, payload in entries:
+        groups_by_register: dict[str, list[_TransitionGroup]] = {}
+        for source_order, source, payload in entries:
             source_transitions = tuple(transition_resolver(source, payload))
             applied[source] = source_transitions
+            context = context_factory(level_row, before, source, payload)
             by_register: dict[str, list[StateTransition]] = {}
             for transition in source_transitions:
                 by_register.setdefault(transition.register.name, []).append(transition)
-            context = context_factory(level_row, before, source, payload)
             for register_name, register_transitions in by_register.items():
-                staged[register_name] = apply_state_transitions(
-                    staged.get(register_name, {}), register_transitions, context
+                groups_by_register.setdefault(register_name, []).append(
+                    _TransitionGroup(
+                        source_order=source_order,
+                        transitions=tuple(register_transitions),
+                        context=context,
+                    )
                 )
+        _apply_timestamp_transition_groups(staged, groups_by_register)
         state = staged
         reactions.append(
             TimestampReaction(
