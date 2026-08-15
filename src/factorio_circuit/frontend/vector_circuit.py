@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+from typing import cast
+
+from factorio_circuit.events import EventCausalityError
 from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.ir.semantic import (
     BinaryOp,
     Compare,
     DerivedValue,
+    EventInput,
+    Flow,
+    PayloadShape,
+    ScalarValue,
     Select,
+    TemporalModality,
     VectorConstant,
     VectorInput,
+    VectorValue,
 )
 from factorio_circuit.ir.semantic import Input as IRInput
-from factorio_circuit.ir.state import VectorRegisterRead
+from factorio_circuit.ir.state import StateRegister, StateTransition, VectorRegisterRead
 
 from .reindex import FlowStepError, reindex_scalar
 from .symbolic import AccumulatorReg as _BaseAccumulatorReg
@@ -21,7 +30,9 @@ from .symbolic import CircuitBuildError
 from .symbolic import Expr as _BaseExpr
 from .symbolic import FreezeReg as _BaseFreezeReg
 from .symbolic import Input as _BaseInput
+from .symbolic import ScalarEvent as _BaseScalarEvent
 from .symbolic import SignalsInput as _BaseSignalsInput
+from .symbolic import VectorEvent as _BaseVectorEvent
 from .vector_expr import SignalsExpr
 
 
@@ -31,11 +42,11 @@ class Expr(_BaseExpr):
     __slots__ = ()
 
     def step(self, n: int = 1) -> Expr:
-        """Refer to this Level flow ``n`` logical clock occurrences later.
+        """Refer to this flow ``n`` logical clock occurrences later.
 
         ``step`` is pure logical reindexing: it leaves ``Circuit.now`` unchanged and never inserts a
-        register or physical delay.  The legacy circuit-wide cursor remains available temporarily
-        for compatibility with existing circuits.
+        register or physical delay.  For Event values the later occurrence is consumed by Event
+        reaction scheduling; Level values move their explicit sample leaves.
         """
 
         try:
@@ -76,6 +87,31 @@ class SignalsInput(_BaseSignalsInput, SignalsExpr):
         if offset == 0:
             return self
         return SignalsExpr(self._circuit, self._circuit._sample_vector_input(self._source, offset))
+
+
+class ScalarEvent(_BaseScalarEvent):
+    """Scalar Event source whose occurrence clock can be reindexed locally."""
+
+    __slots__ = ()
+
+    def _as_expr(self) -> Expr:
+        return Expr(self._circuit, self._circuit._event_scalar_value(self._source))
+
+    def step(self, n: int = 1) -> Expr:
+        """Refer to this Event starting at its ``n``-th later occurrence."""
+
+        return self._as_expr().step(n)
+
+
+class VectorEvent(_BaseVectorEvent):
+    """Vector Event source whose occurrence clock can be reindexed locally."""
+
+    __slots__ = ()
+
+    def step(self, n: int = 1) -> SignalsExpr:
+        """Refer to this Event starting at its ``n``-th later occurrence."""
+
+        return self._as_signals().step(n)
 
 
 class AccumulatorReg(_BaseAccumulatorReg):
@@ -120,6 +156,50 @@ class FreezeReg(_BaseFreezeReg):
         return self.sample()
 
 
+def _event_occurrence_offsets(value: object, seen: set[int] | None = None) -> set[int]:
+    """Collect effective Event occurrence offsets, respecting explicit reindex boundaries."""
+
+    if value is None:
+        return set()
+    if seen is None:
+        seen = set()
+    if id(value) in seen:
+        return set()
+    seen.add(id(value))
+
+    flow = getattr(value, "flow", None)
+    if isinstance(flow, Flow) and flow.modality is TemporalModality.EVENT:
+        if flow.logical_offset < 0:
+            raise EventCausalityError("Event logical occurrence offsets must be non-negative")
+        if flow.logical_offset > 0:
+            # A positive root offset is an explicit ``step`` boundary.  Its children are evaluated
+            # at the reaction selected by this boundary, so their source-local zero offsets do not
+            # represent an additional clock crossing.
+            return {flow.logical_offset}
+
+    offsets: set[int] = set()
+    children = (
+        "left",
+        "right",
+        "condition",
+        "when_true",
+        "when_false",
+        "vector",
+        "scalar",
+    )
+    found_child = False
+    for field_name in children:
+        child = getattr(value, field_name, None)
+        if child is not None:
+            found_child = True
+            offsets.update(_event_occurrence_offsets(child, seen))
+    if offsets:
+        return offsets
+    if isinstance(flow, Flow) and flow.modality is TemporalModality.EVENT:
+        return {flow.logical_offset}
+    return set() if found_child else offsets
+
+
 class Circuit(_Circuit):
     """Symbolic circuit whose compatibility cursor is measured in logical steps."""
 
@@ -134,6 +214,28 @@ class Circuit(_Circuit):
         value = VectorInput(name)
         self._vector_inputs.append(value)
         return SignalsInput(self, value)
+
+    def event(self, name: str, *, guaranteed_min_separation: int) -> ScalarEvent:
+        return cast(
+            ScalarEvent,
+            self._declare_event(
+                name,
+                PayloadShape.SCALAR,
+                guaranteed_min_separation,
+                ScalarEvent,
+            ),
+        )
+
+    def signal_event(self, name: str, *, guaranteed_min_separation: int) -> VectorEvent:
+        return cast(
+            VectorEvent,
+            self._declare_event(
+                name,
+                PayloadShape.VECTOR,
+                guaranteed_min_separation,
+                VectorEvent,
+            ),
+        )
 
     def constant_signals(self, signals: dict[SignalId, int]) -> SignalsExpr:
         normalized: list[tuple[SignalId, int]] = []
@@ -158,6 +260,47 @@ class Circuit(_Circuit):
 
         result = super()._derived(value)
         return Expr(self, result.ir)
+
+    def _append_event_transition(
+        self,
+        kind: str,
+        register: StateRegister,
+        trigger: EventInput,
+        value: VectorValue | None,
+        when: ScalarValue | None,
+        required_min_separation: int | None,
+    ) -> None:
+        """Create one Event transition at the operands' common occurrence offset."""
+
+        for candidate, label in ((value, "value"), (when, "condition")):
+            flow = getattr(candidate, "flow", None)
+            if (
+                isinstance(flow, Flow)
+                and flow.modality is TemporalModality.EVENT
+                and flow.clock != trigger.clock
+            ):
+                raise EventCausalityError(f"Event transition {label} must use the trigger clock")
+
+        offsets = _event_occurrence_offsets(value) | _event_occurrence_offsets(when)
+        if len(offsets) > 1:
+            raise EventCausalityError(
+                "Event transition operands must use one logical occurrence offset"
+            )
+        logical_offset = next(iter(offsets), 0)
+        self._transitions.append(
+            StateTransition(
+                register=register,
+                kind=kind,
+                clock=trigger.clock,
+                order=self._next_state_order(register),
+                value=value,
+                when=when,
+                trigger=trigger,
+                required_min_separation=required_min_separation,
+                logical_offset=logical_offset,
+            )
+        )
+        self._event_capture_registers.add(register)
 
     def step(self, n: int = 1) -> None:
         """Advance the legacy circuit-wide logical observation cursor by ``n`` steps.
