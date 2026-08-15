@@ -62,5 +62,8 @@ def test_fixed_periodic_clock_keeps_its_declared_period(period: int) -> None:
 def test_fixed_periodic_clock_rejects_an_infeasible_declared_period() -> None:
     clock = Clock("fixed-too-fast", ClockProvenance.FIXED_PERIODIC, guaranteed_min_separation=1)
 
-    with pytest.raises(StateTimingError, match="fixed periodic clock.*period 1.*requires at least 2"):
+    with pytest.raises(
+        StateTimingError,
+        match="fixed periodic clock.*period 1.*requires at least 2",
+    ):
         analyze_clocked_timing(_one_register_recurrence(clock))
