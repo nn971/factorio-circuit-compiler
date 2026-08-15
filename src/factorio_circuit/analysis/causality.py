@@ -129,6 +129,20 @@ class CausalityGraph:
                 raise ValueError("causality edge endpoints must be listed graph registers")
 
 
+@dataclass(frozen=True, slots=True)
+class CausalityAnalysis:
+    """Target-independent causality result split by periodic and Event transition families."""
+
+    periodic: CausalityGraph
+    event: CausalityGraph
+
+    @property
+    def causal(self) -> bool:
+        """Whether every comparable-clock feedback cycle contains strict logical advance."""
+
+        return not has_nonpositive_cycle(self.periodic) and not has_nonpositive_cycle(self.event)
+
+
 def _operation_kind(operation: StateOperation | StateTransition) -> str:
     if isinstance(operation, StateTransition):
         return operation.kind
@@ -386,8 +400,28 @@ def event_causality_graph(
     return CausalityGraph(module.state_registers, tuple(dependencies))
 
 
+def analyze_causality(module: CircuitModule) -> CausalityAnalysis:
+    """Run the target-independent causality phase on a public or canonical module."""
+
+    from factorio_circuit.lowering.frontend_to_ir import normalize_module
+
+    normalized = normalize_module(module)
+    transitions = state_transitions(normalized)
+    periodic = tuple(transition for transition in transitions if transition.trigger is None)
+    event = tuple(transition for transition in transitions if transition.trigger is not None)
+    return CausalityAnalysis(
+        periodic_causality_graph(normalized, periodic),
+        event_causality_graph(normalized, event),
+    )
+
+
 def has_nonpositive_cycle(graph: CausalityGraph) -> bool:
-    """Return whether the graph contains a directed cycle of total displacement ``<= 0``.
+    """Return whether a comparable-clock cycle has total displacement ``<= 0``.
+
+    A displacement is measured in one clock's occurrence coordinate. Known cross-clock edges cannot
+    be summed until an explicit clock bridge supplies a relation, so they are excluded from this
+    predicate. ``UNKNOWN`` remains comparable for legacy/manual graphs whose clocks have not yet
+    been annotated.
 
     A simple cycle has at most ``N`` edges for ``N`` graph registers. Transforming an edge weight
     ``d`` to ``(N + 1) * d - 1`` makes every non-positive-displacement simple cycle negative while
@@ -395,7 +429,8 @@ def has_nonpositive_cycle(graph: CausalityGraph) -> bool:
     cycle using logical displacement alone.
     """
 
-    if not graph.registers or not graph.edges:
+    edges = tuple(edge for edge in graph.edges if edge.clock_relation is not ClockRelation.CROSS)
+    if not graph.registers or not edges:
         return False
 
     index = {register: position for position, register in enumerate(graph.registers)}
@@ -406,7 +441,7 @@ def has_nonpositive_cycle(graph: CausalityGraph) -> bool:
             index[edge.target],
             (count + 1) * edge.logical_displacement - 1,
         )
-        for edge in graph.edges
+        for edge in edges
     )
 
     distances = [0] * count
