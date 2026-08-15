@@ -1,19 +1,68 @@
-"""Circuit builder hooks for runtime-open whole vectors and logical-step timing."""
+"""Circuit builder hooks for runtime-open vectors and flow-local logical-step timing."""
 
 from __future__ import annotations
 
 from typing import cast
 
 from factorio_circuit.ir.physical import SignalId
-from factorio_circuit.ir.semantic import Flow, PayloadShape, VectorConstant, VectorInput
+from factorio_circuit.ir.semantic import (
+    DerivedValue,
+    Flow,
+    Input as IRInput,
+    InputSample,
+    PayloadShape,
+    ScalarValue,
+    VectorConstant,
+    VectorInput,
+)
 from factorio_circuit.ir.state import VectorRegisterRead
 
+from .reindex import FlowStepError, reindex_scalar
 from .symbolic import AccumulatorReg as _BaseAccumulatorReg
 from .symbolic import Circuit as _Circuit
 from .symbolic import CircuitBuildError
+from .symbolic import Expr as _BaseExpr
 from .symbolic import FreezeReg as _BaseFreezeReg
-from .symbolic import SignalsInput as _BaseSignalsInput
+from .symbolic import Input as _BaseInput
 from .vector_expr import SignalsExpr
+
+
+class Expr(_BaseExpr):
+    """Public scalar expression with flow-local logical reindexing."""
+
+    __slots__ = ()
+
+    def step(self, n: int = 1) -> Expr:
+        """Refer to this Level flow ``n`` logical clock occurrences later.
+
+        ``step`` is pure logical reindexing: it leaves ``Circuit.now`` unchanged and never inserts a
+        register or physical delay.  The legacy circuit-wide cursor remains available temporarily
+        for compatibility with existing circuits.
+        """
+
+        try:
+            value = reindex_scalar(self._value, n)
+        except FlowStepError as exc:
+            raise CircuitBuildError(str(exc)) from exc
+        if value is self._value:
+            return self
+        if isinstance(value, (DerivedValue.__args__)):  # type: ignore[attr-defined]
+            return self._circuit._derived(cast(DerivedValue, value))
+        return Expr(self._circuit, value)
+
+
+class Input(_BaseInput, Expr):
+    """Scalar Level source with both compatibility sampling and flow-local ``step``."""
+
+    __slots__ = ()
+
+    def sample(self) -> Expr:
+        """Observe this external source at the circuit compatibility cursor."""
+
+        offset = self._circuit.now.offset
+        if offset == 0:
+            return self
+        return Expr(self._circuit, self._circuit._sample_scalar_input(self._source, offset))
 
 
 class SignalsInput(SignalsExpr):
@@ -34,7 +83,7 @@ class SignalsInput(SignalsExpr):
         return self._circuit._input_flow(self._source, PayloadShape.VECTOR)
 
     def sample(self) -> SignalsExpr:
-        """Observe this external vector at the current logical step."""
+        """Observe this external vector at the current compatibility cursor."""
 
         offset = self._circuit.now.offset
         if offset == 0:
@@ -85,13 +134,19 @@ class FreezeReg(_BaseFreezeReg):
 
 
 class Circuit(_Circuit):
-    """Symbolic circuit whose source cursor is measured in logical steps."""
+    """Symbolic circuit whose compatibility cursor is measured in logical steps."""
 
-    def signals(self, name: str) -> _BaseSignalsInput:
+    def input(self, name: str) -> Input:
+        self._claim_name(name, "input")
+        value = IRInput(name)
+        self._inputs.append(value)
+        return Input(self, value)
+
+    def signals(self, name: str) -> SignalsInput:
         self._claim_name(name, "input")
         value = VectorInput(name)
         self._vector_inputs.append(value)
-        return cast(_BaseSignalsInput, SignalsInput(self, value))
+        return SignalsInput(self, value)
 
     def constant_signals(self, signals: dict[SignalId, int]) -> SignalsExpr:
         normalized: list[tuple[SignalId, int]] = []
@@ -111,15 +166,25 @@ class Circuit(_Circuit):
     def freeze(self, name: str | None = None) -> FreezeReg:
         return FreezeReg(self, name=name)
 
+    def _derived(self, value: DerivedValue) -> Expr:
+        """Keep scalar derived results on the public flow-local Expr surface."""
+
+        result = super()._derived(value)
+        return Expr(self, cast(ScalarValue, result.ir))
+
     def step(self, n: int = 1) -> None:
-        """Advance the logical observation cursor by ``n`` steps."""
+        """Advance the legacy circuit-wide logical observation cursor by ``n`` steps.
+
+        New code should prefer ``value.step(n)`` so logical indexing is local to the value being
+        reindexed.  This method remains during migration to preserve existing circuit programs.
+        """
 
         if isinstance(n, bool) or not isinstance(n, int) or n < 0:
             raise CircuitBuildError("step(n) requires a non-negative integer")
         self._freshness += n
 
     def step_until(self, n: int) -> None:
-        """Advance the logical observation cursor to absolute step ``n``."""
+        """Advance the compatibility cursor to absolute logical step ``n``."""
 
         if isinstance(n, bool) or not isinstance(n, int) or n < self._freshness:
             raise CircuitBuildError(
