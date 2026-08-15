@@ -9,12 +9,12 @@ from factorio_circuit.ir.semantic import (
     BinaryOp,
     Compare,
     DerivedValue,
-    Input as IRInput,
     ScalarValue,
     Select,
     VectorConstant,
     VectorInput,
 )
+from factorio_circuit.ir.semantic import Input as IRInput
 from factorio_circuit.ir.state import VectorRegisterRead
 
 from .reindex import FlowStepError, reindex_scalar
