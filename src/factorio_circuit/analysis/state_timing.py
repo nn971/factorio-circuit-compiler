@@ -52,7 +52,17 @@ from factorio_circuit.ir.state import (
     state_transitions,
 )
 
-from .causality import CausalityEdge, CausalityEdgeKind, CausalityGraph, has_nonpositive_cycle
+from .causality import (
+    CausalityEdge,
+    CausalityEdgeKind,
+    CausalityGraph,
+    StateOrderError,
+    collect_state_reads,
+    event_causality_graph,
+    has_nonpositive_cycle,
+    infer_commit_offset,
+    periodic_causality_graph,
+)
 from .latency import FACTORIO_LATENCY
 
 
@@ -229,7 +239,6 @@ def _analyze_event_timing(
         if transition.trigger is not None and transition.trigger not in declared_events:
             raise EventCausalityError("Event transition trigger is not declared by the module")
 
-    edges: list[CausalityEdge] = []
     requirements_by_clock: dict[ClockId, int] = {}
     legacy_requirements_by_clock: dict[ClockId, int] = {}
     crossings: list[UnsupportedClockCrossing] = []
@@ -268,23 +277,13 @@ def _analyze_event_timing(
                     )
                 )
             displacement = transition.logical_offset + 1 - requirement.logical_offset
-            edge = CausalityEdge(
-                source=requirement.source,
-                target=transition.register,
-                kind=CausalityEdgeKind.EVENT_STATE_DEPENDENCY,
-                logical_displacement=displacement,
-                physical_latency=FACTORIO_LATENCY.state_edge_latency(requirement.latency),
-            )
-            edges.append(edge)
+            physical_latency = FACTORIO_LATENCY.state_edge_latency(requirement.latency)
             if clock_id in source_clock_set and displacement > 0:
-                required = max(required, ceil(edge.physical_latency / displacement))
+                required = max(required, ceil(physical_latency / displacement))
         requirements_by_clock[clock_id] = max(requirements_by_clock.get(clock_id, 1), required)
 
     # Causality is a logical property and is intentionally checked before throughput.
-    graph = CausalityGraph(
-        registers=module.state_registers,
-        edges=tuple(edges),
-    )
+    graph = event_causality_graph(module, event_transitions)
     if has_nonpositive_cycle(graph):
         names = ", ".join(register.name for register in module.state_registers)
         raise EventCausalityError(
@@ -346,7 +345,7 @@ def analyze_normalized_state_timing(
     )
     if not active_registers:
         return StateTimingPlan((), ())
-    reads = _collect_state_reads(module, periodic_operations)
+    reads = collect_state_reads(module, periodic_operations)
     specs: list[_RegisterSpec] = []
     for register in active_registers:
         operations = tuple(op for op in periodic_operations if op.register == register)
@@ -373,7 +372,7 @@ def analyze_normalized_state_timing(
                 "canonical register clock mapping splits one structural clock domain"
             )
         clocks_seen[clock_id] = group
-    causality = _causality_graph(tuple(specs))
+    causality = periodic_causality_graph(module, periodic_operations, active_registers)
     for registers in groups:
         register_set = set(registers)
         domain_graph = CausalityGraph(
@@ -457,9 +456,9 @@ def analyze_clocked_timing(
 ) -> StateTimingPlan:
     """Analyze either periodic Level state or irregular external-Event state transitions.
 
-    Event analysis is semantic-only: it derives required source separation and causality edges but
-    never invents a periodic clock or a physical Event pulse.  Logical causality is checked before
-    any throughput comparison so a malformed recurrence cannot be hidden by a generous contract.
+    Event analysis derives required source separation from physical timing requirements but consumes
+    the separate semantic causality graph for logical legality. It never invents a periodic Event
+    clock or a physical Event pulse.
     """
 
     from factorio_circuit.lowering.frontend_to_ir import normalize_module
@@ -633,33 +632,13 @@ def _analyze_register_semantics(
     operations: tuple[StateOperation | StateTransition, ...],
     reads: tuple[VectorRegisterRead, ...],
 ) -> _RegisterSpec:
-    if not operations:
-        raise StateTimingError(f"state {register.name!r} has no transition operation")
-
     orders = [op.order for op in operations]
-    first_order = min(orders)
-    last_order = max(orders)
-    before = [read for read in reads if read.order < first_order]
-    after = [read for read in reads if read.order > last_order]
-    split = [read for read in reads if first_order < read.order < last_order]
-    if split:
-        orders_text = ", ".join(str(read.order) for read in split)
-        raise StateTimingError(
-            f"state {register.name!r} has read(s) at order {orders_text} inside one compound "
-            "transition; move the read before all update methods or after all of them"
-        )
-
-    lower = max((read.offset for read in before), default=0)
-    upper_candidates = [read.offset - 1 for read in after]
-    upper = min(upper_candidates) if upper_candidates else None
-    if upper is not None and lower > upper:
-        after_desc = min(after, key=lambda read: read.offset)
-        raise StateTimingError(
-            f"state {register.name!r} update must occur after logical step {lower}, but the "
-            f"read at order {after_desc.order} observes step {after_desc.offset}; advance the "
-            "logical step before that read"
-        )
-    commit_offset = lower
+    first_order = min(orders) if orders else 0
+    last_order = max(orders) if orders else 0
+    try:
+        commit_offset = infer_commit_offset(register, operations, reads)
+    except StateOrderError as exc:
+        raise StateTimingError(str(exc)) from exc
 
     requirements: list[_Requirement] = []
     if isinstance(register, AccumulatorRegister):
@@ -719,7 +698,12 @@ def _analyze_register_semantics(
 
 
 def _causality_graph(specs: tuple[_RegisterSpec, ...]) -> CausalityGraph:
-    """Project state-bearing timing requirements into the internal causality graph."""
+    """Compatibility adapter for older timing-oriented tests.
+
+    Production legality analysis now builds target-independent graphs directly from semantic IR.
+    This adapter retains latency-annotated edges only for callers that still inspect private timing
+    requirements.
+    """
 
     edges: list[CausalityEdge] = []
     for spec in specs:
@@ -920,55 +904,6 @@ def _collect_state_reads(
     module: CircuitModule,
     operations: tuple[StateOperation | StateTransition, ...] | None = None,
 ) -> tuple[VectorRegisterRead, ...]:
-    result: list[VectorRegisterRead] = []
-    seen_reads: set[int] = set()
-    traversed: set[int] = set()
+    """Compatibility alias for semantic state-read collection."""
 
-    def add(value: object) -> None:
-        if id(value) in traversed:
-            return
-        traversed.add(id(value))
-        if isinstance(value, VectorRegisterRead):
-            if id(value) not in seen_reads:
-                seen_reads.add(id(value))
-                result.append(value)
-            return
-        if isinstance(
-            value, (Input, InputSample, Constant, VectorInput, VectorInputSample, VectorConstant)
-        ):
-            return
-        if isinstance(value, VectorSignal):
-            add(value.vector)
-            return
-        if isinstance(value, (BinaryOp, Compare)):
-            add(value.left)
-            add(value.right)
-            return
-        if isinstance(value, Select):
-            add(value.condition)
-            add(value.when_true)
-            add(value.when_false)
-            return
-        if isinstance(value, VectorBinaryOp):
-            add(value.left)
-            add(value.right)
-            return
-        if isinstance(value, VectorScalarOp):
-            add(value.vector)
-            add(value.scalar)
-            return
-        if isinstance(value, (VectorFilter, VectorSelect)):
-            add(value.vector)
-            return
-        raise TypeError(value)
-
-    for output in module.output.values:
-        add(output)
-    for operation in operations if operations is not None else module.state_operations:
-        value = _operation_value(operation)
-        when = _operation_when(operation)
-        if _operation_kind(operation) in {"add", "set"} and value is not None:
-            add(value)
-        if _operation_kind(operation) in {"add", "clear", "set"} and when is not None:
-            add(when)
-    return tuple(result)
+    return collect_state_reads(module, operations)
