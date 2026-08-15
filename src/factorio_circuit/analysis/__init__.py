@@ -5,7 +5,13 @@ from .causality import (
     CausalityEdgeKind,
     CausalityGraph,
     LogicalDependency,
+    StateOrderError,
+    collect_state_reads,
+    event_causality_graph,
     has_nonpositive_cycle,
+    infer_commit_offset,
+    periodic_causality_graph,
+    state_read_occurrences,
 )
 from .latency import FACTORIO_LATENCY, TargetLatencyModel
 from .state_timing import (
@@ -33,6 +39,7 @@ __all__ = [
     "EventClockTiming",
     "LogicalDependency",
     "RegisterTiming",
+    "StateOrderError",
     "StateReadTiming",
     "StateTimingError",
     "StateTimingPlan",
@@ -41,8 +48,13 @@ __all__ = [
     "analyze_normalized_state_timing",
     "analyze_clocked_timing",
     "analyze_state_timing",
+    "collect_state_reads",
     "earliest_scalar_phase",
     "earliest_vector_phase",
+    "event_causality_graph",
     "has_nonpositive_cycle",
+    "infer_commit_offset",
+    "periodic_causality_graph",
+    "state_read_occurrences",
     "validate_event_throughput",
 ]
