@@ -9,9 +9,7 @@ from factorio_circuit.ir.semantic import (
     BinaryOp,
     Compare,
     DerivedValue,
-    Flow,
     Input as IRInput,
-    PayloadShape,
     ScalarValue,
     Select,
     VectorConstant,
@@ -68,22 +66,10 @@ class Input(_BaseInput, Expr):
         return Expr(self._circuit, self._circuit._sample_scalar_input(self._source, offset))
 
 
-class SignalsInput(SignalsExpr):
-    __slots__ = ("_source",)
+class SignalsInput(_BaseSignalsInput, SignalsExpr):
+    """Whole-vector Level source with compatibility sampling and flow-local ``step``."""
 
-    def __init__(self, circuit: Circuit, source: VectorInput) -> None:
-        super().__init__(circuit, source)
-        self._source = source
-
-    @property
-    def name(self) -> str:
-        return self._source.name
-
-    @property
-    def flow(self) -> Flow:
-        """Return the Level-flow metadata attached to this legacy source."""
-
-        return self._circuit._input_flow(self._source, PayloadShape.VECTOR)
+    __slots__ = ()
 
     def sample(self) -> SignalsExpr:
         """Observe this external vector at the current compatibility cursor."""
@@ -145,11 +131,11 @@ class Circuit(_Circuit):
         self._inputs.append(value)
         return Input(self, value)
 
-    def signals(self, name: str) -> _BaseSignalsInput:
+    def signals(self, name: str) -> SignalsInput:
         self._claim_name(name, "input")
         value = VectorInput(name)
         self._vector_inputs.append(value)
-        return cast(_BaseSignalsInput, SignalsInput(self, value))
+        return SignalsInput(self, value)
 
     def constant_signals(self, signals: dict[SignalId, int]) -> SignalsExpr:
         normalized: list[tuple[SignalId, int]] = []
