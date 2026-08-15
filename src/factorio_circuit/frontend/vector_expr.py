@@ -18,6 +18,7 @@ from factorio_circuit.ir.semantic import (
     VectorValue,
 )
 
+from .reindex import FlowStepError, reindex_vector
 from .symbolic import CircuitBuildError, Expr, SampleOnReference, VectorEvent
 from .symbolic import SignalsExpr as _SignalsExpr
 
@@ -26,6 +27,21 @@ _VectorNode = VectorBinaryOp | VectorScalarOp | VectorFilter | VectorSelect
 
 class SignalsExpr(_SignalsExpr):
     """A whole Factorio signal vector with lane-wise runtime-open operations."""
+
+    def step(self, n: int = 1) -> SignalsExpr:
+        """Refer to this Level flow ``n`` logical clock occurrences later.
+
+        The operation is pure logical reindexing.  It does not advance the circuit-wide
+        compatibility cursor and does not introduce state or physical delay.
+        """
+
+        try:
+            value = reindex_vector(self._value, n)
+        except FlowStepError as exc:
+            raise CircuitBuildError(str(exc)) from exc
+        if value is self._value:
+            return self
+        return SignalsExpr(self._circuit, value)
 
     def _wrap_vector(self, value: _VectorNode) -> SignalsExpr:
         annotated = self._circuit._annotate_event_flow(value)
