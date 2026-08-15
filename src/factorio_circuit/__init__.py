@@ -30,6 +30,7 @@ from .frontend import (
     VectorEvent,
 )
 from .ir.physical import SignalId
+from .simulate.clocked_events import simulate_events
 from .simulate.events import (
     EventActivation,
     EventMaterializationPolicy,
@@ -41,7 +42,6 @@ from .simulate.events import (
     SampleOnObservation,
     TimestampDomain,
     materialize_event_trace,
-    simulate_events,
 )
 from .synthesis.placement import PlacementMetrics, PlacementOptions, placement_metrics
 
