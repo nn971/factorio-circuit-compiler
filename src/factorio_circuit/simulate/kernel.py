@@ -9,7 +9,7 @@ the ordinary semantic evaluator.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol, cast
 
 from factorio_circuit.ir.physical import SignalId
@@ -272,6 +272,12 @@ def run_reaction_kernel(
     return tuple(reactions)
 
 
+@dataclass(frozen=True, slots=True)
+class _IndexedEventPayload:
+    occurrence_index: int
+    payload: EventPayload
+
+
 def run_timestamp_kernel(
     scheduled: Mapping[object, Sequence[tuple[int, EventPayload]]],
     declaration_order: Mapping[object, int],
@@ -282,32 +288,50 @@ def run_timestamp_kernel(
         [Mapping[str, object], StateSnapshot, object, EventPayload], EvaluationContext
     ],
 ) -> tuple[TimestampReaction, ...]:
-    """Event adapter preserving the historical schedule-oriented kernel API."""
+    """Event adapter preserving the historical schedule-oriented kernel API.
+
+    ``StateTransition.logical_offset`` is measured in source occurrences.  A transition at offset
+    ``n`` is dormant for the first ``n`` occurrences and then executes on the reindexed tail.  The
+    expression evaluator still sees the payload of the active physical occurrence, which is exactly
+    the payload selected by a flow-local Event ``step(n)`` boundary.
+    """
 
     grouped: dict[int, list[tuple[int, object, object]]] = {}
     for source, occurrences in scheduled.items():
         source_order = declaration_order[source]
-        for timestamp, payload in occurrences:
-            grouped.setdefault(timestamp, []).append((source_order, source, payload))
-    return run_reaction_kernel(
+        for occurrence_index, (timestamp, payload) in enumerate(occurrences):
+            grouped.setdefault(timestamp, []).append(
+                (source_order, source, _IndexedEventPayload(occurrence_index, payload))
+            )
+
+    frames = run_reaction_kernel(
         ((timestamp, tuple(entries)) for timestamp, entries in sorted(grouped.items())),
         level_snapshot,
         initial_state,
-        lambda source, _payload: transitions_by_source.get(source, ()),
-        lambda level_row, state, source, payload: context_factory(
-            level_row, state, source, cast(EventPayload, payload)
+        lambda source, indexed: tuple(
+            transition
+            for transition in transitions_by_source.get(source, ())
+            if transition.logical_offset
+            <= cast(_IndexedEventPayload, indexed).occurrence_index
+        ),
+        lambda level_row, state, source, indexed: context_factory(
+            level_row,
+            state,
+            source,
+            cast(_IndexedEventPayload, indexed).payload,
         ),
     )
-
-
-__all__ = [
-    "EvaluationContext",
-    "SignalMap",
-    "TimestampReaction",
-    "apply_state_transition",
-    "apply_state_transitions",
-    "evaluate_scalar",
-    "evaluate_vector",
-    "run_timestamp_kernel",
-    "run_reaction_kernel",
-]
+    return tuple(
+        replace(
+            frame,
+            entries=tuple(
+                (
+                    order,
+                    source,
+                    cast(_IndexedEventPayload, indexed).payload,
+                )
+                for order, source, indexed in frame.entries
+            ),
+        )
+        for frame in frames
+    )
