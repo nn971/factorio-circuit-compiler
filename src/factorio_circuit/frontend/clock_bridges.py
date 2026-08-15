@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import Any, cast
 
 from factorio_circuit.events import EventCausalityError, EventCrossingError
-from factorio_circuit.ir.clocks import GateClock
+from factorio_circuit.ir.clocks import EventMerge, GateClock
 from factorio_circuit.ir.semantic import (
     Clock,
+    ClockContract,
     ClockProvenance,
     EventInput,
     Flow,
@@ -20,6 +21,7 @@ from .vector_circuit import Circuit as _Circuit
 from .vector_circuit import Expr, SampleOnReference, ScalarEvent, VectorEvent
 
 GatePredicateLike = Expr | SampleOnReference | ScalarEvent | int | bool
+EventHandle = ScalarEvent | VectorEvent
 
 
 class Circuit(_Circuit):
@@ -29,6 +31,13 @@ class Circuit(_Circuit):
         super().__init__(name)
         self._gate_clock_index: dict[tuple[EventInput, ScalarValue], GateClock] = {}
         self._gate_clock_counter = 0
+        self._event_merge_index: dict[tuple[EventInput, ...], EventMerge] = {}
+        self._event_merge_counter = 0
+
+    def _derived_event_handle(self, source: EventInput) -> EventHandle:
+        if source.payload_shape is PayloadShape.SCALAR:
+            return ScalarEvent(self, source)
+        return VectorEvent(self, source)
 
     def gate_clock(
         self,
@@ -38,7 +47,7 @@ class Circuit(_Circuit):
     ) -> ScalarEvent:
         """Return a shared derived subclock containing parent occurrences where ``when`` is true.
 
-        The result is a unit-valued scalar Event handle.  ``when`` must already be expressed on the
+        The result is a unit-valued scalar Event handle. ``when`` must already be expressed on the
         parent occurrence clock (or be occurrence-invariant); implicit Level reads are intentionally
         rejected so clock crossings remain explicit.
         """
@@ -95,3 +104,67 @@ class Circuit(_Circuit):
         self._event_inputs.append(gated)
         self._gate_clock_index[key] = gated
         return ScalarEvent(self, gated)
+
+    def event_merge(self, *parents: EventHandle) -> EventHandle:
+        """Return the shared additive union of two or more same-shaped Event sources.
+
+        Merge is set-like in its source identity: passing the same source repeatedly does not double
+        count it. Nested merges are flattened, and parent order is canonicalized by declaration
+        order so equivalent additive unions share one semantic object. Simultaneous contributions
+        are coalesced by payload addition in reference semantics.
+        """
+
+        if len(parents) < 2:
+            raise EventCausalityError("event_merge requires at least two Event sources")
+
+        flattened: list[EventInput] = []
+
+        def add_source(source: EventInput) -> None:
+            if isinstance(source, EventMerge):
+                for nested in source.parents:
+                    add_source(nested)
+                return
+            if source not in flattened:
+                flattened.append(source)
+
+        for parent in parents:
+            if not isinstance(parent, (ScalarEvent, VectorEvent)):
+                raise EventCausalityError("event_merge operands must be declared Events")
+            if parent._circuit is not self or parent.ir not in self._event_inputs:
+                raise EventCausalityError("event_merge operands must belong to this Circuit")
+            add_source(parent.ir)
+
+        if len(flattened) == 1:
+            return self._derived_event_handle(flattened[0])
+
+        shape = flattened[0].payload_shape
+        if any(source.payload_shape is not shape for source in flattened[1:]):
+            raise EventCrossingError("event_merge operands must have one payload shape")
+
+        declaration_order = {source: index for index, source in enumerate(self._event_inputs)}
+        canonical = tuple(sorted(flattened, key=declaration_order.__getitem__))
+        existing = self._event_merge_index.get(canonical)
+        if existing is not None:
+            return self._derived_event_handle(existing)
+
+        while True:
+            name = f"merge{self._event_merge_counter}"
+            self._event_merge_counter += 1
+            if name not in self._used_names:
+                self._used_names.add(name)
+                break
+
+        clock = Clock(
+            identity=f"{self.name}:{name}:derived-merge",
+            provenance=ClockProvenance.DERIVED,
+            contract=ClockContract(guaranteed_min_separation=1),
+        )
+        merged = EventMerge(
+            name=name,
+            payload_shape=shape,
+            clock=clock,
+            parents=canonical,
+        )
+        self._event_inputs.append(merged)
+        self._event_merge_index[canonical] = merged
+        return self._derived_event_handle(merged)
