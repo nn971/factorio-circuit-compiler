@@ -15,13 +15,16 @@ from factorio_circuit.ir.semantic import (
     PayloadShape,
     ScalarValue,
     TemporalModality,
+    VectorValue,
 )
 
 from .vector_circuit import Circuit as _Circuit
 from .vector_circuit import Expr, SampleOnReference, ScalarEvent, VectorEvent
+from .vector_expr import SignalsExpr
 
 GatePredicateLike = Expr | SampleOnReference | ScalarEvent | int | bool
 EventHandle = ScalarEvent | VectorEvent
+VectorEventLike = VectorEvent | SignalsExpr
 
 
 class Circuit(_Circuit):
@@ -33,6 +36,8 @@ class Circuit(_Circuit):
         self._gate_clock_counter = 0
         self._event_merge_index: dict[tuple[EventInput, ...], EventMerge] = {}
         self._event_merge_counter = 0
+        self._hold_into_index: dict[tuple[VectorValue, EventInput], SampleOnReference] = {}
+        self._hold_into_counter = 0
 
     def _derived_event_handle(self, source: EventInput) -> EventHandle:
         if source.payload_shape is PayloadShape.SCALAR:
@@ -168,3 +173,58 @@ class Circuit(_Circuit):
         self._event_inputs.append(merged)
         self._event_merge_index[canonical] = merged
         return self._derived_event_handle(merged)
+
+    def hold_into(
+        self,
+        source: VectorEventLike,
+        target: EventHandle,
+    ) -> SampleOnReference:
+        """Hold the latest vector Event payload and expose it on ``target`` occurrences.
+
+        This is an explicitly stateful clock bridge. It elaborates immediately into one hidden
+        ``FreezeRegister`` updated on the source clock plus one ``SampleOn`` crossing to the target
+        clock. Equivalent bridges are interned, so the hidden state is paid for once.
+
+        All activations at one timestamp observe the same old-state snapshot. Consequently, when a
+        source and target activate simultaneously, the target observes the value held *before* that
+        timestamp; the new source payload is visible at the next target activation.
+        """
+
+        if isinstance(source, VectorEvent):
+            if source._circuit is not self or source.ir not in self._event_inputs:
+                raise EventCausalityError("hold_into source must belong to this Circuit")
+            value = source._as_signals()
+        elif isinstance(source, SignalsExpr):
+            self._require_owned(source)
+            value = source
+        else:
+            raise EventCrossingError(
+                "hold_into currently requires a vector Event source; scalar bridge state is not "
+                "represented by the whole-vector state IR"
+            )
+
+        if not isinstance(target, (ScalarEvent, VectorEvent)):
+            raise EventCausalityError("hold_into target must be a declared Event")
+        if target._circuit is not self or target.ir not in self._event_inputs:
+            raise EventCausalityError("hold_into target must belong to this Circuit")
+
+        flow = value.flow
+        if not isinstance(flow, Flow) or flow.modality is not TemporalModality.EVENT:
+            raise EventCrossingError("hold_into source must be an Event expression")
+        self._event_source(value.ir)  # Require one recoverable trigger before allocating state.
+
+        key = (value.ir, target.ir)
+        existing = self._hold_into_index.get(key)
+        if existing is not None:
+            return existing
+
+        while True:
+            state_name = f"hold{self._hold_into_counter}"
+            self._hold_into_counter += 1
+            if state_name not in self._used_names:
+                break
+        memory = self.freeze(state_name)
+        memory.set(value, when=1)
+        held = self.sample_on(memory.sample(), target)
+        self._hold_into_index[key] = held
+        return held
