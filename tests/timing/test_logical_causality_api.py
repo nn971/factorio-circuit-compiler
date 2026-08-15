@@ -8,13 +8,20 @@ from factorio_circuit.analysis import (
     ClockRelation,
     LogicalDependency,
     StateOrderError,
+    analyze_causality,
     event_causality_graph,
     has_nonpositive_cycle,
     infer_commit_offset,
     periodic_causality_graph,
     state_read_occurrences,
 )
-from factorio_circuit.ir.semantic import Constant, VectorBinaryOp, VectorConstant
+from factorio_circuit.ir.semantic import (
+    ClockId,
+    ClockProvenance,
+    Constant,
+    VectorBinaryOp,
+    VectorConstant,
+)
 from factorio_circuit.ir.state import FreezeRegister, FreezeSet, VectorRegisterRead
 from factorio_circuit.lowering.frontend_to_ir import normalize_module
 
@@ -68,6 +75,37 @@ def test_zero_advance_cycle_is_rejected_with_pure_logical_dependencies() -> None
     )
 
     assert has_nonpositive_cycle(graph)
+
+
+def test_known_cross_clock_cycle_is_not_summed_in_one_occurrence_coordinate() -> None:
+    first = FreezeRegister("first")
+    second = FreezeRegister("second")
+    first_clock = ClockId("first-clock", ClockProvenance.INFERRED)
+    second_clock = ClockId("second-clock", ClockProvenance.EXTERNAL_EVENT)
+    graph = CausalityGraph(
+        (first, second),
+        (
+            LogicalDependency(
+                first,
+                second,
+                KIND,
+                0,
+                source_clock=first_clock,
+                target_clock=second_clock,
+            ),
+            LogicalDependency(
+                second,
+                first,
+                KIND,
+                0,
+                source_clock=second_clock,
+                target_clock=first_clock,
+            ),
+        ),
+    )
+
+    assert all(edge.clock_relation is ClockRelation.CROSS for edge in graph.edges)
+    assert not has_nonpositive_cycle(graph)
 
 
 def test_acyclic_future_reference_does_not_create_a_feedback_violation() -> None:
@@ -159,3 +197,20 @@ def test_event_graph_uses_transition_occurrence_offset_without_latency() -> None
     assert matching[0].source_clock is not None
     assert matching[0].target_clock == trigger.clock.clock_id
     assert not hasattr(matching[0], "physical_latency")
+
+
+def test_analyze_causality_runs_before_target_timing() -> None:
+    circuit = Circuit("causality_phase")
+    state = circuit.freeze("state")
+    old_state = state.sample()
+    state.set(old_state, when=1)
+    circuit.step(1)
+    circuit.output("state", state.sample())
+
+    analysis = analyze_causality(circuit.build())
+
+    assert analysis.causal
+    assert len(analysis.periodic.edges) == 1
+    assert analysis.periodic.edges[0].logical_displacement == 1
+    assert analysis.periodic.edges[0].clock_relation is ClockRelation.SAME
+    assert analysis.event.edges == ()
