@@ -5,6 +5,7 @@ from factorio_circuit.analysis import (
     CausalityEdge,
     CausalityEdgeKind,
     CausalityGraph,
+    ClockRelation,
     LogicalDependency,
     StateOrderError,
     event_causality_graph,
@@ -123,14 +124,12 @@ def test_periodic_graph_is_derived_from_logical_register_reads() -> None:
         if edge.source.name == "source" and edge.target.name == "target"
     ]
 
-    assert matching == [
-        LogicalDependency(
-            matching[0].source,
-            matching[0].target,
-            CausalityEdgeKind.ORDINARY_STATE_DEPENDENCY,
-            -1,
-        )
-    ]
+    assert len(matching) == 1
+    assert matching[0].kind is CausalityEdgeKind.ORDINARY_STATE_DEPENDENCY
+    assert matching[0].logical_displacement == -1
+    assert matching[0].clock_relation is ClockRelation.SAME
+    assert matching[0].source_clock == matching[0].target_clock
+    assert matching[0].source_clock is not None
     assert not hasattr(matching[0], "physical_latency")
 
 
@@ -156,4 +155,7 @@ def test_event_graph_uses_transition_occurrence_offset_without_latency() -> None
     assert len(matching) == 1
     assert matching[0].kind is CausalityEdgeKind.EVENT_STATE_DEPENDENCY
     assert matching[0].logical_displacement == 3
+    assert matching[0].clock_relation is ClockRelation.CROSS
+    assert matching[0].source_clock is not None
+    assert matching[0].target_clock == trigger.clock.clock_id
     assert not hasattr(matching[0], "physical_latency")
