@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import cast
+from dataclasses import replace
+from typing import Any, cast
 
 from factorio_circuit.events import EventCausalityError, EventCrossingError
 from factorio_circuit.ir.physical import SignalId
@@ -282,6 +283,26 @@ class Circuit(_Circuit):
 
     def freeze(self, name: str | None = None) -> FreezeReg:
         return FreezeReg(self, name=name)
+
+    def _annotate_event_flow(self, value: object) -> object:
+        """Preserve one aligned Event occurrence offset through ordinary derived expressions."""
+
+        annotated = super()._annotate_event_flow(value)
+        flow = getattr(annotated, "flow", None)
+        if not isinstance(flow, Flow) or flow.modality is not TemporalModality.EVENT:
+            return annotated
+        offsets = _event_occurrence_offsets(annotated)
+        if len(offsets) > 1:
+            raise EventCausalityError(
+                "ordinary Event expression operands must use one logical occurrence offset"
+            )
+        logical_offset = next(iter(offsets), flow.logical_offset)
+        if logical_offset == flow.logical_offset:
+            return annotated
+        return replace(
+            cast(Any, annotated),
+            flow=replace(flow, logical_offset=logical_offset),
+        )
 
     def _derived(self, value: DerivedValue) -> Expr:
         """Keep scalar derived results on the public flow-local Expr surface."""
