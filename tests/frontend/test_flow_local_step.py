@@ -1,6 +1,16 @@
 import pytest
 
-from factorio_circuit import Circuit, CircuitBuildError, Expr, SignalId, compile_circuit
+from factorio_circuit import (
+    Circuit,
+    CircuitBuildError,
+    EventCausalityError,
+    EventOccurrence,
+    EventSchedule,
+    Expr,
+    SignalId,
+    compile_circuit,
+    simulate_events,
+)
 from factorio_circuit.ir.semantic import (
     BinaryOp,
     FlowInputSample,
@@ -138,10 +148,61 @@ def test_flow_local_step_rejects_invalid_displacements(bad: object) -> None:
         source.step(bad)  # type: ignore[arg-type]
 
 
-def test_event_flow_step_waits_for_event_occurrence_offset_representation() -> None:
-    circuit = Circuit("event_step_boundary")
+def test_event_source_and_derived_step_carry_occurrence_offsets_locally() -> None:
+    circuit = Circuit("event_local_step")
     event = circuit.event("event", guaranteed_min_separation=1)
-    derived = event + 1
 
-    with pytest.raises(CircuitBuildError, match="Event values"):
-        derived.step()
+    source_later = event.step(2)
+    derived_later = (event + 1).step(3)
+
+    assert circuit.now.offset == 0
+    assert source_later.flow is not None
+    assert source_later.flow.logical_offset == 2
+    assert source_later.flow.clock == event.clock
+    assert derived_later.flow is not None
+    assert derived_later.flow.logical_offset == 3
+    assert derived_later.flow.clock == event.clock
+
+
+def test_event_transition_step_skips_the_reindexed_prefix() -> None:
+    circuit = Circuit("event_transition_step")
+    event = circuit.signal_event("event", guaranteed_min_separation=1)
+    accumulator = circuit.accumulator("accumulator")
+    accumulator.add(event.step(1))
+    circuit.output("accumulator", accumulator.sample())
+    module = circuit.build()
+
+    assert len(module.transitions) == 1
+    assert module.transitions[0].logical_offset == 1
+
+    result = simulate_events(
+        module,
+        [],
+        [
+            EventSchedule(
+                event,
+                (
+                    EventOccurrence(0, {IRON: 1}),
+                    EventOccurrence(1, {IRON: 2}),
+                    EventOccurrence(2, {IRON: 3}),
+                ),
+            )
+        ],
+    )
+
+    assert [reaction.state_after["accumulator"] for reaction in result.reactions] == [
+        {},
+        {IRON: 2},
+        {IRON: 5},
+    ]
+    assert result.final_state == {"accumulator": {IRON: 5}}
+
+
+def test_event_transition_requires_one_aligned_occurrence_offset() -> None:
+    circuit = Circuit("event_offset_mismatch")
+    event = circuit.signal_event("event", guaranteed_min_separation=1)
+    accumulator = circuit.accumulator("accumulator")
+    mixed = event.step(1) + event.step(2)
+
+    with pytest.raises(EventCausalityError, match="one logical occurrence offset"):
+        accumulator.add(mixed)
