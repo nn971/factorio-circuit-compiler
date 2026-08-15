@@ -104,6 +104,42 @@ def test_hold_into_emits_latest_strictly_prior_source_value_on_target_clock() ->
     assert result.final_state == {"hold0": {SIGNAL: 70}}
 
 
+def test_hold_into_can_drive_target_clock_state() -> None:
+    circuit = Circuit("hold_consumer")
+    source = circuit.signal_event("source", guaranteed_min_separation=2)
+    target = circuit.event("target", guaranteed_min_separation=2)
+    held = circuit.hold_into(source, target)
+    output = circuit.freeze("output")
+    output.set(held, when=1)
+
+    result = simulate_events(
+        circuit.build(),
+        (),
+        (
+            EventSchedule(
+                source,
+                (
+                    EventOccurrence(1, {SIGNAL: 3}),
+                    EventOccurrence(5, {SIGNAL: 9}),
+                ),
+            ),
+            EventSchedule(
+                target,
+                (
+                    EventOccurrence(2, 1),
+                    EventOccurrence(6, 1),
+                ),
+            ),
+        ),
+        stop_timestamp=8,
+    )
+
+    assert result.final_state == {
+        "hold0": {SIGNAL: 9},
+        "output": {SIGNAL: 9},
+    }
+
+
 def test_hold_into_target_before_first_source_observes_empty_initial_state() -> None:
     circuit = Circuit("hold_initial")
     source = circuit.signal_event("source", guaranteed_min_separation=2)
