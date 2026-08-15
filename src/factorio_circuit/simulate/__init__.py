@@ -6,6 +6,7 @@ from factorio_circuit.events import (
     EventMaterializationError,
 )
 
+from .clocked_events import simulate_events
 from .events import (
     EventActivation,
     EventMaterializationPolicy,
@@ -19,7 +20,6 @@ from .events import (
     SampleOnObservation,
     TimestampDomain,
     materialize_event_trace,
-    simulate_events,
 )
 
 __all__ = [
