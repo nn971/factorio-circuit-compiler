@@ -204,3 +204,11 @@ def test_hold_into_rejects_level_vector_and_scalar_event_sources() -> None:
         circuit.hold_into(level, target)
     with pytest.raises(EventCrossingError, match="requires a vector Event source"):
         circuit.hold_into(scalar, target)  # type: ignore[arg-type]
+
+
+def test_hold_into_rejects_same_clock_values_that_need_no_bridge() -> None:
+    circuit = Circuit("hold_same_clock")
+    source = circuit.signal_event("source", guaranteed_min_separation=2)
+
+    with pytest.raises(EventCrossingError, match="distinct source and target clocks"):
+        circuit.hold_into(source, source)
