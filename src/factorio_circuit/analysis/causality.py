@@ -232,11 +232,7 @@ def collect_state_reads(
     """Collect distinct state-read nodes used by outputs and selected transitions."""
 
     selected = (
-        tuple(
-            transition
-            for transition in state_transitions(module)
-            if transition.trigger is None
-        )
+        tuple(transition for transition in state_transitions(module) if transition.trigger is None)
         if operations is None
         else operations
     )
@@ -312,11 +308,7 @@ def periodic_causality_graph(
     """
 
     selected = (
-        tuple(
-            transition
-            for transition in state_transitions(module)
-            if transition.trigger is None
-        )
+        tuple(transition for transition in state_transitions(module) if transition.trigger is None)
         if operations is None
         else operations
     )
@@ -372,9 +364,7 @@ def event_causality_graph(
 
     selected = (
         tuple(
-            transition
-            for transition in state_transitions(module)
-            if transition.trigger is not None
+            transition for transition in state_transitions(module) if transition.trigger is not None
         )
         if transitions is None
         else tuple(transition for transition in transitions if transition.trigger is not None)
@@ -390,9 +380,7 @@ def event_causality_graph(
                         source=read.register,
                         target=transition.register,
                         kind=CausalityEdgeKind.EVENT_STATE_DEPENDENCY,
-                        logical_displacement=(
-                            transition.logical_offset + 1 - read.offset
-                        ),
+                        logical_displacement=(transition.logical_offset + 1 - read.offset),
                         source_clock=_register_clock_id(module, read.register),
                         target_clock=transition.clock.clock_id,
                     )
