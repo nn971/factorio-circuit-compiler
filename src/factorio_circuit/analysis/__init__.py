@@ -1,5 +1,12 @@
 """Compiler analyses."""
 
+from .causality import (
+    CausalityEdge,
+    CausalityEdgeKind,
+    CausalityGraph,
+    LogicalDependency,
+    has_nonpositive_cycle,
+)
 from .latency import FACTORIO_LATENCY, TargetLatencyModel
 from .state_timing import (
     ClockDomainTiming,
@@ -18,9 +25,13 @@ from .state_timing import (
 )
 
 __all__ = [
+    "CausalityEdge",
+    "CausalityEdgeKind",
+    "CausalityGraph",
     "ClockDomainTiming",
     "FACTORIO_LATENCY",
     "EventClockTiming",
+    "LogicalDependency",
     "RegisterTiming",
     "StateReadTiming",
     "StateTimingError",
@@ -32,5 +43,6 @@ __all__ = [
     "analyze_state_timing",
     "earliest_scalar_phase",
     "earliest_vector_phase",
+    "has_nonpositive_cycle",
     "validate_event_throughput",
 ]
