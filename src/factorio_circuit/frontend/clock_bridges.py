@@ -213,8 +213,8 @@ class Circuit(_Circuit):
             raise EventCrossingError("hold_into source must be an Event expression")
         if flow.clock == target.clock:
             raise EventCrossingError(
-                "hold_into requires distinct source and target clocks; use the Event value directly "
-                "when no clock crossing is needed"
+                "hold_into requires distinct source and target clocks; use the Event value "
+                "directly when no clock crossing is needed"
             )
         self._event_source(value.ir)  # Require one recoverable trigger before allocating state.
 
