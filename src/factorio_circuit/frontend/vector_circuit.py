@@ -6,12 +6,14 @@ from typing import cast
 
 from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.ir.semantic import (
+    BinaryOp,
+    Compare,
     DerivedValue,
     Flow,
     Input as IRInput,
-    InputSample,
     PayloadShape,
     ScalarValue,
+    Select,
     VectorConstant,
     VectorInput,
 )
@@ -46,8 +48,8 @@ class Expr(_BaseExpr):
             raise CircuitBuildError(str(exc)) from exc
         if value is self._value:
             return self
-        if isinstance(value, (DerivedValue.__args__)):  # type: ignore[attr-defined]
-            return self._circuit._derived(cast(DerivedValue, value))
+        if isinstance(value, (BinaryOp, Compare, Select)):
+            return cast(Expr, self._circuit._derived(cast(DerivedValue, value)))
         return Expr(self._circuit, value)
 
 
