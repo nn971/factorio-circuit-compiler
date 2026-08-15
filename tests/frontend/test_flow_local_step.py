@@ -8,6 +8,7 @@ from factorio_circuit import (
     EventSchedule,
     Expr,
     SignalId,
+    SignalsExpr,
     compile_circuit,
     simulate_events,
 )
@@ -196,6 +197,44 @@ def test_event_transition_step_skips_the_reindexed_prefix() -> None:
         {IRON: 5},
     ]
     assert result.final_state == {"accumulator": {IRON: 5}}
+
+
+def test_sample_on_step_uses_the_reindexed_target_occurrence() -> None:
+    circuit = Circuit("sample_on_transition_step")
+    data = circuit.signals("data")
+    event = circuit.event("event", guaranteed_min_separation=1)
+    sampled = circuit.sample_on(data, event).step(1)
+    assert isinstance(sampled, SignalsExpr)
+    accumulator = circuit.accumulator("accumulator")
+    accumulator.add(sampled)
+    circuit.output("accumulator", accumulator.sample())
+    module = circuit.build()
+
+    assert module.transitions[0].logical_offset == 1
+    result = simulate_events(
+        module,
+        [
+            {"data": {IRON: 10}},
+            {"data": {IRON: 20}},
+            {"data": {IRON: 30}},
+        ],
+        [
+            EventSchedule(
+                event,
+                (
+                    EventOccurrence(0, 0),
+                    EventOccurrence(1, 0),
+                    EventOccurrence(2, 0),
+                ),
+            )
+        ],
+    )
+
+    assert [reaction.state_after["accumulator"] for reaction in result.reactions] == [
+        {},
+        {IRON: 20},
+        {IRON: 50},
+    ]
 
 
 def test_event_transition_requires_one_aligned_occurrence_offset() -> None:
