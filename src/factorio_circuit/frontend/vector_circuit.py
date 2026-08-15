@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.ir.semantic import (
     BinaryOp,
@@ -47,7 +45,8 @@ class Expr(_BaseExpr):
         if value is self._value:
             return self
         if isinstance(value, (BinaryOp, Compare, Select)):
-            return cast(Expr, self._circuit._derived(value))
+            result = self._circuit._derived(value)
+            return Expr(self._circuit, result.ir)
         return Expr(self._circuit, value)
 
 
