@@ -17,6 +17,7 @@ from factorio_circuit.ir.semantic import (
     CircuitModule,
     ClockContractEnvironment,
     ClockId,
+    ClockProvenance,
     Compare,
     Constant,
     EventScalarFlow,
@@ -316,12 +317,17 @@ def analyze_normalized_state_timing(
     module: CircuitModule,
     *,
     allow_event_declarations: bool = False,
+    clock_environment: ClockContractEnvironment | None = None,
 ) -> StateTimingPlan:
-    """Infer logical clock domains, their minimal periods, and concrete physical phases.
+    """Infer logical clock domains, their minimal or declared periods, and physical phases.
 
     For a register with state phase ``phi`` and domain period ``P``, logical state ``S[k]`` is
     observable at physical tick ``phi + k*P``.  A transition committed between logical boundaries
     ``k`` and ``k+1`` receives its physical update input one game tick before the latter boundary.
+
+    Inferred clocks choose the smallest feasible ``P``.  A ``FIXED_PERIODIC`` clock instead treats
+    its authoritative ``guaranteed_min_separation`` contract as its declared cadence and must be
+    realizable at exactly that period.
 
     Ordinary expressions preserve logical indices.  Therefore any ordinary expression connecting
     state registers places those registers in the same clock domain.  Different domains may still
@@ -332,8 +338,13 @@ def analyze_normalized_state_timing(
     if not allow_event_declarations:
         reject_event_module(module)
         validate_canonical_module(module)
+    environment = (
+        clock_environment
+        if clock_environment is not None
+        else ClockContractEnvironment.from_module(module)
+    )
     if not module.state_registers:
-        return StateTimingPlan((), ())
+        return StateTimingPlan((), (), clock_environment=environment)
 
     periodic_operations = tuple(
         transition for transition in state_transitions(module) if transition.trigger is None
@@ -344,7 +355,7 @@ def analyze_normalized_state_timing(
         if any(operation.register == register for operation in periodic_operations)
     )
     if not active_registers:
-        return StateTimingPlan((), ())
+        return StateTimingPlan((), (), clock_environment=environment)
     reads = collect_state_reads(module, periodic_operations)
     specs: list[_RegisterSpec] = []
     for register in active_registers:
@@ -397,13 +408,23 @@ def analyze_normalized_state_timing(
 
     for domain_id, registers in enumerate(groups):
         domain_specs = [specs_by_name[register.name] for register in registers]
-        period, phases = _solve_domain(domain_specs)
+        clock = register_clocks[registers[0]]
+        fixed_period = (
+            environment.contract_for(clock).guaranteed_min_separation
+            if clock.provenance is ClockProvenance.FIXED_PERIODIC
+            else None
+        )
+        period, phases = _solve_domain(
+            domain_specs,
+            fixed_period=fixed_period,
+            clock_identity=clock.identity,
+        )
         domain_timings.append(
             ClockDomainTiming(
                 domain_id,
                 period,
                 registers,
-                register_clocks[registers[0]].clock_id,
+                clock.clock_id,
             )
         )
         for register in registers:
@@ -438,7 +459,11 @@ def analyze_normalized_state_timing(
             )
         )
 
-    return StateTimingPlan(tuple(domain_timings), tuple(timings))
+    return StateTimingPlan(
+        tuple(domain_timings),
+        tuple(timings),
+        clock_environment=environment,
+    )
 
 
 def analyze_state_timing(module: CircuitModule) -> StateTimingPlan:
@@ -458,7 +483,8 @@ def analyze_clocked_timing(
 
     Event analysis derives required source separation from physical timing requirements but consumes
     the separate semantic causality graph for logical legality. It never invents a periodic Event
-    clock or a physical Event pulse.
+    clock or a physical Event pulse. Periodic analysis distinguishes inferred clocks, whose periods
+    may grow, from fixed periodic clocks, whose authoritative contract fixes the cadence.
     """
 
     from factorio_circuit.lowering.frontend_to_ir import normalize_module
@@ -473,16 +499,10 @@ def analyze_clocked_timing(
     has_event_transitions = any(transition.trigger is not None for transition in transitions)
     has_periodic_transitions = any(transition.trigger is None for transition in transitions)
     if not has_event_transitions and not has_event_usage(normalized):
-        plan = analyze_normalized_state_timing(
+        return analyze_normalized_state_timing(
             normalized,
             allow_event_declarations=bool(normalized.event_inputs),
-        )
-        return StateTimingPlan(
-            plan.domains,
-            plan.registers,
-            plan.event_clocks,
-            environment,
-            plan.unsupported_crossings,
+            clock_environment=environment,
         )
 
     event_plan = _analyze_event_timing(normalized, transitions, environment)
@@ -491,6 +511,7 @@ def analyze_clocked_timing(
     periodic_plan = analyze_normalized_state_timing(
         normalized,
         allow_event_declarations=True,
+        clock_environment=environment,
     )
     return StateTimingPlan(
         periodic_plan.domains,
@@ -740,8 +761,24 @@ def _earliest_requirement_phase(
     return earliest
 
 
-def _solve_domain(specs: list[_RegisterSpec]) -> tuple[int, dict[str, int]]:
-    """Find the smallest integer period whose difference constraints are feasible."""
+def _solve_domain(
+    specs: list[_RegisterSpec],
+    *,
+    fixed_period: int | None = None,
+    clock_identity: str | None = None,
+) -> tuple[int, dict[str, int]]:
+    """Find a feasible domain period, respecting an authoritative fixed cadence when present."""
+
+    if fixed_period is not None:
+        phases = _solve_phases_for_period(specs, fixed_period)
+        if phases is not None:
+            return fixed_period, phases
+        minimum, _ = _solve_domain(specs)
+        identity = clock_identity or "<unnamed>"
+        raise StateTimingError(
+            f"fixed periodic clock {identity!r} period {fixed_period} is infeasible; "
+            f"recurrence requires at least {minimum}"
+        )
 
     state_edges = sum(
         FACTORIO_LATENCY.state_edge_latency(requirement.latency)
