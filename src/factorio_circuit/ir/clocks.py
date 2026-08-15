@@ -147,4 +147,6 @@ class EventMerge(EventInput):
         if any(parent.payload_shape is not self.payload_shape for parent in self.parents):
             raise ValueError("EventMerge parents must have one payload shape")
         if self.clock.guaranteed_min_separation != 1:
-            raise ValueError("EventMerge of distinct parents must use the conservative 1-tick bound")
+            raise ValueError(
+                "EventMerge of distinct parents must use the conservative 1-tick bound"
+            )
