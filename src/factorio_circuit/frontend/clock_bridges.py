@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from factorio_circuit.events import EventCausalityError, EventCrossingError
 from factorio_circuit.ir.clocks import GateClock
 from factorio_circuit.ir.semantic import (
@@ -48,7 +50,9 @@ class Circuit(_Circuit):
         if parent.ir not in self._event_inputs:
             raise EventCausalityError("gate_clock parent must be declared by this Circuit")
 
-        condition = self._coerce_scalar(when)
+        # The base frontend already accepts SampleOnReference and ScalarEvent at runtime; its old
+        # ScalarLike annotation has not yet been widened to describe those Event-facing adapters.
+        condition = self._coerce_scalar(cast(Any, when))
         flow = condition.flow
         if isinstance(flow, Flow):
             if flow.modality is TemporalModality.LEVEL:
@@ -56,7 +60,9 @@ class Circuit(_Circuit):
                     "gate_clock cannot implicitly sample a Level; use sample_on(level, parent)"
                 )
             if flow.modality is TemporalModality.EVENT and flow.clock != parent.clock:
-                raise EventCausalityError("gate_clock predicate must use the parent occurrence clock")
+                raise EventCausalityError(
+                    "gate_clock predicate must use the parent occurrence clock"
+                )
 
         key = (parent.ir, condition.ir)
         existing = self._gate_clock_index.get(key)
