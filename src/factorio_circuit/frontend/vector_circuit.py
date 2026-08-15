@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from factorio_circuit.events import EventCausalityError
+from factorio_circuit.events import EventCausalityError, EventCrossingError
 from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.ir.semantic import (
     BinaryOp,
@@ -30,6 +30,7 @@ from .symbolic import CircuitBuildError
 from .symbolic import Expr as _BaseExpr
 from .symbolic import FreezeReg as _BaseFreezeReg
 from .symbolic import Input as _BaseInput
+from .symbolic import SampleOnReference as _BaseSampleOnReference
 from .symbolic import ScalarEvent as _BaseScalarEvent
 from .symbolic import SignalsInput as _BaseSignalsInput
 from .symbolic import VectorEvent as _BaseVectorEvent
@@ -112,6 +113,24 @@ class VectorEvent(_BaseVectorEvent):
         """Refer to this Event starting at its ``n``-th later occurrence."""
 
         return self._as_signals().step(n)
+
+
+class SampleOnReference(_BaseSampleOnReference):
+    """A Level snapshot reference that can be reindexed on its target Event clock."""
+
+    __slots__ = ()
+
+    def _as_value(self) -> Expr | SignalsExpr:
+        if self._circuit is None:
+            raise EventCrossingError("SampleOn reference is not attached to a Circuit")
+        if self.payload_shape is PayloadShape.VECTOR:
+            return SignalsExpr(self._circuit, self._crossing)
+        return Expr(self._circuit, self._crossing)
+
+    def step(self, n: int = 1) -> Expr | SignalsExpr:
+        """Refer to this snapshot starting at the target Event's ``n``-th later occurrence."""
+
+        return self._as_value().step(n)
 
 
 class AccumulatorReg(_BaseAccumulatorReg):
@@ -236,6 +255,14 @@ class Circuit(_Circuit):
                 VectorEvent,
             ),
         )
+
+    def sample_on(
+        self,
+        source: _BaseInput | _BaseExpr | SignalsExpr,
+        target: _BaseScalarEvent | _BaseVectorEvent,
+    ) -> SampleOnReference:
+        reference = super().sample_on(source, target)
+        return SampleOnReference(reference.ir, self)
 
     def constant_signals(self, signals: dict[SignalId, int]) -> SignalsExpr:
         normalized: list[tuple[SignalId, int]] = []
