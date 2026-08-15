@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from factorio_circuit.frontend import _VectorSelect
+from factorio_circuit.analysis.latency import FACTORIO_LATENCY
 from factorio_circuit.ir.abstract_physical import ArithmeticCombinator, Connector, Endpoint, Operand
+from factorio_circuit.ir.semantic import VectorSelect
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedVector
 
 from .vector_binary import vector_metadata
 
 
-def realize_vector_select(lowerer: Any, value: _VectorSelect) -> RealizedVector:
+def realize_vector_select(lowerer: Any, value: VectorSelect) -> RealizedVector:
     source = lowerer.realize_vector(value.vector)
     entity = ArithmeticCombinator(
         id=lowerer._take_entity_id(),
@@ -31,4 +32,6 @@ def realize_vector_select(lowerer: Any, value: _VectorSelect) -> RealizedVector:
         fixed_signals=fixed,
         carries_dynamic_vector=dynamic,
     )
-    return RealizedVector(net, source.phase + 1)
+    return RealizedVector(
+        net, source.phase + FACTORIO_LATENCY.operation_latency("vector_select", value.op)
+    )

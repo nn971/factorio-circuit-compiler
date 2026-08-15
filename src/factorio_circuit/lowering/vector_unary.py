@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from factorio_circuit.frontend import _VectorFilter, _VectorScalarOp
+from factorio_circuit.analysis.latency import FACTORIO_LATENCY
 from factorio_circuit.ir.abstract_physical import (
     ArithmeticCombinator,
     Connector,
@@ -12,6 +12,7 @@ from factorio_circuit.ir.abstract_physical import (
     Endpoint,
     Operand,
 )
+from factorio_circuit.ir.semantic import VectorFilter, VectorScalarOp
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
 
 from .vector_binary import vector_metadata
@@ -19,7 +20,7 @@ from .vector_binary import vector_metadata
 VECTOR_EACH_PLACEHOLDER = "__runtime_vector_each__"
 
 
-def realize_vector_scalar(lowerer: Any, value: _VectorScalarOp) -> RealizedVector:
+def realize_vector_scalar(lowerer: Any, value: VectorScalarOp) -> RealizedVector:
     vector = lowerer.realize_vector(value.vector)
     scalar = lowerer._realize_operand_value(value.scalar)
     scalar_phase = scalar.phase if isinstance(scalar, RealizedValue) else 0
@@ -54,10 +55,12 @@ def realize_vector_scalar(lowerer: Any, value: _VectorScalarOp) -> RealizedVecto
         fixed_signals=fixed,
         carries_dynamic_vector=dynamic,
     )
-    return RealizedVector(net, phase + 1)
+    return RealizedVector(
+        net, phase + FACTORIO_LATENCY.operation_latency("vector_scalar", value.op)
+    )
 
 
-def realize_vector_filter(lowerer: Any, value: _VectorFilter) -> RealizedVector:
+def realize_vector_filter(lowerer: Any, value: VectorFilter) -> RealizedVector:
     vector = lowerer.realize_vector(value.vector)
     placeholder = lowerer._new_signal(VECTOR_EACH_PLACEHOLDER)
     entity = DeciderCombinator(
@@ -80,4 +83,6 @@ def realize_vector_filter(lowerer: Any, value: _VectorFilter) -> RealizedVector:
         fixed_signals=fixed,
         carries_dynamic_vector=dynamic,
     )
-    return RealizedVector(net, vector.phase + 1)
+    return RealizedVector(
+        net, vector.phase + FACTORIO_LATENCY.operation_latency("vector_filter", value.op)
+    )

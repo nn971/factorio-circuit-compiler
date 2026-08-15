@@ -1,7 +1,8 @@
-"""Internal weighted causality records for ordinary state dependencies.
+"""Internal weighted causality records for state dependencies.
 
-This module intentionally models only state-register recurrence edges.  External values, clocks,
-events, bridges, output policies, and expression trees remain outside this Phase 2 graph.
+The same graph is used for periodic Level state and direct external-Event transitions.  External
+payload leaves are not vertices; their timing enters only through the edge latency supplied by the
+target model.
 """
 
 from __future__ import annotations
@@ -13,9 +14,10 @@ from factorio_circuit.ir.state import StateRegister
 
 
 class CausalityEdgeKind(StrEnum):
-    """The currently supported state-dependency edge kind."""
+    """The source of a state-dependency edge."""
 
     ORDINARY_STATE_DEPENDENCY = "ordinary_state_dependency"
+    EVENT_STATE_DEPENDENCY = "event_state_dependency"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +37,7 @@ class CausalityEdge:
 
 @dataclass(frozen=True, slots=True)
 class CausalityGraph:
-    """An immutable ordered multigraph of ordinary state recurrence dependencies."""
+    """An immutable ordered multigraph of state recurrence dependencies."""
 
     registers: tuple[StateRegister, ...]
     edges: tuple[CausalityEdge, ...]

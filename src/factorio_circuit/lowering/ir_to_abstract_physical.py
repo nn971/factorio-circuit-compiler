@@ -5,8 +5,13 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from itertools import combinations
+from typing import cast
 
-from factorio_circuit.analysis.state_timing import StateTimingPlan, analyze_state_timing
+from factorio_circuit.analysis.latency import FACTORIO_LATENCY
+from factorio_circuit.analysis.state_timing import (
+    StateTimingPlan,
+    analyze_normalized_state_timing,
+)
 from factorio_circuit.ir.abstract_physical import (
     AbstractNet,
     AbstractPhysicalCircuit,
@@ -33,6 +38,10 @@ from factorio_circuit.ir.semantic import (
     CircuitModule,
     Compare,
     Constant,
+    FlowInput,
+    FlowInputSample,
+    FlowVectorInput,
+    FlowVectorInputSample,
     Input,
     InputSample,
     Select,
@@ -44,6 +53,7 @@ from factorio_circuit.ir.semantic import (
     VectorValue,
     dependencies,
     reject_event_module,
+    validate_canonical_module,
 )
 from factorio_circuit.ir.state import (
     AccumulatorAdd,
@@ -96,9 +106,10 @@ class AbstractPhysicalLowerer:
         state_timing: StateTimingPlan | None = None,
     ) -> None:
         reject_event_module(module)
+        validate_canonical_module(module)
         self.module = module
         self.enable_packing = enable_packing
-        self.state_timing = state_timing or analyze_state_timing(module)
+        self.state_timing = state_timing or analyze_normalized_state_timing(module)
         self.circuit = AbstractPhysicalCircuit(name=module.name)
         self.next_entity_id = 1
         self.next_signal_id = 1
@@ -150,7 +161,7 @@ class AbstractPhysicalLowerer:
             ):
                 realized_outputs.append(self.realize_vector(value))
             else:
-                realized_outputs.append(self.realize(value))
+                realized_outputs.append(self.realize(cast(Value, value)))
         self._create_output_markers(realized_outputs)
         self.circuit.nets = [
             AbstractNet(
@@ -264,7 +275,11 @@ class AbstractPhysicalLowerer:
                 Endpoint(active.id, Connector.OUTPUT),
                 label=f"AccumulatorReg {register.name}: clear-active",
             )
-            clear_active = RealizedValue(active_signal, active_net, clear.phase + 1)
+            clear_active = RealizedValue(
+                active_signal,
+                active_net,
+                clear.phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "clear"),
+            )
 
         for index, add in enumerate(adds):
             source = self.delay_vector_to(self.realize_vector(add.value), target_phase)
@@ -384,7 +399,9 @@ class AbstractPhysicalLowerer:
             label=f"FreezeReg {register.name}: hold",
         )
 
-        control_phase = control.phase + 1
+        control_phase = control.phase + FACTORIO_LATENCY.operation_latency(
+            "scalar_binary", "control"
+        )
         pass_value = RealizedValue(pass_signal, pass_net, control_phase)
         hold_value = RealizedValue(hold_signal, hold_net, control_phase)
         timing = self.state_timing.for_register(register)
@@ -489,9 +506,14 @@ class AbstractPhysicalLowerer:
         cached = self.vector_memo.get(id(value))
         if cached is not None:
             return cached
-        if isinstance(value, VectorInput):  # pragma: no cover - initialized up-front
+        if isinstance(value, FlowVectorInput):
+            base = self.vector_memo.get(id(value.source))
+            if base is None:
+                raise ValueError(f"vector input {value.name!r} was not initialized")
+            result = base
+        elif isinstance(value, VectorInput):  # pragma: no cover - initialized up-front
             raise ValueError(f"vector input {value.name!r} was not initialized")
-        if isinstance(value, VectorInputSample):
+        elif isinstance(value, (FlowVectorInputSample, VectorInputSample)):
             base = self.vector_memo.get(id(value.source))
             if base is None:
                 raise ValueError(f"vector input {value.source.name!r} was not initialized")
@@ -530,9 +552,14 @@ class AbstractPhysicalLowerer:
         if cached is not None:
             return cached
 
-        if isinstance(value, Input):  # pragma: no cover - initialized up-front
+        if isinstance(value, FlowInput):
+            base = self.memo.get(id(value.source))
+            if base is None:
+                raise ValueError(f"input {value.name!r} was not initialized")
+            result = base
+        elif isinstance(value, Input):  # pragma: no cover - initialized up-front
             raise ValueError(f"input {value.name!r} was not initialized")
-        if isinstance(value, InputSample):
+        elif isinstance(value, (FlowInputSample, InputSample)):
             base = self.memo.get(id(value.source))
             if base is None:
                 raise ValueError(f"input {value.source.name!r} was not initialized")
@@ -597,7 +624,11 @@ class AbstractPhysicalLowerer:
             Endpoint(control_entity.id, Connector.OUTPUT),
             label=description,
         )
-        return RealizedValue(signal, net, control.phase + 1)
+        return RealizedValue(
+            signal,
+            net,
+            control.phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "control"),
+        )
 
     def _materialize_constant(self, value: Constant) -> RealizedValue:
         signal = self._new_signal(value.name or f"const {value.value}")
@@ -660,7 +691,7 @@ class AbstractPhysicalLowerer:
             Endpoint(entity.id, Connector.OUTPUT),
             label="packed Each output",
         )
-        phase = target_phase + 1
+        phase = target_phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "delay")
         for op, source in zip(partition.operations, aligned, strict=True):
             self.memo[id(op)] = RealizedValue(
                 signal=source.signal,
@@ -758,7 +789,7 @@ class AbstractPhysicalLowerer:
             Endpoint(entity.id, Connector.OUTPUT),
             label=f"packed pairwise {partition.operation} output",
         )
-        phase = seed_phase + 1
+        phase = seed_phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "seed")
         for candidate, left, _right in selected:
             assert isinstance(left.signal, int)
             self.memo[id(candidate)] = RealizedValue(
@@ -877,7 +908,9 @@ class AbstractPhysicalLowerer:
         net = self._new_net(
             (out,), Endpoint(entity.id, Connector.OUTPUT), label=comparison.name or "compare"
         )
-        return RealizedValue(out, net, phase + 1)
+        return RealizedValue(
+            out, net, phase + FACTORIO_LATENCY.operation_latency("compare", comparison.op)
+        )
 
     def _try_emit_shared_compare_selects(self, seed: Select) -> RealizedValue | None:
         condition = seed.condition
@@ -946,7 +979,10 @@ class AbstractPhysicalLowerer:
         self._attach(output_net, Endpoint(false_entity.id, Connector.OUTPUT))
         for item, output_signal in zip(group, output_signals, strict=True):
             self.memo[id(item)] = RealizedValue(
-                output_signal, output_net, phase + 1, clean_single_lane=False
+                output_signal,
+                output_net,
+                phase + FACTORIO_LATENCY.operation_latency("compare", "select"),
+                clean_single_lane=False,
             )
         return self.memo[id(seed)]
 
@@ -1001,7 +1037,11 @@ class AbstractPhysicalLowerer:
             label=select.name or "direct compare/select",
         )
         self._attach(output_net, Endpoint(false_entity.id, Connector.OUTPUT))
-        result = RealizedValue(output_signal, output_net, phase + 1)
+        result = RealizedValue(
+            output_signal,
+            output_net,
+            phase + FACTORIO_LATENCY.operation_latency("compare", "select"),
+        )
         self.memo[id(select)] = result
         return result
 
@@ -1140,7 +1180,11 @@ class AbstractPhysicalLowerer:
             label=select.name or "select mux",
         )
         self._attach(output_net, Endpoint(false_arm.id, Connector.OUTPUT))
-        return RealizedValue(out, output_net, target_phase + 1)
+        return RealizedValue(
+            out,
+            output_net,
+            target_phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "select"),
+        )
 
     @staticmethod
     def _can_use_decider_mux_arm(condition: RealizedValue, arm: RealizedValue | int) -> bool:
@@ -1235,7 +1279,9 @@ class AbstractPhysicalLowerer:
         net = self._new_net(
             (out,), Endpoint(entity.id, Connector.OUTPUT), label=description or operation
         )
-        return RealizedValue(out, net, phase + 1)
+        return RealizedValue(
+            out, net, phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "binary")
+        )
 
     def _scalar_operand_layout(
         self,
@@ -1288,7 +1334,11 @@ class AbstractPhysicalLowerer:
             raise ValueError("cannot delay backwards in time")
         current = value
         while current.phase < target_phase:
-            key = (current.net, current.signal, current.phase + 1)
+            key = (
+                current.net,
+                current.signal,
+                current.phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "delay"),
+            )
             cached = self.delay_cache.get(key)
             if cached is not None:
                 current = cached
@@ -1308,7 +1358,11 @@ class AbstractPhysicalLowerer:
             output_net = self._new_net(
                 (out,), Endpoint(entity.id, Connector.OUTPUT), label="phase alignment delay"
             )
-            current = RealizedValue(out, output_net, current.phase + 1)
+            current = RealizedValue(
+                out,
+                output_net,
+                current.phase + FACTORIO_LATENCY.operation_latency("scalar_binary", "delay"),
+            )
             self.delay_cache[key] = current
         return current
 
@@ -1335,7 +1389,10 @@ class AbstractPhysicalLowerer:
                 fixed_signals=source.fixed_signals,
                 carries_dynamic_vector=source.carries_dynamic_vector,
             )
-            current = RealizedVector(output_net, current.phase + 1)
+            current = RealizedVector(
+                output_net,
+                current.phase + FACTORIO_LATENCY.operation_latency("vector_binary", "delay"),
+            )
         return current
 
     def _operand(self, value: RealizedValue | int) -> Operand:

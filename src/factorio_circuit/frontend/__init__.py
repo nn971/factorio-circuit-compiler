@@ -11,10 +11,24 @@ from .symbolic import (
 )
 from .vector_circuit import AccumulatorReg, Circuit, FreezeReg, SignalsInput
 from .vector_expr import SignalsExpr
-from .vector_nodes import _VectorBinaryOp as _VectorBinaryOp
-from .vector_nodes import _VectorFilter as _VectorFilter
-from .vector_nodes import _VectorScalarOp as _VectorScalarOp
-from .vector_nodes import _VectorSelect as _VectorSelect
+from .vector_nodes import (
+    VectorBinaryOp,
+    VectorFilter,
+    VectorScalarOp,
+    VectorSelect,
+)
+from .vector_nodes import (
+    _VectorBinaryOp as _VectorBinaryOp,
+)
+from .vector_nodes import (
+    _VectorFilter as _VectorFilter,
+)
+from .vector_nodes import (
+    _VectorScalarOp as _VectorScalarOp,
+)
+from .vector_nodes import (
+    _VectorSelect as _VectorSelect,
+)
 
 __all__ = [
     "AccumulatorReg",
@@ -29,4 +43,8 @@ __all__ = [
     "SampleOnReference",
     "ScalarEvent",
     "VectorEvent",
+    "VectorBinaryOp",
+    "VectorFilter",
+    "VectorScalarOp",
+    "VectorSelect",
 ]

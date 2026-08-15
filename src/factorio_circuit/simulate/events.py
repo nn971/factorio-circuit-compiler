@@ -8,10 +8,11 @@ model physical pulses, buffering, output streams, or bridges.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, cast
 
+from factorio_circuit.analysis.state_timing import analyze_clocked_timing, validate_event_throughput
 from factorio_circuit.events import (
     EventCausalityError,
     EventCrossingError,
@@ -23,26 +24,52 @@ from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.ir.semantic import (
     BinaryOp,
     CircuitModule,
+    Clock,
+    ClockContractEnvironment,
     Compare,
     Constant,
     EventInput,
+    EventScalarFlow,
+    EventVectorFlow,
+    Flow,
+    FlowInput,
+    FlowInputSample,
+    FlowVectorInput,
+    FlowVectorInputSample,
     Input,
     InputSample,
     PayloadShape,
     SampleOn,
+    ScalarValue,
     Select,
+    TemporalModality,
+    VectorBinaryOp,
     VectorConstant,
+    VectorFilter,
     VectorInput,
     VectorInputSample,
+    VectorScalarOp,
+    VectorSelect,
     VectorSignal,
+    VectorValue,
+    is_vector_value,
 )
 from factorio_circuit.ir.state import (
+    AccumulatorRegister,
     FreezeCapture,
     FreezeRegister,
     StateRegister,
+    StateTransition,
     VectorRegisterRead,
+    state_transitions,
 )
-from factorio_circuit.target.factorio.semantics import apply_binary, apply_compare, i32
+from factorio_circuit.simulate.kernel import (
+    EvaluationContext,
+    evaluate_scalar,
+    evaluate_vector,
+    run_timestamp_kernel,
+)
+from factorio_circuit.target.factorio.semantics import i32
 
 SignalMap = dict[SignalId, int]
 EventPayload = int | SignalMap
@@ -195,8 +222,15 @@ def simulate_events(
     sharing a timestamp observe one old-state/Level snapshot and commit together.
     """
 
+    from factorio_circuit.lowering.frontend_to_ir import normalize_module
+
+    module = normalize_module(module)
+    try:
+        clock_environment = ClockContractEnvironment.from_module(module)
+    except ValueError as exc:
+        raise EventScheduleError("conflicting Event clock contract declarations") from exc
     _validate_sample_on_crossings(module)
-    schedules_by_source = _validate_schedules(module, schedules)
+    schedules_by_source = _validate_schedules(module, schedules, clock_environment)
     max_occurrence = max(
         (
             occurrence.timestamp
@@ -215,9 +249,10 @@ def simulate_events(
         raise EventScheduleError("stop_timestamp must be a non-negative integer or None")
     if max_occurrence >= stop_timestamp:
         raise EventScheduleError("Event occurrences must lie in the half-open simulation domain")
-    captures = _validate_event_module(module)
-    state: StateSnapshot = {register.name: {} for register in module.state_registers}
-    grouped: dict[int, list[tuple[int, EventInput, EventOccurrence, EventPayload]]] = {}
+    transitions_by_source = _validate_event_module(module, clock_environment)
+    timing = analyze_clocked_timing(module, clock_environment=clock_environment)
+    validate_event_throughput(timing, clock_environment=clock_environment)
+    initial_state: StateSnapshot = {register.name: {} for register in module.state_registers}
     declaration_order = {source: index for index, source in enumerate(module.event_inputs)}
     crossings_by_target: dict[EventInput, tuple[SampleOn, ...]] = {
         source: tuple(
@@ -225,60 +260,58 @@ def simulate_events(
         )
         for source in module.event_inputs
     }
-    for source, occurrences in schedules_by_source.items():
-        source_order = declaration_order[source]
-        for occurrence, payload in occurrences:
-            grouped.setdefault(occurrence.timestamp, []).append(
-                (source_order, source, occurrence, payload)
-            )
-
-    reactions: list[EventReaction] = []
-    for timestamp in sorted(grouped):
-        level_row = _dense_level_row(module, level_stream, timestamp)
-        before = _copy_state(state)
-        staged = _copy_state(state)
-        entries = sorted(grouped[timestamp], key=lambda item: item[0])
-        captured_by_source: dict[EventInput, list[str]] = {}
-        for _, source, _occurrence, payload in entries:
-            for capture in captures.get(source, ()):
-                captured_by_source.setdefault(source, []).append(capture.register.name)
-                captured = (
-                    payload
-                    if capture.value is None
-                    else _evaluate_capture_value(capture.value, level_row, before)
+    scheduled = {
+        source: tuple((occurrence.timestamp, payload) for occurrence, payload in occurrences)
+        for source, occurrences in schedules_by_source.items()
+    }
+    frames = run_timestamp_kernel(
+        cast(dict[object, tuple[tuple[int, EventPayload], ...]], scheduled),
+        cast(dict[object, int], declaration_order),
+        lambda timestamp: _dense_level_row(module, level_stream, timestamp),
+        cast(dict[object, tuple[StateTransition, ...]], transitions_by_source),
+        initial_state,
+        lambda level_row, state, source, payload: _EventEvaluationContext(
+            dict(level_row), state, cast(EventInput, source), payload
+        ),
+    )
+    reactions = [
+        EventReaction(
+            timestamp=frame.timestamp,
+            activations=tuple(
+                EventActivation(
+                    source=cast(EventInput, source),
+                    payload=cast(EventPayload, payload),
+                    captured_registers=tuple(
+                        transition.register.name
+                        for transition in frame.applied.get(source, ())
+                        if transition.kind == "capture"
+                    ),
+                    crossing_observations=tuple(
+                        SampleOnObservation(
+                            crossing=crossing,
+                            value=_sample_on_value(
+                                crossing,
+                                frame.level_row,
+                                frame.state_before,
+                                cast(EventInput, source),
+                                cast(EventPayload, payload),
+                            ),
+                        )
+                        for crossing in crossings_by_target[cast(EventInput, source)]
+                    ),
                 )
-                if not isinstance(captured, dict):
-                    raise EventCausalityError("vector Event capture produced a non-vector payload")
-                staged[capture.register.name] = dict(captured)
-
-        after = _copy_state(staged)
-        reactions.append(
-            EventReaction(
-                timestamp=timestamp,
-                activations=tuple(
-                    EventActivation(
-                        source=activation_source,
-                        payload=activation_payload,
-                        captured_registers=tuple(captured_by_source.get(activation_source, ())),
-                        crossing_observations=tuple(
-                            SampleOnObservation(
-                                crossing=crossing,
-                                value=_sample_on_value(crossing, level_row),
-                            )
-                            for crossing in crossings_by_target[activation_source]
-                        ),
-                    )
-                    for _, activation_source, _, activation_payload in entries
-                ),
-                level_row=_copy_level_row(level_row),
-                state_before=_copy_state(before),
-                state_after=_copy_state(after),
-            )
+                for _, source, payload in frame.entries
+            ),
+            level_row=_copy_level_row(frame.level_row),
+            state_before=_copy_state(frame.state_before),
+            state_after=_copy_state(frame.state_after),
         )
-        state = staged
+        for frame in frames
+    ]
 
+    final_state = frames[-1].state_after if frames else initial_state
     return EventSimulationResult(
-        final_state=_copy_state(state),
+        final_state=_copy_state(final_state),
         reactions=tuple(reactions),
         domain=TimestampDomain(stop=stop_timestamp),
         event_inputs=module.event_inputs,
@@ -295,27 +328,111 @@ def _validate_sample_on_crossings(module: CircuitModule) -> None:
         if crossing in seen:
             raise EventCrossingError("duplicate SampleOn crossing declaration")
         seen.add(crossing)
-        if isinstance(crossing.source, Input):
-            if crossing.source not in declared_scalars:
-                raise EventCrossingError("SampleOn source is not a declared scalar Level input")
-        elif isinstance(crossing.source, VectorInput):
-            if crossing.source not in declared_vectors:
-                raise EventCrossingError("SampleOn source is not a declared vector Level input")
-        else:
-            raise EventCrossingError("SampleOn source must be a raw Level input")
+        _validate_sample_on_value(
+            crossing.source,
+            declared_scalars,
+            declared_vectors,
+            set(module.state_registers),
+        )
         if crossing.target not in declared_events:
             raise EventCrossingError("SampleOn target is not a declared Event input")
 
 
-def _sample_on_value(crossing: SampleOn, level_row: LevelRow) -> EventPayload:
-    raw = level_row.get(crossing.source.name, {} if isinstance(crossing.source, VectorInput) else 0)
-    if isinstance(crossing.source, Input):
-        if isinstance(raw, bool) or not isinstance(raw, int):
-            raise EventCausalityError("SampleOn scalar Level input requires an integer")
-        return i32(raw)
-    if not isinstance(raw, dict):
-        raise EventCausalityError("SampleOn vector Level input requires a signal map")
-    return dict(raw)
+def _sample_on_value(
+    crossing: SampleOn,
+    level_row: Mapping[str, object],
+    state: StateSnapshot,
+    active_source: EventInput,
+    active_payload: EventPayload,
+) -> EventPayload:
+    if is_vector_value(crossing.source):
+        return _evaluate_vector(crossing.source, level_row, state, active_source, active_payload)
+    return _evaluate_scalar(crossing.source, level_row, state, active_source, active_payload)
+
+
+def _validate_sample_on_value(
+    value: object,
+    declared_scalars: set[Input],
+    declared_vectors: set[VectorInput],
+    declared_registers: set[StateRegister],
+    seen: set[int] | None = None,
+) -> None:
+    if seen is None:
+        seen = set()
+    if id(value) in seen:
+        return
+    seen.add(id(value))
+    if isinstance(value, (FlowInput, Input)):
+        scalar_source = value.source if isinstance(value, FlowInput) else value
+        if scalar_source not in declared_scalars:
+            raise EventCrossingError("SampleOn source is not a declared scalar Level input")
+        return
+    if isinstance(value, (FlowInputSample, InputSample)):
+        if value.offset != 0:
+            raise EventCrossingError("SampleOn Level samples require zero logical offset")
+        _validate_sample_on_value(
+            value.source, declared_scalars, declared_vectors, declared_registers, seen
+        )
+        return
+    if isinstance(value, (FlowVectorInput, VectorInput)):
+        vector_source: object = value.source if isinstance(value, FlowVectorInput) else value
+        if vector_source not in declared_vectors:
+            raise EventCrossingError("SampleOn source is not a declared vector Level input")
+        return
+    if isinstance(value, (FlowVectorInputSample, VectorInputSample)):
+        if value.offset != 0:
+            raise EventCrossingError("SampleOn Level samples require zero logical offset")
+        _validate_sample_on_value(
+            value.source, declared_scalars, declared_vectors, declared_registers, seen
+        )
+        return
+    if isinstance(value, VectorRegisterRead):
+        if value.register not in declared_registers or value.offset != 0:
+            raise EventCrossingError("SampleOn state reads require a declared zero-offset register")
+        return
+    if isinstance(value, (Constant, VectorConstant)):
+        return
+    if isinstance(value, VectorSignal):
+        _validate_sample_on_value(
+            value.vector, declared_scalars, declared_vectors, declared_registers, seen
+        )
+        return
+    if isinstance(value, (BinaryOp, Compare)):
+        _validate_sample_on_value(
+            value.left, declared_scalars, declared_vectors, declared_registers, seen
+        )
+        _validate_sample_on_value(
+            value.right, declared_scalars, declared_vectors, declared_registers, seen
+        )
+        return
+    if isinstance(value, Select):
+        for child in (value.condition, value.when_true, value.when_false):
+            _validate_sample_on_value(
+                child, declared_scalars, declared_vectors, declared_registers, seen
+            )
+        return
+    if isinstance(value, VectorBinaryOp):
+        _validate_sample_on_value(
+            value.left, declared_scalars, declared_vectors, declared_registers, seen
+        )
+        _validate_sample_on_value(
+            value.right, declared_scalars, declared_vectors, declared_registers, seen
+        )
+        return
+    if isinstance(value, VectorScalarOp):
+        _validate_sample_on_value(
+            value.vector, declared_scalars, declared_vectors, declared_registers, seen
+        )
+        _validate_sample_on_value(
+            value.scalar, declared_scalars, declared_vectors, declared_registers, seen
+        )
+        return
+    if isinstance(value, (VectorFilter, VectorSelect)):
+        _validate_sample_on_value(
+            value.vector, declared_scalars, declared_vectors, declared_registers, seen
+        )
+        return
+    raise EventCrossingError("SampleOn source must be a Level expression")
 
 
 def materialize_event_trace(
@@ -348,7 +465,7 @@ def materialize_event_trace(
     elif isinstance(candidate, SampleOn):
         if candidate not in result.sample_on_crossings:
             raise EventMaterializationError("SampleOn reference is not declared by this simulation")
-        shape = PayloadShape.SCALAR if isinstance(candidate.source, Input) else PayloadShape.VECTOR
+        shape = PayloadShape.VECTOR if is_vector_value(candidate.source) else PayloadShape.SCALAR
         updates = {}
         for reaction in result.reactions:
             for activation in reaction.activations:
@@ -410,17 +527,18 @@ def _copy_payload(payload: EventPayload) -> EventPayload:
 def _validate_schedules(
     module: CircuitModule,
     schedules: Sequence[EventSchedule],
+    clock_environment: ClockContractEnvironment,
 ) -> dict[EventInput, tuple[tuple[EventOccurrence, EventPayload], ...]]:
-    declared = set(module.event_inputs)
     if len(schedules) != len(module.event_inputs):
         raise EventScheduleError(
             "schedules must contain exactly one schedule for every Event source"
         )
     result: dict[EventInput, tuple[tuple[EventOccurrence, EventPayload], ...]] = {}
     for schedule in schedules:
-        if schedule.source not in declared:
+        source = _declared_event_source(module, schedule.source)
+        if source is None:
             raise EventScheduleError(f"schedule source {schedule.source.name!r} is not declared")
-        if schedule.source in result:
+        if source in result:
             raise EventScheduleError(
                 f"duplicate schedule for Event source {schedule.source.name!r}"
             )
@@ -430,64 +548,240 @@ def _validate_schedules(
             if previous is not None:
                 if occurrence.timestamp <= previous:
                     raise EventScheduleError(
-                        f"timestamps for Event source {schedule.source.name!r} must be strictly "
-                        "ordered"
+                        f"timestamps for Event source {source.name!r} must be strictly ordered"
                     )
-                if (
-                    occurrence.timestamp - previous
-                    < schedule.source.clock.guaranteed_min_separation
-                ):
+                guarantee = clock_environment.contract_for(source.clock).guaranteed_min_separation
+                if occurrence.timestamp - previous < guarantee:
                     raise EventScheduleError(
-                        f"Event source {schedule.source.name!r} violates declared minimum "
-                        "separation"
+                        f"Event source {source.name!r} violates declared minimum separation"
                     )
             previous = occurrence.timestamp
-            normalized.append((occurrence, _normalize_payload(schedule.source, occurrence.payload)))
-        result[schedule.source] = tuple(normalized)
+            normalized.append((occurrence, _normalize_payload(source, occurrence.payload)))
+        result[source] = tuple(normalized)
     missing = [source.name for source in module.event_inputs if source not in result]
     if missing:
         raise EventScheduleError(f"missing Event schedule(s): {', '.join(missing)}")
     return result
 
 
-def _validate_event_module(module: CircuitModule) -> dict[EventInput, tuple[FreezeCapture, ...]]:
-    if not module.event_inputs and not module.event_state_operations:
-        if module.state_operations:
+def _validate_event_module(
+    module: CircuitModule,
+    clock_environment: ClockContractEnvironment,
+) -> dict[EventInput, tuple[StateTransition, ...]]:
+    transitions = state_transitions(module)
+    event_transitions = tuple(
+        transition for transition in transitions if transition.trigger is not None
+    )
+    if not module.event_inputs and not event_transitions:
+        if transitions:
             raise EventCausalityError("Event simulation requires declared Event inputs")
         return {}
-    captures: dict[EventInput, list[FreezeCapture]] = {}
+    if any(not isinstance(operation, FreezeCapture) for operation in module.event_state_operations):
+        raise EventCausalityError("unsupported Event state operation")
+    transitions_by_source: dict[EventInput, list[StateTransition]] = {}
     registers: set[StateRegister] = set()
-    declared = set(module.event_inputs)
     declared_registers = set(module.state_registers)
-    if module.state_operations:
+    if any(transition.trigger is None for transition in transitions):
         raise EventCausalityError("Event modules cannot mix periodic state operations")
-    for operation in module.event_state_operations:
-        if not isinstance(operation, FreezeCapture):
-            raise EventCausalityError("unsupported Event state operation")
-        if not isinstance(operation.register, FreezeRegister):
-            raise EventCausalityError("Event captures require FreezeRegister targets")
+    for operation in event_transitions:
         if operation.register not in declared_registers:
-            raise EventCausalityError("Event capture target is not a listed state register")
-        if operation.trigger not in declared:
-            raise EventCausalityError("Event capture trigger is not declared by the module")
-        if operation.register in registers:
-            raise EventCausalityError("each FreezeReg may have only one Event capture")
-        if operation.trigger.payload_shape.value == "scalar" and operation.value is None:
-            raise EventCausalityError("scalar Event capture requires an explicit vector value")
+            raise EventCausalityError("Event transition target is not a listed state register")
+        if operation.trigger is None:
+            raise EventCausalityError("Event transition requires an Event trigger")
+        trigger = _declared_event_source(module, operation.trigger)
+        if trigger is None:
+            raise EventCausalityError("Event transition trigger is not declared by the module")
+        if operation.kind == "capture":
+            if not isinstance(operation.register, FreezeRegister):
+                raise EventCausalityError("Event captures require FreezeRegister targets")
+            if operation.register in registers:
+                raise EventCausalityError("each FreezeReg may have only one Event capture")
+            if trigger.payload_shape is PayloadShape.SCALAR and operation.value is None:
+                raise EventCausalityError("scalar Event capture requires an explicit vector value")
+        elif operation.kind == "add" and not isinstance(operation.register, AccumulatorRegister):
+            raise EventCausalityError("Event add transitions require AccumulatorRegister targets")
+        elif operation.kind == "set" and not isinstance(operation.register, FreezeRegister):
+            raise EventCausalityError("Event set transitions require FreezeRegister targets")
+        elif operation.kind == "clear" and not isinstance(operation.register, AccumulatorRegister):
+            raise EventCausalityError("Event clear transitions require AccumulatorRegister targets")
         if operation.value is not None:
-            _validate_capture_value(operation.value)
-        if operation.trigger.clock.guaranteed_min_separation < operation.required_min_separation:
-            raise EventThroughputError(
-                f"Event source {operation.trigger.name!r} guarantee is below capture requirement"
+            value_clocks = _validate_event_transition_value(
+                operation.value, module, PayloadShape.VECTOR, clock_environment
             )
-        captures.setdefault(operation.trigger, []).append(operation)
+            value_flow = getattr(operation.value, "flow", None)
+            if (
+                isinstance(value_flow, Flow)
+                and value_flow.modality is TemporalModality.EVENT
+                and value_flow.clock.clock_id != trigger.clock.clock_id
+            ):
+                raise EventCausalityError(
+                    "Event transition value must use the transition trigger clock"
+                )
+            if any(clock != trigger.clock.clock_id for clock in value_clocks):
+                raise EventCausalityError(
+                    "Event transition value must use the transition trigger clock"
+                )
+        if operation.when is not None:
+            when_clocks = _validate_event_transition_value(
+                operation.when, module, PayloadShape.SCALAR, clock_environment
+            )
+            when_flow = getattr(operation.when, "flow", None)
+            if (
+                isinstance(when_flow, Flow)
+                and when_flow.modality is TemporalModality.EVENT
+                and when_flow.clock.clock_id != trigger.clock.clock_id
+            ):
+                raise EventCausalityError(
+                    "Event transition condition must use the transition trigger clock"
+                )
+            if any(clock != trigger.clock.clock_id for clock in when_clocks):
+                raise EventCausalityError(
+                    "Event transition condition must use the transition trigger clock"
+                )
+        transitions_by_source.setdefault(trigger, []).append(replace(operation, trigger=trigger))
         registers.add(operation.register)
     unbound = [register.name for register in module.state_registers if register not in registers]
     if unbound:
         raise EventCausalityError(
             f"Event modules require one capture for each state register: {', '.join(unbound)}"
         )
-    return {source: tuple(operations) for source, operations in captures.items()}
+    return {source: tuple(operations) for source, operations in transitions_by_source.items()}
+
+
+def _validate_event_transition_value(
+    value: object,
+    module: CircuitModule,
+    shape: PayloadShape,
+    clock_environment: ClockContractEnvironment,
+) -> set[object]:
+    declared_scalars = set(module.inputs)
+    declared_vectors = set(module.vector_inputs)
+    declared_registers = set(module.state_registers)
+    declared_events = set(module.event_inputs)
+    modes: set[TemporalModality] = set()
+    clocks: set[object] = set()
+    seen: set[int] = set()
+
+    def resolve_event_clock(clock: object) -> object:
+        if not isinstance(clock, Clock):
+            raise EventCausalityError("Event Flow is missing a valid clock")
+        try:
+            clock_environment.contract_for(clock)
+        except KeyError as exc:
+            raise EventCausalityError(
+                "Event Flow clock is absent from the contract environment"
+            ) from exc
+        return clock.clock_id
+
+    def visit(item: object, expected: PayloadShape) -> None:
+        if id(item) in seen:
+            return
+        seen.add(id(item))
+        if isinstance(item, EventScalarFlow):
+            if expected is not PayloadShape.SCALAR or item.source not in declared_events:
+                raise EventCausalityError(
+                    "Event scalar Flow has an invalid transition shape/source"
+                )
+            modes.add(TemporalModality.EVENT)
+            clocks.add(resolve_event_clock(item.flow.clock))
+            return
+        if isinstance(item, EventVectorFlow):
+            if expected is not PayloadShape.VECTOR or item.source not in declared_events:
+                raise EventCausalityError(
+                    "Event vector Flow has an invalid transition shape/source"
+                )
+            modes.add(TemporalModality.EVENT)
+            clocks.add(resolve_event_clock(item.flow.clock))
+            return
+        if isinstance(item, SampleOn):
+            item_shape = (
+                PayloadShape.VECTOR if is_vector_value(item.source) else PayloadShape.SCALAR
+            )
+            if item_shape is not expected or item.target not in declared_events:
+                raise EventCausalityError("SampleOn has an invalid transition shape/target")
+            _validate_sample_on_value(
+                item.source, declared_scalars, declared_vectors, declared_registers
+            )
+            modes.add(TemporalModality.EVENT)
+            clocks.add(resolve_event_clock(item.target.clock))
+            return
+        if isinstance(item, Constant):
+            if expected is not PayloadShape.SCALAR:
+                raise EventCausalityError("scalar constant used as a vector transition")
+            return
+        if isinstance(item, (Input, InputSample)):
+            if expected is not PayloadShape.SCALAR:
+                raise EventCausalityError("scalar Level value used as a vector transition")
+            if isinstance(item, Input) and item not in declared_scalars:
+                raise EventCausalityError("transition uses an undeclared scalar Level input")
+            if isinstance(item, InputSample) and (
+                item.source not in declared_scalars or item.offset != 0
+            ):
+                raise EventCausalityError("transition Level samples require zero logical offset")
+            modes.add(TemporalModality.LEVEL)
+            return
+        if isinstance(item, VectorConstant):
+            if expected is not PayloadShape.VECTOR:
+                raise EventCausalityError("vector constant used as a scalar transition")
+            return
+        if isinstance(item, (VectorInput, VectorInputSample, VectorRegisterRead)):
+            if expected is not PayloadShape.VECTOR:
+                raise EventCausalityError("vector Level value used as a scalar transition")
+            if isinstance(item, VectorInput) and item not in declared_vectors:
+                raise EventCausalityError("transition uses an undeclared vector Level input")
+            if isinstance(item, VectorInputSample) and (
+                item.source not in declared_vectors or item.offset != 0
+            ):
+                raise EventCausalityError("transition Level samples require zero logical offset")
+            if isinstance(item, VectorRegisterRead) and (
+                item.register not in declared_registers or item.offset != 0
+            ):
+                raise EventCausalityError(
+                    "transition state reads require a declared zero-offset register"
+                )
+            modes.add(TemporalModality.LEVEL)
+            return
+        if isinstance(item, VectorSignal):
+            visit(item.vector, PayloadShape.VECTOR)
+            return
+        if isinstance(item, (BinaryOp, Compare)):
+            visit(item.left, PayloadShape.SCALAR)
+            visit(item.right, PayloadShape.SCALAR)
+            return
+        if isinstance(item, Select):
+            visit(item.condition, PayloadShape.SCALAR)
+            visit(item.when_true, PayloadShape.SCALAR)
+            visit(item.when_false, PayloadShape.SCALAR)
+            return
+        if isinstance(item, VectorBinaryOp):
+            visit(item.left, PayloadShape.VECTOR)
+            visit(item.right, PayloadShape.VECTOR)
+            return
+        if isinstance(item, VectorScalarOp):
+            visit(item.vector, PayloadShape.VECTOR)
+            visit(item.scalar, PayloadShape.SCALAR)
+            return
+        if isinstance(item, (VectorFilter, VectorSelect)):
+            visit(item.vector, PayloadShape.VECTOR)
+            return
+        raise EventCausalityError("unsupported Event transition expression")
+
+    visit(value, shape)
+    if len(modes) > 1:
+        raise EventCrossingError(
+            "Event and Level transition values require an explicit SampleOn conversion"
+        )
+    if len(clocks) > 1:
+        raise EventCausalityError(
+            "Event transition values must use one compatible occurrence clock"
+        )
+    return clocks
+
+
+def _declared_event_source(module: CircuitModule, candidate: EventInput) -> EventInput | None:
+    """Resolve equal structural Event values to the module-owned timing contract."""
+
+    return next((source for source in module.event_inputs if source == candidate), None)
 
 
 def _normalize_payload(source: EventInput, payload: object) -> EventPayload:
@@ -513,186 +807,115 @@ def _normalize_payload(source: EventInput, payload: object) -> EventPayload:
     return result
 
 
-def _validate_capture_value(value: object) -> None:
-    from factorio_circuit.frontend import (
-        _VectorBinaryOp,
-        _VectorFilter,
-        _VectorScalarOp,
-        _VectorSelect,
-    )
+class _EventEvaluationContext(EvaluationContext):
+    def __init__(
+        self,
+        level_row: Mapping[str, object],
+        state: StateSnapshot,
+        active_source: EventInput,
+        event_payload: EventPayload | None = None,
+    ) -> None:
+        self.level_row = level_row
+        self.state = state
+        self.active_source = active_source
+        self.event_payload = event_payload
+        self.event_present = True
 
-    def validate_scalar(item: object) -> None:
-        if isinstance(item, InputSample):
-            if item.offset != 0:
-                raise EventCausalityError(
-                    "Event capture values require zero-offset Level/state inputs"
-                )
-            return
-        if isinstance(item, (Input, Constant)):
-            return
-        if isinstance(item, VectorSignal):
-            validate_vector(item.vector)
-            return
-        if isinstance(item, (BinaryOp, Compare)):
-            validate_scalar(item.left)
-            validate_scalar(item.right)
-            return
-        if isinstance(item, Select):
-            validate_scalar(item.condition)
-            validate_scalar(item.when_true)
-            validate_scalar(item.when_false)
-            return
-        raise EventCausalityError("unsupported Event capture scalar expression")
-
-    def validate_vector(item: object) -> None:
-        if isinstance(item, VectorInput):
-            return
-        if isinstance(item, VectorInputSample):
-            if item.offset != 0:
-                raise EventCausalityError(
-                    "Event capture values require zero-offset Level/state inputs"
-                )
-            return
-        if isinstance(item, VectorRegisterRead):
-            if item.offset != 0:
-                raise EventCausalityError(
-                    "Event capture values require zero-offset Level/state inputs"
-                )
-            return
-        if isinstance(item, VectorConstant):
-            return
-        if isinstance(item, _VectorBinaryOp):
-            validate_vector(item.left)
-            validate_vector(item.right)
-            return
-        if isinstance(item, _VectorScalarOp):
-            validate_vector(item.vector)
-            validate_scalar(item.scalar)
-            return
-        if isinstance(item, (_VectorSelect, _VectorFilter)):
-            validate_vector(item.vector)
-            return
-        raise EventCausalityError("unsupported Event capture vector expression")
-
-    validate_vector(value)
-
-
-def _evaluate_capture_value(
-    value: object,
-    level_row: LevelRow,
-    state: StateSnapshot,
-) -> SignalMap:
-    _validate_capture_value(value)
-    return _evaluate_vector(value, level_row, state)
-
-
-def _evaluate_scalar(value: object, level_row: LevelRow, state: StateSnapshot) -> int:
-    if isinstance(value, Input):
-        raw = level_row.get(value.name, 0)
-        if not isinstance(raw, int):
-            raise EventCausalityError("Event capture scalar Level input requires an integer")
+    def scalar_input(self, source: Input, offset: int) -> int:
+        if offset != 0:
+            raise EventCausalityError("Event reference values require zero logical offset")
+        raw = self.level_row.get(source.name, 0)
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise EventCausalityError("Event reference scalar Level input requires an integer")
         return i32(raw)
-    if isinstance(value, InputSample):
-        if value.offset != 0:
-            raise EventCausalityError("Event capture values require zero-offset Level/state inputs")
-        return _evaluate_scalar(value.source, level_row, state)
-    if isinstance(value, Constant):
-        return i32(value.value)
-    if isinstance(value, VectorSignal):
-        vector = _evaluate_vector(value.vector, level_row, state)
-        if value.signal == ANYTHING_SIGNAL:
-            return int(bool(vector))
-        return vector.get(value.signal, 0)
-    if isinstance(value, BinaryOp):
-        return apply_binary(
-            value.op,
-            _evaluate_scalar(value.left, level_row, state),
-            _evaluate_scalar(value.right, level_row, state),
-        )
-    if isinstance(value, Compare):
-        return int(
-            apply_compare(
-                value.op,
-                _evaluate_scalar(value.left, level_row, state),
-                _evaluate_scalar(value.right, level_row, state),
-            )
-        )
-    if isinstance(value, Select):
-        branch = (
-            value.when_true
-            if _evaluate_scalar(value.condition, level_row, state) != 0
-            else value.when_false
-        )
-        return _evaluate_scalar(branch, level_row, state)
-    raise EventCausalityError("unsupported Event capture scalar expression")
 
-
-def _evaluate_vector(value: object, level_row: LevelRow, state: StateSnapshot) -> SignalMap:
-    from factorio_circuit.frontend import (
-        _VectorBinaryOp,
-        _VectorFilter,
-        _VectorScalarOp,
-        _VectorSelect,
-    )
-
-    if isinstance(value, VectorInput):
-        raw = level_row.get(value.name, {})
+    def vector_input(self, source: VectorInput, offset: int) -> SignalMap:
+        if offset != 0:
+            raise EventCausalityError("Event reference values require zero logical offset")
+        raw = self.level_row.get(source.name, {})
         if not isinstance(raw, dict):
-            raise EventCausalityError("Event capture Level value requires a signal map")
+            raise EventCausalityError("Event reference vector Level input requires a signal map")
         return dict(raw)
-    if isinstance(value, VectorInputSample):
-        if value.offset != 0:
-            raise EventCausalityError("Event capture values require zero-offset Level/state inputs")
-        raw = level_row.get(value.source.name, {})
-        if not isinstance(raw, dict):
-            raise EventCausalityError("Event capture Level value requires a signal map")
-        return dict(raw)
-    if isinstance(value, VectorRegisterRead):
-        if value.offset != 0:
-            raise EventCausalityError("Event capture values require zero-offset Level/state inputs")
-        return dict(state[value.register.name])
-    if isinstance(value, VectorConstant):
-        return {signal: i32(amount) for signal, amount in value.signals if i32(amount) != 0}
-    if isinstance(value, _VectorBinaryOp):
-        left = _evaluate_vector(value.left, level_row, state)
-        right = _evaluate_vector(value.right, level_row, state)
-        return _vector_binary(value.op, left, right)
-    if isinstance(value, _VectorScalarOp):
-        vector = _evaluate_vector(value.vector, level_row, state)
-        scalar = _evaluate_scalar(value.scalar, level_row, state)
-        return {
-            signal: i32(apply_binary(value.op, amount, scalar))
-            for signal, amount in vector.items()
-            if i32(apply_binary(value.op, amount, scalar)) != 0
-        }
-    if isinstance(value, _VectorSelect):
-        vector = _evaluate_vector(value.vector, level_row, state)
-        if not vector:
-            return {}
-        if value.select_max:
-            signal, amount = max(
-                vector.items(), key=lambda item: (item[1], item[0].kind, item[0].name)
+
+    def state_vector(self, register: StateRegister, offset: int) -> SignalMap:
+        if offset != 0:
+            raise EventCausalityError("Event reference values require zero logical offset")
+        return dict(self.state[register.name])
+
+    def event_scalar(self, source: EventScalarFlow) -> int:
+        if source.source != self.active_source or not self.event_present:
+            raise EventCausalityError(
+                f"Event source {source.name!r} is not active in this reaction"
             )
-            return {signal: amount}
-        return dict(vector)
-    if isinstance(value, _VectorFilter):
-        vector = _evaluate_vector(value.vector, level_row, state)
-        return {
-            signal: amount
-            for signal, amount in vector.items()
-            if apply_compare(value.op, amount, value.right)
-        }
-    raise EventCausalityError("unsupported Event capture vector expression")
+        if isinstance(self.event_payload, bool) or not isinstance(self.event_payload, int):
+            raise EventCausalityError(
+                f"Event scalar source {source.name!r} requires an integer payload"
+            )
+        return i32(self.event_payload)
+
+    def event_vector(self, source: EventVectorFlow) -> SignalMap:
+        if source.source != self.active_source or not self.event_present:
+            raise EventCausalityError(
+                f"Event source {source.name!r} is not active in this reaction"
+            )
+        if not isinstance(self.event_payload, dict):
+            raise EventCausalityError(
+                f"Event vector source {source.name!r} requires a signal-map payload"
+            )
+        return dict(self.event_payload)
+
+    def sample_on_scalar(self, source: SampleOn) -> int:
+        if source.target != self.active_source or not self.event_present:
+            raise EventCausalityError("SampleOn target is not active in this reaction")
+        if is_vector_value(source.source):
+            raise EventCausalityError("scalar evaluator received a vector SampleOn value")
+        return evaluate_scalar(cast(ScalarValue, source.source), self)
+
+    def sample_on_vector(self, source: SampleOn) -> SignalMap:
+        if source.target != self.active_source or not self.event_present:
+            raise EventCausalityError("SampleOn target is not active in this reaction")
+        if not is_vector_value(source.source):
+            raise EventCausalityError("vector evaluator received a scalar SampleOn value")
+        return evaluate_vector(cast(VectorValue, source.source), self)
+
+    def active_event_vector(self) -> SignalMap:
+        if self.active_source.payload_shape is not PayloadShape.VECTOR:
+            raise EventCausalityError("a scalar Event cannot provide a vector transition payload")
+        if not isinstance(self.event_payload, dict):
+            raise EventCausalityError("active Event has no vector payload")
+        return dict(self.event_payload)
 
 
-def _vector_binary(op: str, left: SignalMap, right: SignalMap) -> SignalMap:
-    signals = set(left) | set(right)
-    result: SignalMap = {}
-    for signal in signals:
-        amount = i32(apply_binary(op, left.get(signal, 0), right.get(signal, 0)))
-        if amount != 0:
-            result[signal] = amount
-    return result
+def _evaluate_scalar(
+    value: object,
+    level_row: Mapping[str, object],
+    state: StateSnapshot,
+    active_source: EventInput,
+    active_payload: EventPayload,
+) -> int:
+    try:
+        return evaluate_scalar(
+            cast(ScalarValue, value),
+            _EventEvaluationContext(level_row, state, active_source, active_payload),
+        )
+    except TypeError as exc:
+        raise EventCausalityError("unsupported Event reference scalar expression") from exc
+
+
+def _evaluate_vector(
+    value: object,
+    level_row: Mapping[str, object],
+    state: StateSnapshot,
+    active_source: EventInput,
+    active_payload: EventPayload,
+) -> SignalMap:
+    try:
+        return evaluate_vector(
+            cast(VectorValue, value),
+            _EventEvaluationContext(level_row, state, active_source, active_payload),
+        )
+    except TypeError as exc:
+        raise EventCausalityError("unsupported Event reference vector expression") from exc
 
 
 def _dense_level_row(
@@ -738,7 +961,7 @@ def _copy_state(state: StateSnapshot) -> StateSnapshot:
     return {name: dict(value) for name, value in state.items()}
 
 
-def _copy_level_row(row: LevelRow) -> LevelRow:
+def _copy_level_row(row: Mapping[str, object]) -> LevelRow:
     return {name: dict(value) if isinstance(value, dict) else value for name, value in row.items()}
 
 

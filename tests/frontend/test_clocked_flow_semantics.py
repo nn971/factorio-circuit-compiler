@@ -7,13 +7,18 @@ from factorio_circuit.ir.semantic import (
     Clock,
     ClockProvenance,
     Flow,
+    FlowInputSample,
+    FlowVectorInput,
+    FlowVectorInputSample,
     InputSample,
     PayloadShape,
     TemporalModality,
+    VectorBinaryOp,
     VectorInput,
     VectorInputSample,
 )
 from factorio_circuit.ir.semantic import Input as IRInput
+from factorio_circuit.lowering.frontend_to_ir import normalize_module
 
 
 def test_clocked_vocabulary_is_immutable_and_value_based() -> None:
@@ -32,6 +37,7 @@ def test_clocked_vocabulary_is_immutable_and_value_based() -> None:
     )
 
     assert clock == same_clock
+    assert clock == Clock("finished", ClockProvenance.EXTERNAL_EVENT, 1)
     assert clock is not same_clock
     assert clock.guaranteed_min_separation == 3
     assert flow.payload_shape is PayloadShape.SCALAR
@@ -102,8 +108,8 @@ def test_legacy_scalar_and_vector_wrappers_expose_cached_level_flows() -> None:
     assert scalar_flow.modality is TemporalModality.LEVEL
     assert vector_flow.payload_shape is PayloadShape.VECTOR
     assert vector_flow.modality is TemporalModality.LEVEL
-    assert scalar_flow.clock.identity == "level_sources:scalar:scalar"
-    assert vector_flow.clock.identity == "level_sources:vector:vector"
+    assert scalar_flow.clock.identity == "level_sources:level"
+    assert vector_flow.clock == scalar_flow.clock
     assert asdict(scalar_flow)["reference"] == {"name": "scalar"}
     assert asdict(vector_flow)["reference"] == {"name": "vector"}
 
@@ -117,6 +123,7 @@ def test_repeated_same_offset_source_sampling_keeps_legacy_cache_identity() -> N
     circuit = Circuit("sampling_cache")
     scalar = circuit.input("scalar")
     vector = circuit.signals("vector")
+    circuit.output("source", vector)
     circuit.step(2)
 
     first_scalar = scalar.sample()
@@ -127,3 +134,31 @@ def test_repeated_same_offset_source_sampling_keeps_legacy_cache_identity() -> N
     assert first_vector.ir is second_vector.ir
     assert isinstance(first_scalar.ir, InputSample)
     assert isinstance(first_vector.ir, VectorInputSample)
+
+
+def test_level_normalization_is_flow_backed_and_idempotent() -> None:
+    circuit = Circuit("canonical_level")
+    scalar = circuit.input("scalar")
+    vector = circuit.signals("vector")
+    circuit.output("source", vector)
+    circuit.step(2)
+    circuit.output("scalar", scalar.sample() + 1)
+    circuit.output("vector", vector.sample() + vector.sample())
+
+    normalized = normalize_module(circuit.build())
+    again = normalize_module(normalized)
+    assert again == normalized
+
+    source_output = normalized.output.values[0]
+    scalar_output = normalized.output.values[1]
+    vector_output = normalized.output.values[2]
+    assert isinstance(source_output, FlowVectorInput)
+    assert scalar_output.flow is not None  # type: ignore[attr-defined]
+    assert scalar_output.flow.payload_shape is PayloadShape.SCALAR  # type: ignore[attr-defined]
+    assert scalar_output.flow.logical_offset == 2  # type: ignore[attr-defined]
+    assert isinstance(scalar_output.left, FlowInputSample)  # type: ignore[attr-defined]
+    assert isinstance(vector_output, VectorBinaryOp)
+    assert vector_output.flow is not None
+    assert vector_output.flow.payload_shape is PayloadShape.VECTOR
+    assert isinstance(vector_output.left, FlowVectorInputSample)
+    assert isinstance(vector_output.right, FlowVectorInputSample)

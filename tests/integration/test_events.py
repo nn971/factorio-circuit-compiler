@@ -12,7 +12,6 @@ from factorio_circuit import (
     EventOccurrence,
     EventSchedule,
     EventScheduleError,
-    EventThroughputError,
     ScalarEvent,
     SignalId,
     TimestampDomain,
@@ -84,7 +83,10 @@ def test_scalar_and_vector_event_declarations_preserve_order_and_metadata() -> N
     assert not isinstance(scalar, Expr)
     assert not isinstance(vector, SignalsExpr)
     assert not hasattr(scalar, "sample")
-    assert not hasattr(vector, "signal")
+    lane = vector.signal(IRON)
+    assert lane.flow is not None
+    assert lane.flow.payload_shape is PayloadShape.SCALAR
+    assert lane.flow.modality is TemporalModality.EVENT
 
 
 def test_event_sources_use_the_existing_name_namespace() -> None:
@@ -255,7 +257,7 @@ def test_nested_nonzero_offset_capture_leaf_is_rejected() -> None:
 def test_nested_state_capture_expression_uses_old_state_snapshot() -> None:
     circuit = Circuit("nested_state_capture")
     data = cast(VectorSignalsExpr, circuit.signals("data"))
-    trigger = circuit.signal_event("finished", guaranteed_min_separation=1)
+    trigger = circuit.signal_event("finished", guaranteed_min_separation=3)
     source = circuit.freeze("source")
     target = circuit.freeze("target")
     old_source = source.sample()
@@ -275,7 +277,7 @@ def test_nested_state_capture_expression_uses_old_state_snapshot() -> None:
 def test_event_capture_any_selector_uses_nonempty_old_state_for_second_occurrence() -> None:
     circuit = Circuit("event_any_selector")
     data = cast(VectorSignalsExpr, circuit.signals("data"))
-    trigger = circuit.signal_event("finished", guaranteed_min_separation=1)
+    trigger = circuit.signal_event("finished", guaranteed_min_separation=3)
     source = circuit.freeze("source")
     target = circuit.freeze("target")
     old_source = source.sample()
@@ -285,11 +287,16 @@ def test_event_capture_any_selector_uses_nonempty_old_state_for_second_occurrenc
 
     result = simulate_events(
         circuit.build(),
-        [{"data": {IRON: 10}}, {"data": {IRON: 20}}],
+        [
+            {"data": {IRON: 10}},
+            {},
+            {},
+            {"data": {IRON: 20}},
+        ],
         [
             EventSchedule(
                 trigger.ir,
-                (EventOccurrence(0, {IRON: 1}), EventOccurrence(1, {IRON: 2})),
+                (EventOccurrence(0, {IRON: 1}), EventOccurrence(3, {IRON: 2})),
             )
         ],
     )
@@ -415,21 +422,15 @@ def test_same_timestamp_reactions_follow_declaration_order_and_commit_atomically
     assert result.final_state == {"first_register": {IRON: 1}, "second_register": {}}
 
 
-@pytest.mark.parametrize("required, expected", [(1, None), (2, None), (3, EventThroughputError)])
-def test_capture_throughput_uses_declared_guarantee_not_schedule_luck(
-    required: int, expected: type[Exception] | None
-) -> None:
+@pytest.mark.parametrize("required", [1, 2, 3])
+def test_legacy_capture_bound_is_diagnostics_only(required: int) -> None:
     circuit = Circuit(f"throughput_{required}")
     trigger = circuit.signal_event("finished", guaranteed_min_separation=2)
     memory = circuit.freeze("memory")
     memory.capture_on(trigger, required_min_separation=required)
     circuit.output("memory", memory.sample())
 
-    if expected is None:
-        simulate_events(circuit.build(), [], [EventSchedule(trigger.ir, ())])
-    else:
-        with pytest.raises(expected):
-            simulate_events(circuit.build(), [], [EventSchedule(trigger.ir, ())])
+    simulate_events(circuit.build(), [], [EventSchedule(trigger.ir, ())])
 
 
 def test_event_causality_and_compilation_errors_are_distinct() -> None:
@@ -476,7 +477,7 @@ def test_level_simulation_regression_remains_separate_from_event_path() -> None:
     assert simulate_stream(circuit.build(), [{"value": 7}]) == [(7,)]
 
 
-def test_sample_on_is_interned_ordered_and_restricted_to_raw_inputs() -> None:
+def test_sample_on_is_interned_ordered_and_accepts_level_expressions() -> None:
     circuit = Circuit("sample_on")
     scalar_input = circuit.input("scalar")
     vector_input = circuit.signals("vector")
@@ -489,6 +490,8 @@ def test_sample_on_is_interned_ordered_and_restricted_to_raw_inputs() -> None:
     mixed_vector_ref = circuit.sample_on(vector_input, scalar_event)
     assert circuit.sample_on(scalar_input.sample(), scalar_event).ir is scalar_ref.ir  # type: ignore[arg-type]
     assert circuit.sample_on(vector_input.sample(), vector_event).ir is vector_ref.ir  # type: ignore[arg-type]
+    derived_ref = circuit.sample_on(scalar_input + 1, scalar_event)
+    constant_ref = circuit.sample_on(circuit.constant_signals({IRON: 1}), vector_event)
     circuit.output("constant", 0)
     module = circuit.build()
 
@@ -497,6 +500,8 @@ def test_sample_on_is_interned_ordered_and_restricted_to_raw_inputs() -> None:
         vector_ref.ir,
         mixed_scalar_ref.ir,
         mixed_vector_ref.ir,
+        derived_ref.ir,
+        constant_ref.ir,
     )
     assert not isinstance(scalar_ref, (Expr, SignalsExpr, ScalarEvent, VectorEvent))
     assert not hasattr(scalar_ref, "flow")
@@ -507,13 +512,9 @@ def test_sample_on_is_interned_ordered_and_restricted_to_raw_inputs() -> None:
     assert mixed_vector_ref.clock == scalar_event.clock
     assert mixed_vector_ref.payload_shape is PayloadShape.VECTOR
 
-    with pytest.raises(EventCrossingError, match="raw"):
-        circuit.sample_on(scalar_input + 1, scalar_event)  # type: ignore[arg-type]
     circuit.step()
-    with pytest.raises(EventCrossingError, match="raw"):
+    with pytest.raises(EventCrossingError, match="zero logical offset"):
         circuit.sample_on(scalar_input.sample(), scalar_event)  # type: ignore[arg-type]
-    with pytest.raises(EventCrossingError, match="raw"):
-        circuit.sample_on(circuit.constant_signals({IRON: 1}), vector_event)  # type: ignore[arg-type]
     with pytest.raises(EventCrossingError, match="SumInto/HoldInto"):
         circuit.sample_on(scalar_event, vector_event)  # type: ignore[arg-type]
     with pytest.raises(EventCrossingError, match="declared Event"):
@@ -744,7 +745,7 @@ def test_zero_offset_sample_fast_paths_remain_identity_in_both_frontends() -> No
     assert vector.sample() is vector
 
 
-def test_sample_on_cannot_be_captured_or_emitted() -> None:
+def test_sample_on_can_be_emitted_but_not_used_as_capture_trigger() -> None:
     circuit = Circuit("sample_on_boundaries")
     value = circuit.input("value")
     trigger = circuit.event("trigger", guaranteed_min_separation=1)
@@ -752,5 +753,5 @@ def test_sample_on_cannot_be_captured_or_emitted() -> None:
     memory = circuit.freeze("memory")
     with pytest.raises(EventCrossingError, match="capture trigger"):
         memory.capture_on(crossing, required_min_separation=1)  # type: ignore[arg-type]
-    with pytest.raises(EventCrossingError, match="outputs"):
-        circuit.output("crossing", crossing)  # type: ignore[arg-type]
+    circuit.output("crossing", crossing)
+    assert circuit.build().output.values == (crossing.ir,)
