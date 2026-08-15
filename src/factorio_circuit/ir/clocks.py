@@ -117,3 +117,34 @@ class GateClock(EventInput):
                 "GateClock predicate must observe the current parent occurrence; .step() is not a "
                 "clock filter"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class EventMerge(EventInput):
+    """An additive union of same-shaped Event sources.
+
+    Each parent occurrence contributes its payload to the merged stream. Parent occurrences at the
+    same physical timestamp coalesce into one merged occurrence whose payload is the sum of the
+    contributing payloads. With two or more distinct parents, unrelated activations may interleave
+    arbitrarily closely, so this milestone uses the conservative one-tick spacing contract.
+    """
+
+    parents: tuple[EventInput, ...]
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("merged Event name must be non-empty")
+        if not isinstance(self.clock, Clock):
+            raise ValueError("EventMerge clock must be a Clock")
+        if self.clock.provenance is not ClockProvenance.DERIVED:
+            raise ValueError("EventMerge clock must have DERIVED provenance")
+        if len(self.parents) < 2:
+            raise ValueError("EventMerge requires at least two distinct parents")
+        if len(set(self.parents)) != len(self.parents):
+            raise ValueError("EventMerge parents must be unique")
+        if any(not isinstance(parent, EventInput) for parent in self.parents):
+            raise ValueError("EventMerge parents must be Event sources")
+        if any(parent.payload_shape is not self.payload_shape for parent in self.parents):
+            raise ValueError("EventMerge parents must have one payload shape")
+        if self.clock.guaranteed_min_separation != 1:
+            raise ValueError("EventMerge of distinct parents must use the conservative 1-tick bound")
