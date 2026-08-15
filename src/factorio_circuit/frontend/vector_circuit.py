@@ -111,6 +111,9 @@ class VectorEvent(_BaseVectorEvent):
 
     __slots__ = ()
 
+    def _as_signals(self) -> SignalsExpr:
+        return SignalsExpr(self._circuit, self._circuit._event_vector_value(self._source))
+
     def step(self, n: int = 1) -> SignalsExpr:
         """Refer to this Event starting at its ``n``-th later occurrence."""
 
