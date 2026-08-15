@@ -1,11 +1,21 @@
+import pytest
+
+from factorio_circuit import Circuit
 from factorio_circuit.analysis import (
     CausalityEdge,
     CausalityEdgeKind,
     CausalityGraph,
     LogicalDependency,
+    StateOrderError,
+    event_causality_graph,
     has_nonpositive_cycle,
+    infer_commit_offset,
+    periodic_causality_graph,
+    state_read_occurrences,
 )
-from factorio_circuit.ir.state import FreezeRegister
+from factorio_circuit.ir.semantic import Constant, VectorBinaryOp, VectorConstant
+from factorio_circuit.ir.state import FreezeRegister, FreezeSet, VectorRegisterRead
+from factorio_circuit.lowering.frontend_to_ir import normalize_module
 
 KIND = CausalityEdgeKind.ORDINARY_STATE_DEPENDENCY
 
@@ -65,3 +75,85 @@ def test_acyclic_future_reference_does_not_create_a_feedback_violation() -> None
     graph = CausalityGraph((source, target), (dependency(source, target, -4),))
 
     assert not has_nonpositive_cycle(graph)
+
+
+def test_state_read_occurrences_preserve_parallel_semantic_dependencies() -> None:
+    source = FreezeRegister("source")
+    read = VectorRegisterRead(source, offset=2, order=0)
+
+    assert state_read_occurrences(VectorBinaryOp("+", read, read)) == (read, read)
+
+
+def test_commit_offset_is_inferred_without_target_latency() -> None:
+    register = FreezeRegister("memory")
+    before = VectorRegisterRead(register, offset=2, order=0)
+    transition = FreezeSet(register, VectorConstant(()), Constant(1), order=1)
+    after = VectorRegisterRead(register, offset=3, order=2)
+
+    assert infer_commit_offset(register, (transition,), (before, after)) == 2
+
+
+def test_commit_offset_rejects_a_read_inside_compound_transition() -> None:
+    register = FreezeRegister("memory")
+    first = FreezeSet(register, VectorConstant(()), Constant(1), order=1)
+    second = FreezeSet(register, VectorConstant(()), Constant(1), order=3)
+    split = VectorRegisterRead(register, offset=1, order=2)
+
+    with pytest.raises(StateOrderError, match="inside one compound transition"):
+        infer_commit_offset(register, (first, second), (split,))
+
+
+def test_periodic_graph_is_derived_from_logical_register_reads() -> None:
+    circuit = Circuit("logical_periodic_graph")
+    data = circuit.signals("data")
+    source = circuit.freeze("source")
+    target = circuit.freeze("target")
+
+    old_source = source.sample()
+    source.set(data, when=1)
+    target.set(old_source.step(2), when=1)
+    circuit.step(1)
+    circuit.output("target", target.sample())
+
+    module = normalize_module(circuit.build())
+    graph = periodic_causality_graph(module)
+    matching = [
+        edge
+        for edge in graph.edges
+        if edge.source.name == "source" and edge.target.name == "target"
+    ]
+
+    assert matching == [
+        LogicalDependency(
+            matching[0].source,
+            matching[0].target,
+            CausalityEdgeKind.ORDINARY_STATE_DEPENDENCY,
+            -1,
+        )
+    ]
+    assert not hasattr(matching[0], "physical_latency")
+
+
+def test_event_graph_uses_transition_occurrence_offset_without_latency() -> None:
+    circuit = Circuit("logical_event_graph")
+    data = circuit.signals("data")
+    trigger = circuit.signal_event("trigger", guaranteed_min_separation=4)
+    source = circuit.freeze("source")
+    target = circuit.freeze("target")
+
+    source.set(data, when=1)
+    sampled = circuit.sample_on(source.sample(), trigger)
+    target.set(sampled.step(2), when=1)
+
+    module = circuit.build()
+    graph = event_causality_graph(module)
+    matching = [
+        edge
+        for edge in graph.edges
+        if edge.source.name == "source" and edge.target.name == "target"
+    ]
+
+    assert len(matching) == 1
+    assert matching[0].kind is CausalityEdgeKind.EVENT_STATE_DEPENDENCY
+    assert matching[0].logical_displacement == 3
+    assert not hasattr(matching[0], "physical_latency")
