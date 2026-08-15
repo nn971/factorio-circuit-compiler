@@ -16,7 +16,7 @@ from factorio_circuit.ir.semantic import (
     TemporalModality,
     validate_expression_flow,
 )
-from factorio_circuit.ir.state import VectorRegisterRead
+from factorio_circuit.ir.state import AccumulatorRegister, VectorRegisterRead
 
 
 def _contains_state_read(value: object, seen: set[int] | None = None) -> bool:
@@ -150,3 +150,40 @@ class EventMerge(EventInput):
             raise ValueError(
                 "EventMerge of distinct parents must use the conservative 1-tick bound"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class SumInto(EventInput):
+    """Stateful additive bridge from a vector Event source onto a target Event clock.
+
+    The bridge emits exactly one vector occurrence for every target occurrence. Its payload is the
+    Factorio-i32 sum of source payloads in the interval ``(previous_target, current_target]``. The
+    associated accumulator register makes the history requirement explicit in semantic state even
+    though reference simulation can synthesize the same payload directly from deterministic test
+    schedules.
+    """
+
+    source: EventInput
+    target: EventInput
+    register: AccumulatorRegister
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("SumInto name must be non-empty")
+        if self.payload_shape is not PayloadShape.VECTOR:
+            raise ValueError("SumInto is currently a packed vector Event bridge")
+        if not isinstance(self.source, EventInput) or not isinstance(self.target, EventInput):
+            raise ValueError("SumInto source and target must be Event sources")
+        if self.source.payload_shape is not PayloadShape.VECTOR:
+            raise EventCrossingError("SumInto source must carry a vector payload")
+        if not isinstance(self.register, AccumulatorRegister):
+            raise ValueError("SumInto requires an AccumulatorRegister")
+        if self.source.clock == self.target.clock:
+            raise EventCrossingError(
+                "SumInto requires distinct source and target clocks; use the Event value directly "
+                "when no re-clocking is needed"
+            )
+        if self.clock != self.target.clock:
+            raise ValueError("SumInto output must use exactly the target clock")
+        if self.clock.contract != self.target.clock.contract:
+            raise ValueError("SumInto output must inherit the target ClockContract")

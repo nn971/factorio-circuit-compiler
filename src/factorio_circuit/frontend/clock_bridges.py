@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Any, cast
 
 from factorio_circuit.events import EventCausalityError, EventCrossingError
-from factorio_circuit.ir.clocks import EventMerge, GateClock
+from factorio_circuit.ir.clocks import EventMerge, GateClock, SumInto
 from factorio_circuit.ir.semantic import (
     Clock,
     ClockContract,
     ClockProvenance,
+    Constant,
     EventInput,
     Flow,
     PayloadShape,
@@ -38,6 +39,8 @@ class Circuit(_Circuit):
         self._event_merge_counter = 0
         self._hold_into_index: dict[tuple[VectorValue, EventInput], SampleOnReference] = {}
         self._hold_into_counter = 0
+        self._sum_into_index: dict[tuple[EventInput, EventInput], SumInto] = {}
+        self._sum_into_counter = 0
 
     def _derived_event_handle(self, source: EventInput) -> EventHandle:
         if source.payload_shape is PayloadShape.SCALAR:
@@ -233,3 +236,64 @@ class Circuit(_Circuit):
         held = self.sample_on(memory.sample(), target)
         self._hold_into_index[key] = held
         return held
+
+    def sum_into(self, source: VectorEvent, target: EventHandle) -> VectorEvent:
+        """Accumulate source payloads into target-clock interval sums.
+
+        ``sum_into(E, T)`` emits one packed vector Event at every occurrence of ``T``. Its
+        payload is the additive sum of all ``E`` payloads since the previous target occurrence,
+        including an ``E`` occurrence simultaneous with the current target. One hidden accumulator
+        records the history requirement explicitly; equivalent bridges share that state.
+        """
+
+        if not isinstance(source, VectorEvent):
+            raise EventCrossingError("sum_into currently requires a vector Event source")
+        if source._circuit is not self or source.ir not in self._event_inputs:
+            raise EventCausalityError("sum_into source must belong to this Circuit")
+        if not isinstance(target, (ScalarEvent, VectorEvent)):
+            raise EventCausalityError("sum_into target must be a declared Event")
+        if target._circuit is not self or target.ir not in self._event_inputs:
+            raise EventCausalityError("sum_into target must belong to this Circuit")
+        if source.clock == target.clock:
+            raise EventCrossingError(
+                "sum_into requires distinct source and target clocks; use the Event value directly "
+                "when no re-clocking is needed"
+            )
+
+        key = (source.ir, target.ir)
+        existing = self._sum_into_index.get(key)
+        if existing is not None:
+            return VectorEvent(self, existing)
+
+        while True:
+            name = f"sum{self._sum_into_counter}"
+            self._sum_into_counter += 1
+            state_name = f"{name}_buffer"
+            if name not in self._used_names and state_name not in self._used_names:
+                break
+
+        memory = self.accumulator(state_name)
+        memory.add(source._as_signals())
+        # Source addition is deliberately ordered before the target clear. The derived bridge
+        # payload includes same-timestamp source contributions, and the clear drains them from the
+        # hidden accumulator so the next interval starts empty.
+        self._append_event_transition(
+            "clear",
+            memory._register,
+            target.ir,
+            None,
+            Constant(1),
+            None,
+        )
+        bridge = SumInto(
+            name=name,
+            payload_shape=PayloadShape.VECTOR,
+            clock=target.clock,
+            source=source.ir,
+            target=target.ir,
+            register=memory._register,
+        )
+        self._used_names.add(name)
+        self._event_inputs.append(bridge)
+        self._sum_into_index[key] = bridge
+        return VectorEvent(self, bridge)

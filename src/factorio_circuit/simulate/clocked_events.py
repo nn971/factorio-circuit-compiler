@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 from factorio_circuit.events import EventScheduleError
-from factorio_circuit.ir.clocks import EventMerge, GateClock
+from factorio_circuit.ir.clocks import EventMerge, GateClock, SumInto
 from factorio_circuit.ir.semantic import (
     CircuitModule,
     ClockContractEnvironment,
@@ -29,7 +29,11 @@ from .events import (
 )
 from .events import simulate_events as _simulate_events
 
-DerivedEvent = GateClock | EventMerge
+DerivedEvent = GateClock | EventMerge | SumInto
+
+
+def _is_derived_event(source: EventInput) -> bool:
+    return isinstance(source, (GateClock, EventMerge, SumInto))
 
 
 def _external_event_inputs(module: CircuitModule) -> tuple[EventInput, ...]:
@@ -37,6 +41,7 @@ def _external_event_inputs(module: CircuitModule) -> tuple[EventInput, ...]:
         source
         for source in module.event_inputs
         if source.clock.provenance is ClockProvenance.EXTERNAL_EVENT
+        and not _is_derived_event(source)
     )
 
 
@@ -64,6 +69,34 @@ def _merge_payloads(shape: PayloadShape, payloads: Sequence[EventPayload]) -> Ev
     return result
 
 
+def _derive_sum_into(
+    source: SumInto,
+    expanded: Mapping[EventInput, tuple[tuple[EventOccurrence, EventPayload], ...]],
+) -> tuple[tuple[EventOccurrence, EventPayload], ...]:
+    source_occurrences = expanded.get(source.source)
+    target_occurrences = expanded.get(source.target)
+    if source_occurrences is None or target_occurrences is None:
+        raise EventScheduleError(
+            f"SumInto {source.name!r} source and target must be declared before the bridge"
+        )
+
+    derived: list[tuple[EventOccurrence, EventPayload]] = []
+    source_index = 0
+    for target_occurrence, _ in target_occurrences:
+        interval_payloads: list[EventPayload] = []
+        while (
+            source_index < len(source_occurrences)
+            and source_occurrences[source_index][0].timestamp <= target_occurrence.timestamp
+        ):
+            _, payload = source_occurrences[source_index]
+            interval_payloads.append(payload)
+            source_index += 1
+        payload = _merge_payloads(PayloadShape.VECTOR, interval_payloads)
+        occurrence = EventOccurrence(target_occurrence.timestamp, payload)
+        derived.append((occurrence, payload))
+    return tuple(derived)
+
+
 def _derive_event_schedules(
     module: CircuitModule,
     level_stream: Sequence[Mapping[str, object]],
@@ -71,7 +104,7 @@ def _derive_event_schedules(
 ) -> tuple[EventSchedule, ...]:
     """Validate external schedules and synthesize derived Events in declaration order."""
 
-    if any(isinstance(schedule.source, (GateClock, EventMerge)) for schedule in schedules):
+    if any(_is_derived_event(schedule.source) for schedule in schedules):
         raise EventScheduleError(
             "derived Event schedules are synthesized from their parents and cannot be supplied "
             "externally"
@@ -83,7 +116,7 @@ def _derive_event_schedules(
         source
         for source in module.event_inputs
         if source.clock.provenance is not ClockProvenance.EXTERNAL_EVENT
-        and not isinstance(source, (GateClock, EventMerge))
+        and not _is_derived_event(source)
     )
     if unsupported:
         names = ", ".join(source.name for source in unsupported)
@@ -132,6 +165,10 @@ def _derive_event_schedules(
                 occurrence = EventOccurrence(timestamp, payload)
                 merged.append((occurrence, payload))
             expanded[source] = tuple(merged)
+            continue
+
+        if isinstance(source, SumInto):
+            expanded[source] = _derive_sum_into(source, expanded)
 
     return tuple(
         EventSchedule(
@@ -152,10 +189,10 @@ def simulate_events(
     *,
     stop_timestamp: int | None = None,
 ) -> EventSimulationResult:
-    """Simulate external Events plus explicit stateless derived Event clocks/merges."""
+    """Simulate external Events plus explicit stateless/stateful derived Event bridges."""
 
     normalized = normalize_module(module)
-    if not any(isinstance(source, (GateClock, EventMerge)) for source in normalized.event_inputs):
+    if not any(_is_derived_event(source) for source in normalized.event_inputs):
         return _simulate_events(
             normalized,
             level_stream,
