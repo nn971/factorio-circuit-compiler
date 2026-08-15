@@ -1,45 +1,104 @@
 # Timing open problems
 
-## Triggered logical domains and pulse capture
+The original pulse-loss/Event-sampling problem that motivated the clocked-flow milestone is now
+resolved at the semantic and physical-lowering level. External Events have explicit clocks and valid
+signals, Event state has clock contracts, `SampleOn` snapshots Levels on Event clocks, `SumInto` and
+`HoldInto` preserve cross-clock information with explicit policies, and physical simulation is checked
+against the irregular semantic Event runner.
 
-The current multicycle scheduler infers a minimum physical initiation interval `P` for each logical clock domain and realizes it as a periodic cadence. This is sufficient for continuously sampled/level-like inputs, but it can miss short physical pulses that occur between logical activations.
+This document now records the timing problems that remain after that milestone.
 
-Example: a FIFO domain with `P=5` samples an external `push` pulse only on its periodic activation ticks. A one-game-tick pulse between those activations may therefore disappear completely from the logical stream.
+## Overload requires explicit buffering or backpressure
 
-The same issue can affect short-lived levels. The autonomous-market worker now uses an assembler's `Read working` output rather than a synthetic completion signal. If an entire craft's working interval begins and ends between two logical observations, a slow controller can miss that interval just as it can miss a pulse. The first prototype therefore assumes the worker's working interval is long enough to be observed; this is not a general solution.
+An Event recurrence can be logically causal but physically too slow for the environment. The compiler
+derives `required_min_separation` and compares it with the clock's `guaranteed_min_separation`.
+Insufficient spacing raises `EventThroughputError`; occurrences are never silently dropped.
 
-### Candidate semantic direction
+What remains open is how a program should intentionally accept a faster producer while executing a
+slower consumer. The semantic choices are necessarily explicit:
 
-Interpret the inferred `P` as a **minimum spacing between accepted logical activations**, not necessarily as a rigid period:
+- prove a stronger producer spacing contract;
+- aggregate into another execution clock, for example with `SumInto`;
+- add an explicit pending latch/FIFO/queue;
+- expose ready/valid backpressure to the environment.
+
+A hidden one-event buffer should not be introduced automatically into every slow domain.
+
+## General Event queues and ready/valid protocols
+
+The current physical Event path preserves the milestone bridge vocabulary but does not provide a
+general queue. A future queue protocol needs to define at least:
 
 ```text
-T(k + 1) - T(k) >= P
+arrival clock
+execution/dequeue clock
+capacity
+full/empty behavior
+simultaneous enqueue/dequeue boundary
+backpressure or overflow policy
 ```
 
-A future triggered domain could accept the first activation event while ready, snapshot its scalar/vector inputs at that physical tick, then suppress further activations until the minimum interval has elapsed.
+This is particularly relevant for external-device drivers where the environment may produce events
+independently of the controller's recurrence latency.
 
-This suggests an explicit activation predicate rather than trying to infer which external values are "meaningful". For example, a FIFO might conceptually use:
+## Richer arrival contracts
 
-```python
-activate = push_requested | pop_requested
+`guaranteed_min_separation` is enough for direct recurrence feasibility but cannot describe arbitrary
+bursts. A future contract could express bounds such as
+
+```text
+at most N activations in every W game ticks
 ```
 
-The activation predicate answers "should a new logical reaction start?"; it is distinct from whether the resulting state transition is accepted or changes state.
+or equivalent token-bucket constraints. Such contracts would become useful once bounded queues are
+part of physical lowering.
 
-### Information-loss boundary
+## General Event-state programs
 
-If another pulse arrives while the domain is busy, no implementation can both exceed the domain's throughput limit and preserve arbitrary events without extra state. The semantics must eventually choose or expose one of:
+Physical Event state currently covers Event-triggered Freeze operations, compiler-owned bridge state,
+and one unconditional Event `AccumulatorReg.add(...)` transition per ordinary accumulator. More
+general state programs remain open, including:
 
-- drop/suppress activation events while busy;
-- require a `valid`/`ready`-style handshake so the producer holds the event/payload;
-- add an explicit pending latch/FIFO/event accumulator.
+- multiple independent Event transitions targeting one register;
+- Event accumulator clear/replace combinations;
+- arbitrary Event conditions mixed with additive updates;
+- broader automatic bridge/state fusion.
 
-A hidden one-event buffer should not be introduced implicitly into every slow domain.
+These need explicit same-timestamp transition ordering and physical phase rules rather than ad-hoc
+special cases.
 
-### Snapshot requirement
+## Cross-clock state beyond the bridge vocabulary
 
-Triggered activation also implies physical input capture. If a logical sample is used several combinator ticks after activation, it cannot remain attached to a live external wire whose value may have changed. The compiler would need to synthesize appropriate scalar/vector sample-and-hold storage for the activated reaction.
+`SampleOn`, `SumInto`, and `HoldInto` cover the common sampling, additive-history, and latest-value
+crossings. Other policies may eventually be useful—for example min/max reduction over an interval,
+first/last occurrence capture, bounded lists, or priority arbitration. They should be introduced as
+explicit semantic crossings whenever they preserve information differently.
 
-### Deferred decision
+## External device latency contracts
 
-Do not block the autonomous-market prototype on this yet. Continue using level/held signals or an explicit environment handshake for events that must survive a multicycle controller. Return to this design before treating arbitrary one-tick external pulses or short-lived working levels as reliable inputs to `P>1` domains.
+The autonomous-market recipe reader demonstrated that an external machine can require a settling
+interval that is not represented by internal combinator latency. Clocked flows solve event presence
+and re-clocking, but device drivers still need a way to describe physical I/O latency and protocol
+requirements such as:
+
+```text
+request assertion -> response valid after at least L ticks
+request must remain held until acknowledgement
+output may remain stale for D ticks after completion
+```
+
+These belong naturally to the planned external-device protocol/driver layer rather than to ordinary
+combinator timing.
+
+## Short-lived Levels
+
+An Event is reliable because presence is explicit. A genuinely Level-like source is still sampled by
+value at a chosen clock activation. If an external condition rises and falls entirely between those
+activations, then by definition it was not observed as a Level.
+
+If that transient must be preserved, the device interface should expose it as an Event or explicitly
+latch/aggregate it. The compiler should not guess that every changing Level is secretly an Event.
+
+The existing autonomous-market `Read working` protocol can continue to rely on a sufficiently long
+Level interval, but an Event-oriented completion protocol is now possible and is the preferred future
+migration when the game/device interface can supply one.

@@ -30,3 +30,4 @@ DEFAULT_VIRTUAL_SIGNAL_POOL: tuple[SignalId, ...] = tuple(
 )
 
 SIGNAL_EACH = SignalId("virtual", "signal-each")
+SIGNAL_EVERYTHING = SignalId("virtual", "signal-everything")

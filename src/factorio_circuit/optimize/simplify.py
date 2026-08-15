@@ -7,14 +7,19 @@ from factorio_circuit.ir.semantic import (
     CircuitModule,
     Compare,
     Constant,
+    EventVectorFlow,
     Input,
     InputSample,
     ReturnValue,
     ScalarValue,
     Select,
+    VectorBinaryOp,
     VectorConstant,
+    VectorFilter,
     VectorInput,
     VectorInputSample,
+    VectorScalarOp,
+    VectorSelect,
     VectorSignal,
     reachable_operations,
 )
@@ -39,13 +44,15 @@ def simplify_module(module: CircuitModule) -> CircuitModule:
             result: ScalarValue = value
         elif isinstance(value, BinaryOp):
             result = _simplify_binary(
-                value.op, rewrite(value.left), rewrite(value.right), value.name
+                value.op, rewrite(value.left), rewrite(value.right), value.name, value.flow
             )
         elif isinstance(value, Compare):
             left = rewrite(value.left)
             right = rewrite(value.right)
             if isinstance(left, Constant) and isinstance(right, Constant):
-                result = Constant(int(apply_compare(value.op, left.value, right.value)), value.name)
+                result = Constant(
+                    int(apply_compare(value.op, left.value, right.value)), value.name, value.flow
+                )
             else:
                 result = Compare(value.op, left, right, value.name)
         elif isinstance(value, Select):
@@ -65,7 +72,20 @@ def simplify_module(module: CircuitModule) -> CircuitModule:
 
     outputs = tuple(
         value
-        if isinstance(value, (VectorInput, VectorInputSample, VectorConstant, VectorRegisterRead))
+        if isinstance(
+            value,
+            (
+                VectorInput,
+                VectorInputSample,
+                VectorConstant,
+                VectorRegisterRead,
+                VectorBinaryOp,
+                VectorScalarOp,
+                VectorFilter,
+                VectorSelect,
+                EventVectorFlow,
+            ),
+        )
         else rewrite(value)
         for value in module.output.values
     )
@@ -88,6 +108,11 @@ def simplify_module(module: CircuitModule) -> CircuitModule:
         module.vector_inputs,
         module.state_registers,
         tuple(state_ops),
+        module.event_inputs,
+        module.event_state_operations,
+        module.sample_on_crossings,
+        module.register_clocks,
+        module.transitions if not module.state_operations else (),
     )
     return CircuitModule(
         provisional.name,
@@ -97,14 +122,19 @@ def simplify_module(module: CircuitModule) -> CircuitModule:
         provisional.vector_inputs,
         provisional.state_registers,
         provisional.state_operations,
+        provisional.event_inputs,
+        provisional.event_state_operations,
+        provisional.sample_on_crossings,
+        provisional.register_clocks,
+        provisional.transitions if not provisional.state_operations else (),
     )
 
 
 def _simplify_binary(
-    op: str, left: ScalarValue, right: ScalarValue, name: str | None
+    op: str, left: ScalarValue, right: ScalarValue, name: str | None, flow: object
 ) -> ScalarValue:
     if isinstance(left, Constant) and isinstance(right, Constant):
-        return Constant(apply_binary(op, left.value, right.value), name)
+        return Constant(apply_binary(op, left.value, right.value), name, flow)  # type: ignore[arg-type]
     if isinstance(right, Constant):
         rv = i32(right.value)
         if op in {"+", "-", "|", "^", "<<", ">>"} and rv == 0:
@@ -112,7 +142,7 @@ def _simplify_binary(
         if op in {"*", "/", "//", "**"} and rv == 1:
             return left
         if op in {"*", "&"} and rv == 0:
-            return Constant(0, name)
+            return Constant(0, name, flow)  # type: ignore[arg-type]
     if isinstance(left, Constant):
         lv = i32(left.value)
         if op in {"+", "|", "^"} and lv == 0:
@@ -120,5 +150,5 @@ def _simplify_binary(
         if op == "*" and lv == 1:
             return right
         if op in {"*", "&"} and lv == 0:
-            return Constant(0, name)
-    return BinaryOp(op, left, right, name)
+            return Constant(0, name, flow)  # type: ignore[arg-type]
+    return BinaryOp(op, left, right, name, flow)  # type: ignore[arg-type]

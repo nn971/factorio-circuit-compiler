@@ -25,7 +25,7 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
             net_colors,
             annotation_descriptions,
         )
-        if isinstance(entity, abstract.DeciderCombinator):
+        if isinstance(entity, abstract.DeciderCombinator) and isinstance(entity.output_signal, int):
             output = self.circuit.signal_by_id(entity.output_signal)
             if output.label == VECTOR_EACH_PLACEHOLDER:
                 assert isinstance(result, DeciderCombinator)

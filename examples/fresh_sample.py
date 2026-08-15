@@ -1,14 +1,14 @@
-"""Fresh external sampling across logical steps without exposing physical execution ticks."""
+"""Flow-local logical reindexing without exposing physical execution ticks."""
 
 from factorio_circuit import Circuit, compile_circuit
 
 circuit = Circuit("fresh_sample")
 x = circuit.input("x")
 x0 = x.sample()
+x3 = x0.step(3)
 
-circuit.step(3)
-x3 = x.sample()
-
+# Reindexing one flow leaves the compatibility cursor untouched.
+assert circuit.now.offset == 0
 circuit.output("sum", x0 + x3)
 
 

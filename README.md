@@ -3,32 +3,35 @@
 Experimental compiler from a symbolic Python EDSL to optimized Factorio 2.x combinator circuits and
 blueprints.
 
+The compiler keeps logical clock/stream semantics separate from physical combinator timing. Both the
+ordinary Level/state path and the implemented clocked Event path now lower through Abstract Physical
+IR, physical synthesis, layout, and blueprint serialization.
+
 ```text
 ordinary Python elaboration
         ↓
-logical stream graph
-  - scalar/vector expressions
-  - logical source samples
+semantic CircuitModule
+  - clocked scalar/vector flows
+  - logical occurrence offsets
   - explicit state transitions
+  - explicit clock crossings
         ↓
-logical clock-domain + state timing analysis
+causality + clock/timing analysis
         ↓
-abstract physical Factorio IR
+AbstractPhysicalCircuit
         ↓
-physical synthesis
+physical synthesis + Layout
         ↓
-Layout
-        ↓
-blueprint JSON/string serialization
+blueprint JSON/string
 ```
 
 Start with:
 
 - [`docs/HANDOFF.md`](docs/HANDOFF.md)
-- [`docs/conventions.md`](docs/conventions.md)
 - [`docs/semantics.md`](docs/semantics.md)
-- [`docs/state-design.md`](docs/state-design.md)
 - [`docs/architecture.md`](docs/architecture.md)
+- [`docs/state-design.md`](docs/state-design.md)
+- [`docs/clocked-flow-milestone-closeout.md`](docs/clocked-flow-milestone-closeout.md)
 
 ## Symbolic frontend
 
@@ -47,95 +50,95 @@ c.output("result", result)
 compiled = compile_circuit(c)
 ```
 
-Symbolic values are logical streams. Arithmetic and comparisons construct semantic IR; physical
-combinator phases remain compiler concerns.
+Python execution is elaboration. Symbolic values describe logical streams; physical phases remain a
+compiler concern.
 
-## Logical sampling and steps
+## Clocked flows and logical stepping
 
-Inputs and state use the same observation vocabulary:
-
-```python
-x0 = input.sample()
-s0 = state.sample()
-
-c.step(1)
-
-x1 = input.sample()
-s1 = state.sample()
-```
-
-`step(n)` advances **logical** time. It does not mean `n` Factorio game ticks. `Circuit.tick()` is
-reserved for future explicit physical scheduling and currently raises an error.
-
-Derived expressions do not have `.sample()` because they already denote a sampled logical stream.
-
-## Inferred physical period
-
-A stateful logical clock domain has an inferred physical period `P`. Logical state `S[k]` is realized
-at physical times separated by `P` game ticks. Feed-forward pipeline latency does not increase `P`;
-feedback recurrences do.
-
-For example:
+Every canonical flow carries a clock and a logical occurrence offset. Expression `.step(n)` is pure
+occurrence reindexing:
 
 ```python
-old = memory.sample()
-memory.set(data, when=old.any())
+future_occurrence = flow.step(1)
 ```
 
-is legal even though the state decision needs several combinator ticks. The current realization
-infers `P=3` and gates the register so intermediate physical ticks hold state.
+For periodic/Level state, `Circuit.step()` remains a compatibility cursor. It is no longer the
+fundamental semantic representation. `Circuit.tick()` is reserved for future explicit physical
+scheduling.
 
-Ordinary state dependencies share one logical clock domain. Independent state components may infer
-different periods; explicit cross-domain state resampling is future work.
+Inputs and registers use `.sample()` for Level observation. `register.value` remains a deprecated
+compatibility alias.
 
-See [`docs/semantics.md`](docs/semantics.md) for the timing equations and domain rules.
+## Event clocks
 
-## Whole-vector state
-
-Whole Factorio signal maps are declared with `c.signals(...)`.
-
-### `AccumulatorReg`
-
-```python
-c = Circuit("accumulator")
-data = c.signals("data")
-clear = c.input("clear")
-memory = c.accumulator("memory")
-
-memory.add(data)
-memory.clear(when=clear)
-c.step()
-c.output("memory", memory.sample())
-```
-
-An accumulator may have multiple commutative additive sources with independent enables.
-
-### `FreezeReg`
-
-```python
-c = Circuit("freeze")
-data = c.signals("data")
-set_signal = c.input("set_signal")
-memory = c.freeze("memory")
-
-memory.set(data, when=set_signal)
-c.step()
-c.output("memory", memory.sample())
-```
-
-Polarity:
+An external Event is represented physically as a payload path plus a one-tick activation/valid path.
+For an Event named `source`, the generated physical ABI contains:
 
 ```text
-set != 0   pass/track at a logical boundary
-set == 0   hold the previous vector
+source          payload
+source__valid   occurrence pulse
 ```
 
-`register.value` remains a compatibility alias while old callers migrate; new code uses
-`register.sample()`.
+Scalar and vector Events are supported. Event payload value and Event presence are distinct, so a
+zero scalar or empty vector can still be a present occurrence.
+
+```python
+from factorio_circuit import Circuit, compile_circuit
+from factorio_circuit.ir.output import OutputMaterializationPolicy
+
+c = Circuit("event_example")
+source = c.signal_event("source", guaranteed_min_separation=4)
+tick = c.event("tick", guaranteed_min_separation=5)
+
+window = c.sum_into(source, tick)
+c.output("window", window, policy=OutputMaterializationPolicy.VALID)
+
+compiled = compile_circuit(c)
+```
+
+The compiler derives recurrence/bridge timing requirements and checks them against external Event
+minimum-separation guarantees. Logical causality errors and physical throughput errors are reported
+separately.
+
+## Explicit clock operations
+
+The implemented clock/crossing vocabulary includes:
+
+- `sample_on(level, event_clock)` — observe Level data at Event occurrences;
+- `gate_clock(parent, when=...)` — derive a subclock;
+- `event_merge(...)` — additive Event union with simultaneous-occurrence coalescing;
+- `hold_into(source, target)` — preserve the latest source payload for target occurrences;
+- `sum_into(source, target)` — accumulate a vector Event over `(previous_target, current_target]`;
+- Event `.step(n)` — suppress the first `n` occurrences and preserve the surviving payloads.
+
+`HoldInto` uses a strict-prior simultaneous boundary. `SumInto` uses a right-closed boundary, so a
+source occurrence simultaneous with the target belongs to the current interval.
+
+## Output materialization
+
+Sparse Event outputs choose an explicit boundary policy:
+
+```text
+HOLD   retain the latest present payload
+ZERO   emit the payload on occurrences and zero/empty elsewhere
+VALID  emit aligned payload plus <name>__valid
+```
+
+The physical Event backend aligns payload and valid phases before exposing the output port.
+
+## State
+
+`AccumulatorReg` and `FreezeReg` remain the foundational whole-vector state primitives. Periodic
+Level state may infer a multicycle physical period. Event-clocked state is implemented for the
+milestone's structural subset, including Event Freeze updates, compiler-owned `SumInto` state, and
+direct unconditional Event accumulation without an intermediate bridge.
+
+Broader Event update combinations, queues/backpressure, and richer burst contracts are intentionally
+future work rather than implicit semantics.
 
 ## Runtime-open vectors
 
-Current whole-vector operations include:
+Whole Factorio signal maps remain runtime-open:
 
 ```python
 missing = (required - stock).positive()
@@ -144,11 +147,11 @@ request = missing.max()
 gated = request.gate(enable)
 ```
 
-The vector remains runtime-open: signal identities need not be known during frontend elaboration.
+Clock bridges preserve packed vectors rather than allocating state per signal lane.
 
-## Development
+## Validation
 
-With `uv` and fish:
+Canonical development checks are:
 
 ```fish
 uv sync --extra dev
@@ -158,17 +161,16 @@ uv run ruff format --check .
 uv run mypy src
 ```
 
-Representative examples:
+The flagship Clocked Flow acceptance test is
+`tests/integration/test_multi_rate_event_ledger.py`: it compares irregular multi-rate semantic Event
+simulation against the compiled physical circuit and checks shared bridge realization.
+
+Before merging the Clocked Flow milestone into `main`, generate and test the focused in-game smoke
+blueprint:
 
 ```fish
-uv run python examples/fresh_sample.py
-uv run python examples/accumulator_reg.py
-uv run python examples/freeze_reg.py
-uv run python examples/fibonacci.py
-uv run python examples/vector_deficit.py
-uv run python examples/state_vector_predicate.py
-uv run python examples/vector_fifo.py
+uv run python examples/clocked_flow_ingame_smoke.py
 ```
 
-The compiler should be validated both with tick-level physical simulation and with generated
-blueprints in Factorio for representative stateful circuits.
+See [`docs/clocked-flow-merge-smoke.md`](docs/clocked-flow-merge-smoke.md) for the wiring schedule and
+expected observations.

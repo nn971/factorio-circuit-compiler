@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from factorio_circuit.analysis.state_timing import StateTimingPlan, analyze_state_timing
+from factorio_circuit.analysis.state_timing import (
+    StateTimingPlan,
+    analyze_normalized_state_timing,
+)
 from factorio_circuit.blueprint.encode import encode_blueprint_string, to_blueprint_json
 from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
 from factorio_circuit.frontend.symbolic import Circuit
 from factorio_circuit.ir.physical import PhysicalCircuit
-from factorio_circuit.ir.semantic import CircuitModule
-from factorio_circuit.lowering.frontend_to_ir import lower_frontend
+from factorio_circuit.ir.semantic import CircuitModule, reject_event_module
+from factorio_circuit.lowering.frontend_to_ir import lower_frontend, project_legacy
 from factorio_circuit.lowering.ir_to_physical import lower_naive, lower_with_alu_packing
-from factorio_circuit.optimize.pipeline import optimize_semantic
+from factorio_circuit.optimize.pipeline import optimize_normalized_semantic
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,8 +42,9 @@ def compile_legacy_circuit(
     """Compile one-tick-domain circuits with the pre-Abstract-Physical backend."""
 
     semantic = lower_frontend(source)
-    optimized_semantic = optimize_semantic(semantic) if optimize else semantic
-    state_timing = analyze_state_timing(optimized_semantic)
+    reject_event_module(semantic)
+    optimized_semantic = optimize_normalized_semantic(semantic) if optimize else semantic
+    state_timing = analyze_normalized_state_timing(optimized_semantic)
     multicycle = [domain for domain in state_timing.domains if domain.period != 1]
     if multicycle:
         details = ", ".join(f"domain {domain.id}: P={domain.period}" for domain in multicycle)
@@ -49,9 +53,10 @@ def compile_legacy_circuit(
             f"use compile_circuit(...) for {details}"
         )
 
-    naive = lower_naive(optimized_semantic, state_timing=state_timing)
+    backend_semantic = project_legacy(optimized_semantic)
+    naive = lower_naive(backend_semantic, state_timing=state_timing)
     physical = (
-        lower_with_alu_packing(optimized_semantic, state_timing=state_timing) if optimize else naive
+        lower_with_alu_packing(backend_semantic, state_timing=state_timing) if optimize else naive
     )
     return LegacyCompilationResult(
         semantic_ir=semantic,

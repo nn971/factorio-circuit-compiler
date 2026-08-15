@@ -4,27 +4,56 @@ from __future__ import annotations
 
 from typing import cast
 
+from factorio_circuit.events import EventCrossingError
 from factorio_circuit.ir.physical import SignalId
-from factorio_circuit.ir.semantic import Compare, Constant, VectorSignal, VectorValue
-
-from .symbolic import CircuitBuildError, Expr
-from .symbolic import SignalsExpr as _SignalsExpr
-from .vector_nodes import (
-    _VectorBinaryOp,
-    _VectorFilter,
-    _VectorNode,
-    _VectorScalarOp,
-    _VectorSelect,
+from factorio_circuit.ir.semantic import (
+    Compare,
+    Constant,
+    PayloadShape,
+    VectorBinaryOp,
+    VectorFilter,
+    VectorScalarOp,
+    VectorSelect,
+    VectorSignal,
+    VectorValue,
 )
+
+from .reindex import FlowStepError, reindex_vector
+from .symbolic import CircuitBuildError, Expr, SampleOnReference, VectorEvent
+from .symbolic import SignalsExpr as _SignalsExpr
+
+_VectorNode = VectorBinaryOp | VectorScalarOp | VectorFilter | VectorSelect
 
 
 class SignalsExpr(_SignalsExpr):
     """A whole Factorio signal vector with lane-wise runtime-open operations."""
 
+    def step(self, n: int = 1) -> SignalsExpr:
+        """Refer to this Level flow ``n`` logical clock occurrences later.
+
+        The operation is pure logical reindexing.  It does not advance the circuit-wide
+        compatibility cursor and does not introduce state or physical delay.
+        """
+
+        try:
+            value = reindex_vector(self._value, n)
+        except FlowStepError as exc:
+            raise CircuitBuildError(str(exc)) from exc
+        if value is self._value:
+            return self
+        return SignalsExpr(self._circuit, value)
+
     def _wrap_vector(self, value: _VectorNode) -> SignalsExpr:
-        return SignalsExpr(self._circuit, cast(VectorValue, value))
+        annotated = self._circuit._annotate_event_flow(value)
+        return SignalsExpr(self._circuit, cast(VectorValue, annotated))
 
     def _coerce_vector(self, other: object) -> VectorValue:
+        if isinstance(other, SampleOnReference):
+            if other.payload_shape is not PayloadShape.VECTOR:
+                raise EventCrossingError("scalar SampleOn references cannot be used as vectors")
+            other = other._as_value()
+        elif isinstance(other, VectorEvent):
+            other = other._as_signals()
         if not isinstance(other, _SignalsExpr):
             raise CircuitBuildError(
                 f"expected whole-vector SignalsExpr, got {type(other).__name__}"
@@ -33,14 +62,14 @@ class SignalsExpr(_SignalsExpr):
         return other.ir
 
     def __add__(self, other: object) -> SignalsExpr:
-        return self._wrap_vector(_VectorBinaryOp("+", self._value, self._coerce_vector(other)))
+        return self._wrap_vector(VectorBinaryOp("+", self._value, self._coerce_vector(other)))
 
     def __sub__(self, other: object) -> SignalsExpr:
-        return self._wrap_vector(_VectorBinaryOp("-", self._value, self._coerce_vector(other)))
+        return self._wrap_vector(VectorBinaryOp("-", self._value, self._coerce_vector(other)))
 
     def __mul__(self, other: Expr | int | bool) -> SignalsExpr:
         scalar = self._circuit._coerce_scalar(other)
-        return self._wrap_vector(_VectorScalarOp("*", self._value, scalar.ir))
+        return self._wrap_vector(VectorScalarOp("*", self._value, scalar.ir))
 
     def __rmul__(self, other: Expr | int | bool) -> SignalsExpr:
         return self * other
@@ -50,11 +79,11 @@ class SignalsExpr(_SignalsExpr):
 
     def positive(self) -> SignalsExpr:
         """Preserve every lane whose count is positive, including its original count."""
-        return self._wrap_vector(_VectorFilter(">", self._value, 0))
+        return self._wrap_vector(VectorFilter(">", self._value, 0))
 
     def max(self) -> SignalsExpr:
         """Select the nonzero lane with the greatest count, preserving that count."""
-        return self._wrap_vector(_VectorSelect("select", self._value, 0))
+        return self._wrap_vector(VectorSelect("select", self._value, 0))
 
     def any(self) -> Expr:
         """Return 1 exactly when at least one vector lane is nonzero."""

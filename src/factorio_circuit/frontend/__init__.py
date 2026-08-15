@@ -1,12 +1,36 @@
 """Public symbolic frontend, including runtime-open vector expressions."""
 
-from .symbolic import CircuitBuildError, Expr, Input, LogicalTime
-from .vector_circuit import AccumulatorReg, Circuit, FreezeReg, SignalsInput
+from .clock_bridges import Circuit
+from .symbolic import CircuitBuildError, LogicalTime
+from .vector_circuit import (
+    AccumulatorReg,
+    Expr,
+    FreezeReg,
+    Input,
+    SampleOnReference,
+    ScalarEvent,
+    SignalsInput,
+    VectorEvent,
+)
 from .vector_expr import SignalsExpr
-from .vector_nodes import _VectorBinaryOp as _VectorBinaryOp
-from .vector_nodes import _VectorFilter as _VectorFilter
-from .vector_nodes import _VectorScalarOp as _VectorScalarOp
-from .vector_nodes import _VectorSelect as _VectorSelect
+from .vector_nodes import (
+    VectorBinaryOp,
+    VectorFilter,
+    VectorScalarOp,
+    VectorSelect,
+)
+from .vector_nodes import (
+    _VectorBinaryOp as _VectorBinaryOp,
+)
+from .vector_nodes import (
+    _VectorFilter as _VectorFilter,
+)
+from .vector_nodes import (
+    _VectorScalarOp as _VectorScalarOp,
+)
+from .vector_nodes import (
+    _VectorSelect as _VectorSelect,
+)
 
 __all__ = [
     "AccumulatorReg",
@@ -18,4 +42,11 @@ __all__ = [
     "LogicalTime",
     "SignalsExpr",
     "SignalsInput",
+    "SampleOnReference",
+    "ScalarEvent",
+    "VectorEvent",
+    "VectorBinaryOp",
+    "VectorFilter",
+    "VectorScalarOp",
+    "VectorSelect",
 ]

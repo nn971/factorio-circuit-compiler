@@ -15,8 +15,8 @@ For `AccumulatorReg`, `.add(...)` and `.clear(...)` together describe one compou
 transition. For `FreezeReg`, `.set(data, when=...)` describes the transition. The source never names
 the physical tick at which the write occurs.
 
-`register.value` is a temporary compatibility alias for `register.sample()`. New code uses
-`.sample()` consistently for inputs and registers.
+`register.value` is a deprecated compatibility alias for `register.sample()` retained for old callers.
+New code uses `.sample()` consistently for inputs and registers.
 
 `circuit.step(n)` moves the logical observation cursor. `circuit.tick()` is reserved for future
 explicit physical scheduling and currently has no source-language semantics.
@@ -123,3 +123,21 @@ compiler choices.
 - `Circuit.tick()` is intentionally reserved rather than pretending to mean logical time.
 - Higher state structures (queues, stacks, heaps) should first be constructed from these general
   primitives; they are not compiler primitives by default.
+
+## Semantic Event capture boundary
+
+`FreezeReg.capture_on(trigger, value=None, required_min_separation=...)` is a semantic/reference-only
+transition. Scalar Event triggers require an explicit vector value; vector Event triggers may capture
+their payload. Captures use only zero-offset Level/state values, run on deterministic schedules, and
+commit atomically for same-timestamp Events. Event modules are rejected by the periodic compiler and
+ordinary Level simulator; physical pulse capture, buffering, and handshake behavior are future work.
+Event captures and `event_state_operations` are outside `StateTimingPlan`; an Event-bearing module
+is elaborated into a semantic `CircuitModule`, then a Level/physical route raises
+`EventCompilationError` before state-timing analysis or semantic-to-physical lowering. No physical IR,
+synthesis, or blueprint output follows.
+
+`Circuit.sample_on(...)` is not a state transition. It records a raw Level value when its declared
+Event target activates, and its observation is carried by the semantic Event reaction. A
+`SampleOnReference` is a non-expression reference and cannot be passed to `capture_on` or emitted as
+an output. Reference-only HOLD/ZERO/VALID materialization is performed after simulation and is not
+hardware; it does not introduce a register, pulse, bridge, valid wire, or physical output policy.

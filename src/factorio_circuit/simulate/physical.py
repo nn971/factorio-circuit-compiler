@@ -17,6 +17,7 @@ from factorio_circuit.ir.physical import (
     WireEndpoint,
 )
 from factorio_circuit.target.factorio.semantics import apply_binary, apply_compare, i32
+from factorio_circuit.target.factorio.signals import SIGNAL_EACH, SIGNAL_EVERYTHING
 
 NetworkKey = tuple[WireColor, WireEndpoint]
 SignalMap = dict[SignalId, int]
@@ -292,7 +293,7 @@ def _eval_decider(entity: DeciderCombinator, inputs: InputNetworks) -> SignalMap
                 continue
             for signal, copy_count, constant, networks in outputs:
                 value = _read_signal(lane, inputs, networks) if copy_count else i32(constant)
-                _add_signal(result, signal, value)
+                _add_signal(result, lane if signal == SIGNAL_EACH else signal, value)
         return result
 
     if _decider_conditions_match(conditions, inputs):
@@ -353,6 +354,14 @@ def _decider_output(
     networks: tuple[WireColor, ...] | None,
     inputs: InputNetworks,
 ) -> SignalMap:
+    if signal == SIGNAL_EVERYTHING:
+        selected = _combined_inputs(inputs, networks)
+        if copy_count:
+            return selected
+        value = i32(constant)
+        if value == 0:
+            return {}
+        return {lane: value for lane in selected}
     value = _read_signal(signal, inputs, networks) if copy_count else i32(constant)
     return {} if value == 0 else {signal: value}
 

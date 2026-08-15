@@ -1,9 +1,18 @@
+from dataclasses import replace
+
 import pytest
 
 from factorio_circuit import Circuit, compile_circuit
-from factorio_circuit.analysis.state_timing import StateTimingError
+from factorio_circuit.analysis.state_timing import (
+    StateTimingError,
+    analyze_normalized_state_timing,
+)
 from factorio_circuit.ir.physical import SignalId
+from factorio_circuit.ir.semantic import VectorBinaryOp
+from factorio_circuit.ir.state import state_transitions
+from factorio_circuit.lowering.frontend_to_ir import normalize_module
 from factorio_circuit.simulate.compare import assert_same_stream
+from factorio_circuit.simulate.semantic import simulate_stream
 
 from ..support.circuits import delayed_accumulator_window
 
@@ -51,6 +60,38 @@ def test_read_after_update_at_same_logical_step_is_rejected() -> None:
 
     with pytest.raises(StateTimingError, match="advance the logical step"):
         compile_circuit(c, optimize=False)
+
+
+def test_extra_canonical_periodic_transition_drives_timing_and_simulation() -> None:
+    c = Circuit("extra_canonical_transition")
+    data = c.signals("data")
+    memory = c.accumulator("memory")
+    memory.add(data)
+    c.step()
+    c.output("memory", memory.sample())
+    module = normalize_module(c.build())
+
+    canonical = module.transitions[0]
+    assert canonical.value is not None
+    canonical_value = canonical.value
+    extra = replace(
+        canonical,
+        order=1,
+        value=VectorBinaryOp("+", canonical_value, canonical_value),
+        when=canonical.when,
+        legacy=None,
+    )
+    augmented = replace(module, transitions=(canonical, extra))
+
+    baseline_timing = analyze_normalized_state_timing(module).registers[0]
+    augmented_timing = analyze_normalized_state_timing(augmented).registers[0]
+
+    assert len(state_transitions(augmented)) == 2
+    assert (
+        augmented_timing.earliest_transition_input_phase
+        > baseline_timing.earliest_transition_input_phase
+    )
+    assert simulate_stream(augmented, [{"data": {IRON: 1}}]) == [({IRON: 3},)]
 
 
 def test_previous_value_is_available_when_read_before_complex_update() -> None:

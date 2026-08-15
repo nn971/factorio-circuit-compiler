@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
+from factorio_circuit.analysis.latency import FACTORIO_LATENCY
 from factorio_circuit.analysis.state_timing import StateTimingError, StateTimingPlan
-from factorio_circuit.frontend import (
-    _VectorBinaryOp,
-    _VectorFilter,
-    _VectorScalarOp,
-    _VectorSelect,
-)
 from factorio_circuit.ir.abstract_physical import (
     ArithmeticCombinator,
     Connector,
@@ -21,9 +16,15 @@ from factorio_circuit.ir.abstract_physical import (
 from factorio_circuit.ir.semantic import (
     CircuitModule,
     Constant,
+    FlowInputSample,
+    FlowVectorInputSample,
     InputSample,
     Value,
+    VectorBinaryOp,
+    VectorFilter,
     VectorInputSample,
+    VectorScalarOp,
+    VectorSelect,
     VectorValue,
 )
 from factorio_circuit.ir.state import (
@@ -65,7 +66,7 @@ class VectorLowerer(_Base):
         self._external_sample_period = self.state_timing.uniform_period
 
     def realize(self, value: Value) -> RealizedValue:
-        if isinstance(value, InputSample):
+        if isinstance(value, (InputSample, FlowInputSample)):
             cached = self.memo.get(id(value))
             if cached is not None:
                 return cached
@@ -88,19 +89,19 @@ class VectorLowerer(_Base):
         cached = self.vector_memo.get(id(item))
         if cached is not None:
             return cached
-        if isinstance(item, VectorInputSample):
+        if isinstance(item, (VectorInputSample, FlowVectorInputSample)):
             base = self.vector_memo.get(id(item.source))
             if base is None:
                 raise ValueError(f"vector input {item.source.name!r} was not initialized")
             period = self._sample_period(item.offset)
             result = RealizedVector(base.net, item.offset * period)
-        elif isinstance(item, _VectorBinaryOp):
+        elif isinstance(item, VectorBinaryOp):
             result = realize_vector_binary(self, item)
-        elif isinstance(item, _VectorScalarOp):
+        elif isinstance(item, VectorScalarOp):
             result = realize_vector_scalar(self, item)
-        elif isinstance(item, _VectorSelect):
+        elif isinstance(item, VectorSelect):
             result = realize_vector_select(self, item)
-        elif isinstance(item, _VectorFilter):
+        elif isinstance(item, VectorFilter):
             result = realize_vector_filter(self, item)
         else:
             return super().realize_vector(value)
@@ -159,7 +160,7 @@ class VectorLowerer(_Base):
         self, register: StateRegister, target_phase: int, *, equal: bool
     ) -> tuple[DeciderCondition, int]:
         signal, net, period = self._clock_counter(register)
-        input_phase = target_phase - 1
+        input_phase = target_phase - FACTORIO_LATENCY.state_transition_latency("commit")
         if input_phase < 0:  # pragma: no cover - a multicycle transition is at least phase 1
             raise ValueError("multicycle state gate has no preceding physical tick")
         # The feedback net carries constant +1 plus the counter output, so after warm-up the wire
@@ -183,7 +184,7 @@ class VectorLowerer(_Base):
         gate's input phase suppresses those premature residues without changing steady-state P.
         """
 
-        input_phase = target_phase - 1
+        input_phase = target_phase - FACTORIO_LATENCY.state_transition_latency("commit")
         if input_phase < 0:  # pragma: no cover - multicycle transitions have a preceding tick
             raise ValueError("multicycle state startup has no preceding physical tick")
         if self._startup_source is None:
@@ -292,7 +293,10 @@ class VectorLowerer(_Base):
 
         control: RealizedValue | None = None
         if constant_when is None:
-            control = self.delay_to(self.realize(spec.when), target_phase - 1)
+            control = self.delay_to(
+                self.realize(spec.when),
+                target_phase - FACTORIO_LATENCY.state_transition_latency("commit"),
+            )
 
         pass_value: RealizedValue | None = None
         if not constant_inactive and not (constant_active and timing.period == 1):
@@ -470,7 +474,10 @@ class VectorLowerer(_Base):
         )
         clear_realized: RealizedValue | None = None
         if clear_value is not None and clear_constant is None:
-            clear_realized = self.delay_to(self.realize(clear_value), target_phase - 1)
+            clear_realized = self.delay_to(
+                self.realize(clear_value),
+                target_phase - FACTORIO_LATENCY.state_transition_latency("commit"),
+            )
 
         retain: RealizedValue | None = None
         if clear_never:
@@ -542,7 +549,10 @@ class VectorLowerer(_Base):
                 conditions: list[DeciderCondition] = []
                 input_nets: list[int] = []
                 if not isinstance(add.when, Constant):
-                    add_control = self.delay_to(self.realize(add.when), target_phase - 1)
+                    add_control = self.delay_to(
+                        self.realize(add.when),
+                        target_phase - FACTORIO_LATENCY.state_transition_latency("commit"),
+                    )
                     conditions.append(self._boolean_condition(add_control, nonzero=True))
                     input_nets.append(add_control.net)
                 if clear_realized is not None:
