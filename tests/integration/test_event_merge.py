@@ -111,7 +111,7 @@ def test_vector_event_merge_adds_payloads_and_can_drive_state_directly() -> None
     right = circuit.signal_event("right", guaranteed_min_separation=2)
     merged = circuit.event_merge(left, right)
     memory = circuit.freeze("memory")
-    memory.set(merged, when=1)  # type: ignore[arg-type]
+    memory.set(merged * 1, when=1)
 
     result = simulate_events(
         circuit.build(),
