@@ -6,27 +6,17 @@ from dataclasses import dataclass
 
 from factorio_circuit.events import EventCausalityError, EventCrossingError
 from factorio_circuit.ir.semantic import (
-    BinaryOp,
+    Clock,
     ClockProvenance,
-    Compare,
-    Constant,
     EventInput,
-    EventScalarFlow,
-    EventVectorFlow,
     Flow,
     PayloadShape,
     SampleOn,
     ScalarValue,
-    Select,
     TemporalModality,
-    VectorBinaryOp,
-    VectorFilter,
-    VectorRegisterRead,
-    VectorScalarOp,
-    VectorSelect,
-    VectorSignal,
     validate_expression_flow,
 )
+from factorio_circuit.ir.state import VectorRegisterRead
 
 
 def _contains_state_read(value: object, seen: set[int] | None = None) -> bool:
@@ -85,8 +75,8 @@ def _event_offsets(value: object, seen: set[int] | None = None) -> set[int]:
 class GateClock(EventInput):
     """A unit-valued derived Event source obtained by filtering a parent clock.
 
-    ``predicate`` is evaluated atomically at the current parent occurrence.  The derived source is a
-    subclock, so it conservatively inherits the parent's minimum-separation guarantee.  This first
+    ``predicate`` is evaluated atomically at the current parent occurrence. The derived source is a
+    subclock, so it conservatively inherits the parent's minimum-separation guarantee. This first
     executable slice permits Event-local expressions and explicit state-free ``SampleOn`` values;
     state-dependent clock gating is deferred until stateful clock-normalization semantics exist.
     """
@@ -101,6 +91,8 @@ class GateClock(EventInput):
             raise ValueError("GateClock is a unit-valued scalar Event source")
         if not isinstance(self.parent, EventInput):
             raise ValueError("GateClock parent must be an Event source")
+        if not isinstance(self.clock, Clock):
+            raise ValueError("GateClock clock must be a Clock")
         if self.clock.provenance is not ClockProvenance.DERIVED:
             raise ValueError("GateClock clock must have DERIVED provenance")
         if self.clock.contract != self.parent.clock.contract:
@@ -109,7 +101,8 @@ class GateClock(EventInput):
         facts = validate_expression_flow(self.predicate, PayloadShape.SCALAR)
         if facts.modality is TemporalModality.LEVEL:
             raise EventCrossingError(
-                "GateClock predicates cannot implicitly read a Level; use SampleOn on the parent clock"
+                "GateClock predicates cannot implicitly read a Level; "
+                "use SampleOn on the parent clock"
             )
         if facts.modality is TemporalModality.EVENT and facts.clock != self.parent.clock:
             raise EventCausalityError("GateClock predicate must use the parent occurrence clock")
@@ -124,20 +117,3 @@ class GateClock(EventInput):
                 "GateClock predicate must observe the current parent occurrence; .step() is not a "
                 "clock filter"
             )
-
-
-# Keep imported expression classes visible to static analyzers that validate the recursive helper
-# coverage as the semantic scalar/vector vocabulary evolves.
-_GATE_EXPRESSION_TYPES = (
-    BinaryOp,
-    Compare,
-    Constant,
-    EventScalarFlow,
-    EventVectorFlow,
-    Select,
-    VectorBinaryOp,
-    VectorFilter,
-    VectorScalarOp,
-    VectorSelect,
-    VectorSignal,
-)
