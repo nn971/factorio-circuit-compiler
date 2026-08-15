@@ -9,7 +9,6 @@ from factorio_circuit.ir.semantic import (
     BinaryOp,
     Compare,
     DerivedValue,
-    ScalarValue,
     Select,
     VectorConstant,
     VectorInput,
@@ -48,7 +47,7 @@ class Expr(_BaseExpr):
         if value is self._value:
             return self
         if isinstance(value, (BinaryOp, Compare, Select)):
-            return cast(Expr, self._circuit._derived(cast(DerivedValue, value)))
+            return cast(Expr, self._circuit._derived(value))
         return Expr(self._circuit, value)
 
 
@@ -159,7 +158,7 @@ class Circuit(_Circuit):
         """Keep scalar derived results on the public flow-local Expr surface."""
 
         result = super()._derived(value)
-        return Expr(self, cast(ScalarValue, result.ir))
+        return Expr(self, result.ir)
 
     def step(self, n: int = 1) -> None:
         """Advance the legacy circuit-wide logical observation cursor by ``n`` steps.
