@@ -1,11 +1,12 @@
-"""Pure logical reindexing for frontend Level expressions.
+"""Pure logical reindexing for frontend clocked expressions.
 
-The public ``Expr.step(n)`` and ``SignalsExpr.step(n)`` APIs use these helpers to refer to the same
-logical computation at a later occurrence of its clock.  Reindexing changes only logical occurrence
-offsets; it never inserts state or a physical delay.
+The public ``Expr.step(n)`` and ``SignalsExpr.step(n)`` APIs refer to the same logical computation
+at a later occurrence of its clock.  Reindexing changes only logical occurrence offsets; it never
+inserts state or a physical delay.
 
-The current production compiler still lowers only Level flows.  Event occurrence reindexing is kept
-out of this compatibility slice until Event source wrappers accept nonzero occurrence offsets.
+Level expressions are structurally reindexed down to their sample leaves.  Event payloads are
+occurrence-local, so an Event reindex is represented as an identity expression whose Flow carries
+the later occurrence offset.  Event state transitions consume that offset at the reaction boundary.
 """
 
 from __future__ import annotations
@@ -16,8 +17,6 @@ from factorio_circuit.ir.semantic import (
     BinaryOp,
     Compare,
     Constant,
-    EventScalarFlow,
-    EventVectorFlow,
     Flow,
     FlowInput,
     FlowInputSample,
@@ -26,7 +25,6 @@ from factorio_circuit.ir.semantic import (
     FlowVectorRegisterRead,
     Input,
     InputSample,
-    SampleOn,
     ScalarValue,
     Select,
     TemporalModality,
@@ -57,39 +55,30 @@ def validate_step_count(n: int) -> None:
 def _shift_flow(flow: Flow | None, n: int) -> Flow | None:
     if flow is None:
         return None
-    if flow.modality is TemporalModality.EVENT:
-        raise FlowStepError(
-            "flow-local step() for Event values is not available until Event occurrence offsets "
-            "enter the canonical Event source representation"
-        )
     return replace(flow, logical_offset=flow.logical_offset + n)
 
 
-def _reject_event(value: object) -> None:
-    if isinstance(value, (EventScalarFlow, EventVectorFlow, SampleOn)):
-        raise FlowStepError(
-            "flow-local step() for Event values is not available until Event occurrence offsets "
-            "enter the canonical Event source representation"
-        )
+def _event_flow(value: object) -> Flow | None:
     flow = getattr(value, "flow", None)
     if isinstance(flow, Flow) and flow.modality is TemporalModality.EVENT:
-        raise FlowStepError(
-            "flow-local step() for Event values is not available until Event occurrence offsets "
-            "enter the canonical Event source representation"
-        )
+        return flow
+    return None
 
 
 def reindex_scalar(value: ScalarValue, n: int = 1) -> ScalarValue:
     """Return ``value`` at logical occurrence offset ``+n``.
 
-    This operation is structural: Level leaves acquire a later logical offset and ordinary derived
-    expressions are rebuilt over those shifted leaves.  No state primitive is introduced.
+    Level values move their explicit sample leaves.  Event values stay occurrence-local and gain an
+    identity wrapper at the later occurrence.  Neither form introduces storage.
     """
 
     validate_step_count(n)
     if n == 0:
         return value
-    _reject_event(value)
+
+    event_flow = _event_flow(value)
+    if event_flow is not None:
+        return BinaryOp("+", value, Constant(0), flow=_shift_flow(event_flow, n))
 
     if isinstance(value, FlowInputSample):
         return FlowInputSample(
@@ -147,12 +136,15 @@ def reindex_scalar(value: ScalarValue, n: int = 1) -> ScalarValue:
 
 
 def reindex_vector(value: VectorValue, n: int = 1) -> VectorValue:
-    """Return a whole-vector Level expression at logical occurrence offset ``+n``."""
+    """Return a whole-vector expression at logical occurrence offset ``+n``."""
 
     validate_step_count(n)
     if n == 0:
         return value
-    _reject_event(value)
+
+    event_flow = _event_flow(value)
+    if event_flow is not None:
+        return VectorScalarOp("*", value, Constant(1), _shift_flow(event_flow, n))
 
     if isinstance(value, FlowVectorInputSample):
         return FlowVectorInputSample(
