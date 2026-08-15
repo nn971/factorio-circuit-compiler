@@ -1,12 +1,14 @@
 """Compiler analyses."""
 
 from .causality import (
+    CausalityAnalysis,
     CausalityEdge,
     CausalityEdgeKind,
     CausalityGraph,
     ClockRelation,
     LogicalDependency,
     StateOrderError,
+    analyze_causality,
     collect_state_reads,
     event_causality_graph,
     has_nonpositive_cycle,
@@ -32,6 +34,7 @@ from .state_timing import (
 )
 
 __all__ = [
+    "CausalityAnalysis",
     "CausalityEdge",
     "CausalityEdgeKind",
     "CausalityGraph",
@@ -47,6 +50,7 @@ __all__ = [
     "StateTimingPlan",
     "TargetLatencyModel",
     "UnsupportedClockCrossing",
+    "analyze_causality",
     "analyze_normalized_state_timing",
     "analyze_clocked_timing",
     "analyze_state_timing",
