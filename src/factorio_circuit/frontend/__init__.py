@@ -1,9 +1,9 @@
 """Public symbolic frontend, including runtime-open vector expressions."""
 
+from .clock_bridges import Circuit
 from .symbolic import CircuitBuildError, LogicalTime
 from .vector_circuit import (
     AccumulatorReg,
-    Circuit,
     Expr,
     FreezeReg,
     Input,
