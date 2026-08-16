@@ -14,8 +14,10 @@ from factorio_circuit.synthesis import open_vector
 from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
 from factorio_circuit.synthesis.safe_crossbar import safe_crossbar_options
 from factorio_circuit.synthesis.safe_folded_crossbar import (
+    _bus_y,
     _folded_ordered_entities,
     _plan_folded_crossbar,
+    _portal_x_values,
     safe_folded_crossbar_options,
 )
 
@@ -52,10 +54,12 @@ def test_folded_safe_crossbar_crosses_rows_without_router_search(monkeypatch) ->
     assert len(real_y) > 1
     assert any("fold stitch" in relay.description for relay in layout.relays)
 
+    # Layout relays are 1x1 constant combinators, so centers one tile apart are legal
+    # and are the intended packed density for adjacent bus tracks / portal columns.
     for left, right in combinations(layout.relays, 2):
         dx = abs(left.position[0] - right.position[0])
         dy = abs(left.position[1] - right.position[1])
-        assert dx >= 1.1 or dy >= 1.1
+        assert dx >= 1.0 - 1e-9 or dy >= 1.0 - 1e-9
 
 
 def test_folded_safe_crossbar_is_deterministic() -> None:
@@ -73,6 +77,36 @@ def test_folded_safe_crossbar_is_deterministic() -> None:
     assert first.positions == second.positions
     assert first.relays == second.relays
     assert first.wires == second.wires
+
+
+def test_folded_bus_tracks_pack_one_tile_apart_off_vertical_relay_lattice() -> None:
+    red_rows = [_bus_y(0.0, WireColor.RED, track) for track in range(8)]
+    green_rows = [_bus_y(0.0, WireColor.GREEN, track) for track in range(8)]
+
+    assert all(abs(abs(right - left) - 1.0) < 1e-9 for left, right in zip(red_rows, red_rows[1:]))
+    assert all(
+        abs(abs(right - left) - 1.0) < 1e-9
+        for left, right in zip(green_rows, green_rows[1:])
+    )
+    # Feeders and fold stitches place their regular relays at integer multiples of six.
+    # Half-tile bus rows therefore never place a horizontal relay on the same center.
+    assert all(abs(row - round(row)) == 0.5 for row in (*red_rows, *green_rows))
+
+
+def test_folded_portals_pack_adjacent_tiles_but_skip_row_bus_lattice() -> None:
+    right_side = [
+        _portal_x_values(20, boundary=0, ordinal=ordinal)
+        for ordinal in range(20)
+    ]
+    left_side = [
+        _portal_x_values(20, boundary=1, ordinal=ordinal)
+        for ordinal in range(20)
+    ]
+
+    assert min(right - left for left, right in zip(right_side, right_side[1:])) == 1.0
+    assert max(right - left for left, right in zip(right_side, right_side[1:])) == 2.0
+    assert all(abs(value % 6.0) > 1e-9 for value in right_side)
+    assert all(abs(value % 6.0) > 1e-9 for value in left_side)
 
 
 def test_folded_row_track_assignment_uses_actual_portal_extended_segments() -> None:
