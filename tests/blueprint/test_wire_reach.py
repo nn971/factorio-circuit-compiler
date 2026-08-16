@@ -76,7 +76,7 @@ def test_short_wire_needs_no_relay() -> None:
 
 def test_branching_style_parallel_routes_do_not_overlap_entities() -> None:
     from factorio_circuit import Circuit, compile_circuit
-    from factorio_circuit.blueprint.layout import row_positions
+    from factorio_circuit.synthesis.placement import row_positions
 
     module = Circuit("controller")
     a = module.input("a")
