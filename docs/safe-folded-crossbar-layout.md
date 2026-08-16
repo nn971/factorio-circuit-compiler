@@ -2,7 +2,7 @@
 
 ## Status and rollback contract
 
-`safe-folded-crossbar` is an experimental compactness refinement of the already working linear
+`safe-folded-crossbar` is an experimental placeability refinement of the already working linear
 `safe-crossbar`. It is intentionally implemented in a separate module and selected by a separate
 strategy name.
 
@@ -25,8 +25,7 @@ uv run python -m examples.snake_blueprint --linear-safe-layout --output snake-li
 
 ## Motivation
 
-The interval-packed linear safe crossbar successfully materialized the full Snake circuit without
-routing search:
+The interval-packed linear safe crossbar successfully materialized full Snake without routing search:
 
 ```text
 real entities    = 4,912
@@ -37,17 +36,13 @@ relays           = 330,361
 ```
 
 However, every real entity still occupied one six-tile-spaced horizontal row. The resulting blueprint
-was tens of thousands of tiles wide and not practical to place in game. The problem was physical
-extent rather than electrical routability.
+was tens of thousands of tiles wide and not practical to place in game. The folded strategy addresses
+that extent problem only; it is not the later optimized-net-routing milestone.
 
-The folded strategy addresses only that extent problem. It is not the later optimized-net-routing
-milestone.
+## Accordion entity geometry
 
-## Accordion construction
-
-The folded strategy preserves a one-dimensional virtual order of entities and the same interval-track
-logic used by the linear construction. It then partitions that order into rows and alternates the row
-orientation:
+The folded strategy preserves a deterministic one-dimensional entity order, then partitions it into
+rows and alternates row orientation:
 
 ```text
 virtual order:
@@ -63,58 +58,101 @@ folded geometry:
 8 -> 9 -> ...
 ```
 
-A net confined to one row is still one horizontal bus segment. A net whose virtual interval crosses a
-fold receives a vertical stitch at the corresponding left or right row boundary.
+A net confined to one row uses one horizontal row segment. A net crossing a fold receives a vertical
+stitch at that row boundary. Public input and output markers appear first in the entity order, so the
+first row acts as a compact external I/O front panel.
 
-The number of entities per row is chosen deterministically to balance predicted width and height for
-the already-known global red/green track counts. There is no placement optimization or search.
+The number of entities per row is chosen deterministically from a conservative linear-overlap estimate
+to balance width and height. This is formula-driven sizing rather than placement search.
 
-## Why track reuse remains valid
+## Important correction: global linear tracks do not survive folding
 
-Same-color physical groups are assigned reusable tracks by interval partitioning in virtual linear
-coordinates. Two groups share a track only when their feeder intervals are disjoint with relay
-clearance.
+The first folded implementation incorrectly reused the linear crossbar's global interval-track
+assignment. The proof claimed that disjoint virtual intervals would remain disjoint after folding.
+That is not sufficient because a cross-row route's *physical row segment* is extended from its endpoint
+to an incoming or outgoing fold portal. The portal extension is not part of the original virtual
+endpoint interval.
 
-Folding preserves that property:
+Full Snake exposed the counterexample directly:
 
-- within each row, the map from virtual order to physical x is monotone, either increasing or
-  decreasing;
-- therefore disjoint virtual intervals remain disjoint physical row segments;
-- if a group crosses a row boundary, its virtual interval contains that boundary;
-- two disjoint groups on the same track cannot both cross the same boundary.
+```text
+safe-folded-crossbar formula assigned one relay site to distinct groups:
+(2262.0, 179.0) -> 355, 356
+```
 
-Thus one track-specific fold portal can be reused by disjoint nets at different boundaries without
-shorting them.
+Two groups that were permitted to reuse one linear track acquired overlapping horizontal row segments
+after portal extension.
+
+The corrected folded strategy therefore does **not** inherit global bus-track identities from
+`safe-crossbar`.
+
+## Correct row-local construction
+
+The corrected planner proceeds in this order:
+
+1. choose the deterministic folded entity rows;
+2. determine which physical nets cross each fold boundary;
+3. assign every crossing net a boundary-local portal column;
+4. for every `(physical net, entity row)`, collect all actual horizontal attachments:
+   - endpoint feeder taps on that row;
+   - incoming fold portal, if present;
+   - outgoing fold portal, if present;
+5. form the exact closed physical x interval between those attachments;
+6. for each `(row, wire color)` independently, interval-color those **actual physical row segments**;
+7. place RED row tracks above the entity row and GREEN row tracks below it;
+8. connect adjacent rows of the same physical net through the deterministic portal stitch.
+
+A net is allowed to use different local track numbers on adjacent rows. The fold stitch connects the
+corresponding two bus heights, so no global track identity is required.
+
+For each row/color, interval partitioning uses the minimum number of tracks for the already-fixed
+segment intervals. Therefore two segments sharing one physical bus row are guaranteed disjoint with
+the relay-center clearance applied.
+
+## Portal columns
+
+Portal columns are assigned independently at every row boundary. All physical nets crossing one
+boundary receive distinct portal ordinals, across both wire colors. The same ordinal may be reused at a
+different boundary because the vertical stitch bands are vertically disjoint.
+
+The fold side alternates with the serpentine rows. Portal columns remain outside the computation row and
+on odd x coordinates. This keeps them disjoint from ordinary horizontal bus-relay sites at
+`x = 0 mod 6`.
 
 ## Relay lattice
 
-The folded construction retains the six-tile safe wire-hop lattice and the two-tile bus-track spacing.
+The folded construction retains:
+
+```text
+wire relay pitch:   6 tiles
+bus track spacing:  2 tiles
+first bus offset:   3 tiles
+```
 
 Real entity rows are at y coordinates divisible by six. Local bus rows are odd offsets:
 
 ```text
-RED:   row_y - (3 + 2 * track)
-GREEN: row_y + (3 + 2 * track)
+RED:   row_y - (3 + 2 * local_track)
+GREEN: row_y + (3 + 2 * local_track)
 ```
 
-Endpoint feeder columns remain two tiles left/right of entity centers. Ordinary endpoint-feeder relays
-stay on six-tile y positions.
+Endpoint feeder columns are two tiles left/right of entity centers, while ordinary endpoint-feeder
+relays stay on six-tile y positions. Fold stitches use odd portal x coordinates and ordinary relays at
+six-tile y positions. Foreign horizontal/vertical wire crossings therefore contain no relay entity;
+only owning routes receive explicit taps.
 
-Fold portal columns are placed outside the computation row. Each `(wire color, track)` gets a unique
-portal x coordinate. Portal columns are odd x coordinates, while ordinary horizontal bus relays remain
-on `x = 0 mod 6`. Ordinary vertical stitch relays remain on `y = 0 mod 6`, while bus rows are odd.
-Consequently foreign horizontal/vertical crossings contain no relay entity; only the owning route gets
-an explicit tap.
+Row pitch is computed from the maximum RED and GREEN **row-local** track counts, plus a fixed margin, so
+relay bands belonging to adjacent entity rows remain separated.
 
 ## Compact I/O front panel
 
 The folded entity order deliberately starts with all public input markers followed by all public output
-markers, before internal implementation entities. Therefore the external terminals occupy a small
+markers, before internal implementation entities. The external terminals therefore occupy a small
 cluster at the beginning of the first row.
 
 This is a layout-only decision. The markers still attach to their ordinary synthesized physical nets.
 It fixes the practical Snake problem where movement input and framebuffer output were separated by the
-entire one-row implementation.
+entire linear implementation.
 
 ## Preflight
 
@@ -123,31 +161,40 @@ Before allocating relay entities the folded layout reports:
 ```text
 physical groups
 routed groups / singletons
-red/green reusable tracks
+maximum row-local red/green tracks
 entity rows
 entities per row
 exact predicted relay count
 predicted width x height
 ```
 
-The initial safety guards are:
+The initial safety guards remain:
 
 ```text
 max relays       = 1,000,000
 max dimension    = 4,096 tiles
 ```
 
+Relay counting uses the same finalized row-local track and portal plan as construction, and the builder
+asserts that the emitted relay count matches preflight exactly.
+
 A rejected folded preflight does not imply that the circuit is unsynthesizable. The caller may always
 switch to the canonical linear `safe-crossbar`, or proceed to a later optimized layout strategy.
+
+## Regression invariant
+
+Tests now inspect the planner directly. For every `(row, color, local track)`, the actual portal-extended
+physical intervals assigned to that track must remain disjoint by at least the relay-center clearance.
+This is the invariant violated by the original `(2262, 179)` Snake failure.
 
 ## Non-goals
 
 The folded strategy deliberately does not attempt:
 
 - topology-aware entity ordering;
-- Steiner or shared-trunk net routing beyond the existing physical-net grouping;
-- local track re-coloring after folds;
-- area or relay-count optimization beyond deterministic folding;
+- Steiner or shared-trunk net routing beyond existing physical-net grouping;
+- optimized portal assignment;
+- area or relay-count optimization beyond deterministic folding and interval packing;
 - substations, walking corridors, or device-aware placement.
 
 Those belong to the next physical-synthesis/net-routing milestone. The folded construction exists only
