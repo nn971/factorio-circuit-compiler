@@ -15,6 +15,7 @@ from factorio_circuit.devices.lamp_screen import (
     pixel_signal,
     rgb,
 )
+from factorio_circuit.target.factorio.signals import DEFAULT_VIRTUAL_SIGNAL_POOL
 
 
 def test_pixel_catalogue_is_fixed_row_major_and_unique() -> None:
@@ -30,6 +31,19 @@ def test_pixel_catalogue_is_fixed_row_major_and_unique() -> None:
     assert pixel_index(15, 15) == 255
     assert pixel_signal(0, 0) == PIXEL_SIGNALS[0]
     assert pixel_signal(15, 15) == PIXEL_SIGNALS[-1]
+
+
+def test_pixel_catalogue_prefers_real_virtual_signals() -> None:
+    assert len(DEFAULT_VIRTUAL_SIGNAL_POOL) == 132
+    assert PIXEL_SIGNALS[: len(DEFAULT_VIRTUAL_SIGNAL_POOL)] == DEFAULT_VIRTUAL_SIGNAL_POOL
+    assert all(signal.name != "signal-signal" for signal in PIXEL_SIGNALS)
+
+    # The fixed ABI changes from virtual lanes to fallback prototype lanes only after exhausting
+    # the verified ordinary base-game virtual-signal catalogue.
+    assert PIXEL_SIGNALS[131].kind == "virtual"
+    assert PIXEL_SIGNALS[131].name == "signal-ghost"
+    assert PIXEL_SIGNALS[132].kind == "item"
+    assert PIXEL_SIGNALS[132].name == "wooden-chest"
 
 
 @pytest.mark.parametrize("x,y", [(-1, 0), (0, -1), (16, 0), (0, 16)])
