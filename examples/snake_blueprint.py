@@ -1,13 +1,13 @@
 """Generate the first Snake circuit blueprint with observable, predictable synthesis.
 
-The game model lives in :mod:`examples.snake`. The default uses the constructive ``safe-crossbar``
-physical layout: implementation combinators sit on a sparse row, RED physical networks use horizontal
-buses above it, GREEN networks use buses below it, and every endpoint reaches its bus through a fixed
-vertical feeder. The default performs no placement optimization, routing search, or retry loop.
+The game model lives in :mod:`examples.snake`. The default uses ``safe-folded-crossbar``: the proven
+linear safe-crossbar ordering and net tracks are folded into deterministic serpentine rows with
+search-free vertical stitches. Public inputs and outputs are clustered at the beginning of the first
+row. The simpler linear ``safe-crossbar`` remains available explicitly as a canonical rollback path.
 
 Progress is printed to stderr. The final importable blueprint string is printed to stdout unless
-``--output`` names a file. The old greedy, full net-aware, and row layouts remain explicit diagnostic
-and stress-test modes.
+``--output`` names a file. Greedy, full net-aware, row, and linear-safe layouts remain explicit
+diagnostic/reference modes.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from examples.snake import (
 from factorio_circuit import CompileProgress, compile_circuit
 from factorio_circuit.synthesis.placement import PlacementOptions
 from factorio_circuit.synthesis.safe_crossbar import safe_crossbar_options
+from factorio_circuit.synthesis.safe_folded_crossbar import safe_folded_crossbar_options
 
 
 class _TerminalProgress:
@@ -86,8 +87,10 @@ def _placement_from_args(args: argparse.Namespace) -> PlacementOptions:
             block_width_tiles=8,
             block_height_tiles=8,
         )
+    if args.linear_safe_layout:
+        return safe_crossbar_options()
 
-    return safe_crossbar_options()
+    return safe_folded_crossbar_options()
 
 
 def main() -> None:
@@ -112,6 +115,11 @@ def main() -> None:
         help="write the final blueprint string to this file instead of stdout",
     )
     placement_group = parser.add_mutually_exclusive_group()
+    placement_group.add_argument(
+        "--linear-safe-layout",
+        action="store_true",
+        help="use the already-proven one-row safe-crossbar reference/rollback layout",
+    )
     placement_group.add_argument(
         "--greedy-layout",
         action="store_true",
