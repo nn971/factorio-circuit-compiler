@@ -207,7 +207,6 @@ def build_snake_circuit(
     reset = circuit.input("reset")
     reset_active = reset != 0
     reset_inactive = reset_active.logical_not()
-    empty_vector = circuit.constant_signals({})
 
     x_reg = circuit.accumulator("head_x")
     y_reg = circuit.accumulator("head_y")
@@ -348,11 +347,6 @@ def build_snake_circuit(
                 old_body_pixels[index - 1].gate(reset_inactive),
                 when=move_ok | reset_active,
             )
-
-    # ``empty_vector`` is intentionally retained as the semantic reset value documentation anchor.
-    # The concrete reset-aware set sources above use ``gate(reset_inactive)`` so every FreezeReg still
-    # has exactly one periodic set source under the current lowering contract.
-    del empty_vector
 
     # Observe the atomic post-transition state. This compatibility cursor is still the established
     # way to expose "after this game step" values for periodic state programs.
