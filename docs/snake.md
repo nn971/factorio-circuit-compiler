@@ -4,15 +4,9 @@
 detector and 16x16 packed-RGB lamp screen. `examples/snake_blueprint.py` is the recommended first
 in-game generator.
 
-The generator now defaults to the deterministic greedy seed of the net-aware placer:
-
-```python
-PlacementOptions(strategy="net-aware", iterations=0, restarts=1)
-```
-
-This keeps connected logic spatially local without running annealing/relaxation or placement retries.
-It replaces the earlier one-dimensional row default, which made placement cheap but could make relay
-routing pathological because many logically local connections became physically very long.
+The first-playtest generator deliberately prefers routing robustness over compactness. It uses the
+deterministic greedy seed of the net-aware placer with zero optimization iterations, frequent routing
+corridors, and deterministic retries that spend progressively more map area if routing fails.
 
 ## Generate the three blueprints
 
@@ -22,27 +16,9 @@ uv run python -m factorio_circuit.devices.lamp_screen
 uv run python -m examples.snake_blueprint
 ```
 
-The Snake generator prints compiler progress and wiring instructions to stderr, then prints only the
-final importable blueprint string to stdout. This means the blueprint may still be redirected directly
-to a file if desired.
-
-Typical progress looks like:
-
-```text
-[    0.1s] frontend: elaborating and lowering source program
-[    0.4s] timing: analyzing periodic state timing
-[    1.2s] placement      [############################] 1/1  placed 312 entities
-[    1.4s] routing        [########--------------------] 87/310  relays=24; last_edge_relays=0
-```
-
-If a difficult edge enters the collision-aware grid fallback, the display changes temporarily to a
-`routing-search` progress bar. That bar reports search expansions in batches of 1000, so a single bad
-edge no longer makes compilation look frozen.
-
-Use `--no-progress` to suppress progress output.
-
-The Snake generator also prints a short synthesis summary and the exact synthesized wire color
-required for the `movement` input and `framebuffer` output.
+The Snake generator prints compiler progress, a short synthesis summary, and the exact synthesized wire
+color required for the `movement` input and `framebuffer` output to stderr. The final importable
+blueprint string alone is printed to stdout, so it may be redirected directly to a file.
 
 Place all three blueprints in game. The detector and screen each carry parallel red and green buses.
 Connect exactly the color printed by the Snake generator:
@@ -55,22 +31,66 @@ OUTPUT framebuffer -- printed color -->  DISPLAY INPUT
 Leave the other device-bus color unattached. The screen deliberately contains no power-distribution
 entities.
 
-For later physical-synthesis stress testing, the generator can opt into vector packing and/or the full
-iterative net-aware placer:
+## First-playtest layout policy
 
-```bash
-uv run python -m examples.snake_blueprint --optimize
-uv run python -m examples.snake_blueprint --net-aware-layout
+The default Snake physical placement is intentionally spacious:
+
+```text
+strategy            = net-aware greedy seed
+optimization steps  = 0
+computation block   = 8 x 8 tiles
+initial corridor    = 4.0 tiles
+initial target fill = 0.60
+attempts             = 4
+retry fill scale     = 0.8
 ```
 
-The old row placement remains available only as a diagnostic baseline:
+A failed routing attempt rebuilds the placement deterministically with more routing space. The default
+sequence is approximately:
+
+```text
+attempt    target fill    corridor width
+1          0.600          4.00
+2          0.480          5.00
+3          0.384          6.25
+4          0.307          7.81
+```
+
+No annealing or random optimization is performed in these attempts. The retry exists because a
+placement that is cheap to compute can still leave too little collision-free space for relay chains.
+
+The initial policy can be adjusted from the CLI:
+
+```bash
+uv run python -m examples.snake_blueprint --corridor-width 6
+uv run python -m examples.snake_blueprint --target-fill 0.45
+uv run python -m examples.snake_blueprint --layout-retries 6
+```
+
+These options can be combined. For example, a deliberately very spacious diagnostic build is:
+
+```bash
+uv run python -m examples.snake_blueprint \
+    --corridor-width 8 \
+    --target-fill 0.40 \
+    --layout-retries 6
+```
+
+The old one-dimensional baseline remains available only for diagnosis:
 
 ```bash
 uv run python -m examples.snake_blueprint --row-layout
 ```
 
-It is not recommended for the full Snake circuit because routing time can become much larger than
-placement time.
+It is not recommended for Snake because trivial row placement can create a much harder routing problem.
+The full iterative net-aware optimizer remains available for later layout-quality testing:
+
+```bash
+uv run python -m examples.snake_blueprint --net-aware-layout
+```
+
+The deterministic search-free safe layout described in `layout-safe-fallback-plan.md` is a later
+milestone. The spacious greedy retries are an intermediate robustness measure, not the final guarantee.
 
 ## Controls and startup
 
@@ -132,9 +152,11 @@ soon as the occupied cell is vacated.
 - an optional game-speed divider is implemented as state, rather than as a separately declared game
   clock;
 - the first prototype is intended to validate the complete input -> state -> packed framebuffer ->
-  lamp path before adding richer gameplay or device composition helpers.
+  lamp path before adding richer gameplay or device composition helpers;
+- the current routing path is still heuristic and may fail; the planned safe fallback will provide the
+  later construction-by-design guarantee.
 
 The semantic state machine can be built without the framebuffer renderer by calling
 `build_snake_circuit(render_framebuffer=False)`. Contract tests use that form for most game-state
-checks. The physical smoke test compiles the full renderer with the same deterministic greedy
-net-aware placement used by the default playtest generator.
+checks. The physical smoke test compiles the full renderer using the same spacious deterministic greedy
+policy as the first-playtest generator.
