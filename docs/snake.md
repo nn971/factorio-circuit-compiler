@@ -18,19 +18,24 @@ uv run python -m examples.snake_blueprint --output snake-blueprint.txt
 ```
 
 The Snake generator prints compiler progress, folded-layout preflight statistics, final relay count,
-and the exact synthesized wire color required for the `movement` input and `framebuffer` output to
-stderr. `--output` writes the encoded blueprint directly to a file instead of sending a potentially
-large string to the terminal.
+and the synthesized interface details for `reset`, `movement`, and `framebuffer` to stderr. It also
+prints the relative marker positions of those three front-panel ports. `--output` writes the encoded
+blueprint directly to a file instead of sending a potentially large string to the terminal.
 
 Place all three blueprints in game. The detector and screen each carry parallel red and green buses.
-Connect exactly the color printed by the Snake generator:
+Connect exactly the colors printed by the Snake generator:
 
 ```text
 movement detector  -- printed color -->  INPUT movement
+reset pulse source -- printed color -->  INPUT reset
 OUTPUT framebuffer -- printed color -->  DISPLAY INPUT
 ```
 
-Leave the other device-bus color unattached. The screen deliberately contains no power-distribution
+`reset` is a scalar compiler input, so the generator also prints the concrete signal lane allocated to
+it. Drive that signal nonzero for at least one Snake state occurrence, then return it to zero. Holding
+it nonzero simply keeps the game in its initial state.
+
+Leave the unused device-bus color unattached. The screen deliberately contains no power-distribution
 entities.
 
 ## Layout strategies
@@ -82,7 +87,7 @@ uv run python -m examples.snake_blueprint --row-layout
 `--greedy-layout` and `--net-aware-layout` still accept `--corridor-width`, `--target-fill`, and
 `--layout-retries`. Those options are ignored by both constructive safe-crossbar strategies.
 
-## Controls and startup
+## Controls, startup, and reset
 
 The game stays frozen at the center until the movement detector produces its first direction signal.
 That first gesture starts the game and may choose any cardinal direction, including west; this makes it
@@ -98,6 +103,29 @@ A legal direction gesture is queued until the next movement boundary, so the pla
 remain inside a gate sensor until the snake advances. Reverse rejection is checked against the most
 recent direction that actually moved the snake; multiple gestures between moves therefore cannot
 smuggle in a net 180-degree reversal.
+
+A nonzero `reset` restores the entire game state atomically:
+
+```text
+head position       -> (8, 8)
+direction           -> east reference / neutral startup
+queued direction    -> neutral
+score               -> 0
+length              -> 1
+dead                -> 0
+started             -> 0
+move divider phase  -> 0
+body position FIFO  -> empty
+body pixel FIFO     -> empty
+food                -> first deterministic cell (11, 8)
+```
+
+Reset has priority over gameplay updates on the same logical occurrence. For accumulator state this is
+implemented with the existing clear control, which physically suppresses same-occurrence adds. For
+freeze state, the current physical lowerer permits exactly one periodic set source, so reset is folded
+into that source: the update value is gated to the empty vector while the combined update/reset control
+forces the register to accept it. A reset asserted together with a movement gesture therefore leaves
+the game at startup and does not queue that gesture; a fresh gesture after reset starts the next game.
 
 By default the snake moves once per compiler-inferred periodic state occurrence. If that is too fast in
 game, add a logical divider when generating the circuit:
@@ -138,7 +166,6 @@ soon as the occupied cell is vacated.
 
 - food placement is deterministic rather than random;
 - maximum snake length is 16;
-- there is no restart/reset input yet;
 - an optional game-speed divider is implemented as state, rather than as a separately declared game
   clock;
 - both safe crossbars are correctness/placeability baselines rather than final optimized routing;
