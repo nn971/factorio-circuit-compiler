@@ -45,13 +45,13 @@ The default is:
 
 ```text
 safe-folded-crossbar
-    real combinators: deterministic serpentine rows
+    real combinators: deterministic serpentine rows, 3-tile center pitch
     public I/O: clustered at the start of the first row
-    fold portals: deterministic boundary-local columns
+    fold portals: deterministic packed boundary-local columns
     row buses: interval-packed from actual endpoint + portal attachment intervals
     RED local tracks: above each entity row
     GREEN local tracks: below each entity row
-    bus track spacing: 2 tiles
+    bus track spacing: 1 tile on half-tile rows
     relay hop pitch: 6 tiles
     relay preflight cap: 1,000,000
     maximum preflight dimension: 4,096 tiles
@@ -59,6 +59,12 @@ safe-folded-crossbar
     routing search: none
     retries: none
 ```
+
+The denser failproof geometry keeps ordinary horizontal bus relays on `x = 0 (mod 6)`, endpoint
+feeders on the other integer residues, and horizontal bus rows on half-tile y coordinates. Packed fold
+portal columns skip the ordinary row-bus relay columns. Multi-row layouts use an odd entity-column
+count so both fold edges return to the six-tile x lattice. The detailed invariant and the original
+Snake compactness baseline are documented in `docs/safe-folded-crossbar-layout.md`.
 
 A cross-row physical net may use different local track numbers on adjacent rows. A deterministic
 vertical fold stitch connects those bus heights. Track reuse is decided only after portal extensions
@@ -112,9 +118,9 @@ head position       -> (8, 8)
 direction           -> east reference / neutral startup
 queued direction    -> neutral
 score               -> 0
-length              -> 1
+length               -> 1
 dead                -> 0
-started             -> 0
+started              -> 0
 move divider phase  -> 0
 body position FIFO  -> empty
 body pixel FIFO     -> empty
