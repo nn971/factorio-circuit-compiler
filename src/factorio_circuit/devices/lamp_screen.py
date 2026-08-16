@@ -11,7 +11,9 @@ from factorio_circuit.target.factorio.signals import DEFAULT_VIRTUAL_SIGNAL_POOL
 SCREEN_WIDTH: Final = 16
 SCREEN_HEIGHT: Final = 16
 PIXEL_COUNT: Final = SCREEN_WIDTH * SCREEN_HEIGHT
+RED_CONNECTOR: Final = 1
 GREEN_CONNECTOR: Final = 2
+BUS_CONNECTORS: Final = (RED_CONNECTOR, GREEN_CONNECTOR)
 PACKED_RGB_COLOR_MODE: Final = 2
 FACTORIO_BLUEPRINT_VERSION: Final = 562954249306113
 
@@ -255,8 +257,8 @@ def _lamp_number(x: int, y: int) -> int:
 def build_lamp_screen_blueprint() -> Blueprint:
     """Build the fixed 16x16 screen as Factorio blueprint JSON.
 
-    Pixel (0, 0) is the top-left lamp. All lamps share one green circuit network. An empty
-    constant combinator immediately to the left of the top row is the labelled framebuffer input.
+    Pixel (0, 0) is the top-left lamp. Every lamp participates in parallel red and green circuit
+    buses. Connect only the compiler output's assigned color at the labelled terminal.
     """
     entities: list[dict[str, object]] = [
         {
@@ -272,23 +274,25 @@ def build_lamp_screen_blueprint() -> Blueprint:
         for x in range(SCREEN_WIDTH)
     )
 
-    wires: list[list[int]] = [[1, GREEN_CONNECTOR, _lamp_number(0, 0), GREEN_CONNECTOR]]
-
-    # One short serpentine chain keeps every wire between adjacent lamps while making all pixels
-    # members of the same circuit network.
+    # Two identical short-hop serpentine networks make the passive display input independent of the
+    # wire color chosen by compiler synthesis. Only one color should be connected by the consumer.
     path: list[tuple[int, int]] = []
     for y in range(SCREEN_HEIGHT):
         xs = range(SCREEN_WIDTH) if y % 2 == 0 else range(SCREEN_WIDTH - 1, -1, -1)
         path.extend((x, y) for x in xs)
-    for (left_x, left_y), (right_x, right_y) in zip(path[:-1], path[1:], strict=True):
-        wires.append(
-            [
-                _lamp_number(left_x, left_y),
-                GREEN_CONNECTOR,
-                _lamp_number(right_x, right_y),
-                GREEN_CONNECTOR,
-            ]
-        )
+
+    wires: list[list[int]] = []
+    for connector in BUS_CONNECTORS:
+        wires.append([1, connector, _lamp_number(0, 0), connector])
+        for (left_x, left_y), (right_x, right_y) in zip(path[:-1], path[1:], strict=True):
+            wires.append(
+                [
+                    _lamp_number(left_x, left_y),
+                    connector,
+                    _lamp_number(right_x, right_y),
+                    connector,
+                ]
+            )
 
     return {
         "item": "blueprint",
