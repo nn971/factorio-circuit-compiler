@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import argparse
 
+from examples._clocked_harness import emit_in_game_example
 from factorio_circuit import Circuit
 from factorio_circuit.ir.output import OutputMaterializationPolicy
-
-from examples._clocked_harness import emit_in_game_example
 
 
 def build_pulse_echo() -> Circuit:

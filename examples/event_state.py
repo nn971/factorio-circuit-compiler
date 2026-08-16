@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from examples._clocked_harness import DriverSchedule, emit_in_game_example
 from factorio_circuit import Circuit, SignalId
 from factorio_circuit.ir.output import OutputMaterializationPolicy
-
-from examples._clocked_harness import DriverSchedule, emit_in_game_example
 
 IRON = SignalId("item", "iron-plate")
 COPPER = SignalId("item", "copper-plate")

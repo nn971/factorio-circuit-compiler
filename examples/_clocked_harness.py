@@ -200,7 +200,8 @@ def build_driver_blueprint(
                 if payload != 0:
                     if port.signal is None:
                         raise ValueError(
-                            f"scalar schedule for vector input {input_name!r} has no concrete signal"
+                            f"scalar schedule for vector input {input_name!r} "
+                            "has no concrete signal"
                         )
                     outputs.append((port.signal, payload))
             else:
