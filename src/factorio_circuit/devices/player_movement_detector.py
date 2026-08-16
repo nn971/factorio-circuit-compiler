@@ -1,8 +1,9 @@
 """Generate the fixed eight-direction player movement detector blueprint.
 
 The geometry is the user's tested gate/solar-panel prototype. Eight mutually exclusive wall/gate
-proximity sensors are encoded onto fixed virtual-signal lanes and joined onto one green-wire bus.
-The eight lamps from the tested blueprint are retained as direction indicators and share that bus.
+proximity sensors are encoded onto fixed compass-arrow virtual-signal lanes and joined onto one
+green-wire bus. The eight lamps from the tested blueprint are retained as direction indicators and
+share that bus.
 """
 
 from __future__ import annotations
@@ -27,14 +28,14 @@ DIRECTION_ORDER: Final[tuple[Direction, ...]] = (
     "NW",
 )
 DIRECTION_SIGNALS: Final[dict[Direction, str]] = {
-    "N": "signal-0",
-    "NE": "signal-1",
-    "E": "signal-2",
-    "SE": "signal-3",
-    "S": "signal-4",
-    "SW": "signal-5",
-    "W": "signal-6",
-    "NW": "signal-7",
+    "N": "up-arrow",
+    "NE": "up-right-arrow",
+    "E": "right-arrow",
+    "SE": "down-right-arrow",
+    "S": "down-arrow",
+    "SW": "down-left-arrow",
+    "W": "left-arrow",
+    "NW": "up-left-arrow",
 }
 
 # Coordinates are the tested blueprint translated by (+89, +98), an integer offset which
