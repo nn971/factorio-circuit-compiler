@@ -4,10 +4,13 @@ from itertools import combinations
 
 from factorio_circuit.ir import abstract_physical as abstract
 from factorio_circuit.ir.physical import (
+    ArithmeticCombinator,
     ConstantCombinator,
     InputPort,
+    Operand,
     OutputPort,
     PhysicalCircuit,
+    SignalId,
     WireColor,
 )
 from factorio_circuit.synthesis import open_vector
@@ -79,6 +82,37 @@ def test_folded_safe_crossbar_is_deterministic() -> None:
     assert first.wires == second.wires
 
 
+def test_folded_entity_rows_use_three_tile_pitch_and_safe_feeder_residues() -> None:
+    signal = SignalId("virtual", "signal-A")
+    physical = PhysicalCircuit("dense_entity_rows")
+    physical.entities.extend(
+        ArithmeticCombinator(
+            entity_id,
+            "+",
+            Operand(signal=signal),
+            Operand(constant=1),
+            output_each=False,
+            output_signal=signal,
+        )
+        for entity_id in range(1, 13)
+    )
+
+    plan = _plan_folded_crossbar(physical, {}, {})
+
+    assert plan.entity_rows > 1
+    assert plan.entities_per_row % 2 == 1
+    rows: dict[float, list[float]] = {}
+    for x, y in plan.positions.values():
+        rows.setdefault(y, []).append(x)
+        # Two-port combinators place feeders two tiles to either side. With centers
+        # alternating between x = 0 and 3 (mod 6), neither feeder can hit x = 0 (mod 6).
+        assert abs((x - 2.0) % 6.0) > 1e-9
+        assert abs((x + 2.0) % 6.0) > 1e-9
+    for xs in rows.values():
+        xs.sort()
+        assert all(abs(right - left - 3.0) < 1e-9 for left, right in zip(xs, xs[1:]))
+
+
 def test_folded_bus_tracks_pack_one_tile_apart_off_vertical_relay_lattice() -> None:
     red_rows = [_bus_y(0.0, WireColor.RED, track) for track in range(8)]
     green_rows = [_bus_y(0.0, WireColor.GREEN, track) for track in range(8)]
@@ -94,11 +128,11 @@ def test_folded_bus_tracks_pack_one_tile_apart_off_vertical_relay_lattice() -> N
 
 def test_folded_portals_pack_adjacent_tiles_but_skip_row_bus_lattice() -> None:
     right_side = [
-        _portal_x_values(20, boundary=0, ordinal=ordinal)
+        _portal_x_values(21, boundary=0, ordinal=ordinal)
         for ordinal in range(20)
     ]
     left_side = [
-        _portal_x_values(20, boundary=1, ordinal=ordinal)
+        _portal_x_values(21, boundary=1, ordinal=ordinal)
         for ordinal in range(20)
     ]
     gaps = [right - left for left, right in zip(right_side, right_side[1:])]
