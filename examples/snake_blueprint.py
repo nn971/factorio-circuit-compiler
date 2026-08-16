@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import sys
 from time import monotonic
-from typing import Any, cast
 
 from examples.snake import (
     DEFAULT_LOGICAL_STEPS_PER_MOVE,
@@ -23,6 +22,7 @@ from examples.snake import (
 )
 from factorio_circuit import CompileProgress, compile_circuit
 from factorio_circuit.synthesis.placement import PlacementOptions
+from factorio_circuit.synthesis.safe_crossbar import safe_crossbar_options
 
 
 class _TerminalProgress:
@@ -85,10 +85,7 @@ def _placement_from_args(args: argparse.Namespace) -> PlacementOptions:
             block_height_tiles=8,
         )
 
-    # ``safe-crossbar`` is a joint placement+routing synthesis policy recognized before the
-    # optimizer-specific PlacementOptions validator.  Keep the cast local until the next physical-
-    # synthesis milestone widens the public PlacementStrategy type alongside net-routing work.
-    return PlacementOptions(strategy=cast(Any, "safe-crossbar"), restarts=1)
+    return safe_crossbar_options()
 
 
 def main() -> None:
