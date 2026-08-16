@@ -65,6 +65,9 @@ class SignalsExpr(_SignalsExpr):
         return self._wrap_vector(VectorBinaryOp("+", self._value, self._coerce_vector(other)))
 
     def __sub__(self, other: object) -> SignalsExpr:
+        if isinstance(other, (Expr, int, bool)):
+            scalar = self._circuit._coerce_scalar(other)
+            return self._wrap_vector(VectorScalarOp("-", self._value, scalar.ir))
         return self._wrap_vector(VectorBinaryOp("-", self._value, self._coerce_vector(other)))
 
     def __mul__(self, other: Expr | int | bool) -> SignalsExpr:
