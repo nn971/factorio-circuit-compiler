@@ -1,9 +1,9 @@
 """Generate the fixed eight-direction player movement detector blueprint.
 
 The geometry is the user's tested gate/solar-panel prototype. Eight mutually exclusive wall/gate
-proximity sensors are encoded onto fixed compass-arrow virtual-signal lanes and joined onto one
-green-wire bus. The eight lamps from the tested blueprint are retained as direction indicators and
-share that bus.
+proximity sensors are encoded onto fixed compass-arrow virtual-signal lanes. Red and green buses are
+wired in parallel so a compiled consumer can attach using whichever physical wire color synthesis
+assigns to its input. The eight lamps from the tested blueprint remain as direction indicators.
 """
 
 from __future__ import annotations
@@ -15,7 +15,9 @@ from factorio_circuit.devices._blueprint import Blueprint, encode_blueprint
 type Direction = Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 
 FACTORIO_BLUEPRINT_VERSION: Final = 562954249306113
+RED_CONNECTOR: Final = 1
 GREEN_CONNECTOR: Final = 2
+BUS_CONNECTORS: Final = (RED_CONNECTOR, GREEN_CONNECTOR)
 
 DIRECTION_ORDER: Final[tuple[Direction, ...]] = (
     "N",
@@ -126,14 +128,14 @@ def build_player_movement_detector_blueprint() -> Blueprint:
     sensor_entities: dict[Direction, int] = {}
     indicator_entities: dict[Direction, int] = {}
 
-    for entity_number, (name, x, y, direction) in enumerate(_LAYOUT, start=1):
+    for entity_number, (name, x, y, entity_direction) in enumerate(_LAYOUT, start=1):
         entity: dict[str, object] = {
             "entity_number": entity_number,
             "name": name,
             "position": {"x": x, "y": y},
         }
-        if direction is not None:
-            entity["direction"] = direction
+        if entity_direction is not None:
+            entity["direction"] = entity_direction
 
         sensor_direction = _DIRECTION_BY_SENSOR_POSITION.get((x, y))
         if sensor_direction is not None:
@@ -161,27 +163,28 @@ def build_player_movement_detector_blueprint() -> Blueprint:
 
         entities.append(entity)
 
-    # Ring the sensors together, then attach every retained indicator lamp to its own sensor.
-    # All sixteen connections therefore belong to one green circuit network.
+    # Ring the sensors and attach each retained indicator on both circuit colors. A consumer should
+    # connect exactly one matching wire color; the parallel bus makes the port synthesis-color agnostic.
     wires: list[list[int]] = []
-    for index, direction in enumerate(DIRECTION_ORDER):
-        next_direction = DIRECTION_ORDER[(index + 1) % len(DIRECTION_ORDER)]
-        wires.append(
-            [
-                sensor_entities[direction],
-                GREEN_CONNECTOR,
-                sensor_entities[next_direction],
-                GREEN_CONNECTOR,
-            ]
-        )
-        wires.append(
-            [
-                sensor_entities[direction],
-                GREEN_CONNECTOR,
-                indicator_entities[direction],
-                GREEN_CONNECTOR,
-            ]
-        )
+    for connector in BUS_CONNECTORS:
+        for index, direction in enumerate(DIRECTION_ORDER):
+            next_direction = DIRECTION_ORDER[(index + 1) % len(DIRECTION_ORDER)]
+            wires.append(
+                [
+                    sensor_entities[direction],
+                    connector,
+                    sensor_entities[next_direction],
+                    connector,
+                ]
+            )
+            wires.append(
+                [
+                    sensor_entities[direction],
+                    connector,
+                    indicator_entities[direction],
+                    connector,
+                ]
+            )
 
     return {
         "item": "blueprint",
