@@ -4,22 +4,23 @@
 detector and 16x16 packed-RGB lamp screen. `examples/snake_blueprint.py` is the recommended first
 in-game generator.
 
-The first-playtest generator now uses the constructive `safe-crossbar` physical layout by default.
-This deliberately prefers guaranteed materialization over compactness: it performs no placement
-optimization, collision-avoiding routing search, or retry loop. See `safe-crossbar-layout.md` for the
-construction and proof obligations.
+The first-playtest generator uses the constructive `safe-crossbar` physical layout by default. This
+prefers guaranteed materialization over compactness: it performs no placement optimization,
+collision-avoiding routing search, or retry loop. See `safe-crossbar-layout.md` for the construction
+and proof obligations.
 
 ## Generate the three blueprints
 
 ```bash
 uv run python -m factorio_circuit.devices.player_movement_detector
 uv run python -m factorio_circuit.devices.lamp_screen
-uv run python -m examples.snake_blueprint
+uv run python -m examples.snake_blueprint --output snake-blueprint.txt
 ```
 
-The Snake generator prints compiler progress, a synthesis summary including relay count, and the exact
-synthesized wire color required for the `movement` input and `framebuffer` output to stderr. The final
-importable blueprint string alone is printed to stdout, so it may be redirected directly to a file.
+The Snake generator prints compiler progress, safe-layout preflight statistics, the final relay count,
+and the exact synthesized wire color required for the `movement` input and `framebuffer` output to
+stderr. `--output` writes the encoded blueprint directly to a file instead of sending a potentially
+large string to the terminal. Omitting it retains the stdout behavior for smaller experiments.
 
 Place all three blueprints in game. The detector and screen each carry parallel red and green buses.
 Connect exactly the color printed by the Snake generator:
@@ -39,17 +40,30 @@ The default is:
 ```text
 safe-crossbar
     real combinators: sparse horizontal row
-    RED physical nets: horizontal buses above the row
-    GREEN physical nets: horizontal buses below the row
+    RED physical nets: reusable horizontal bus tracks above the row
+    GREEN physical nets: reusable horizontal bus tracks below the row
+    track assignment: deterministic interval partitioning
+    bus track spacing: 2 tiles
+    relay hop pitch: 6 tiles
     endpoint access: unique vertical feeder columns
-    relay pitch: 6 tiles
+    relay preflight cap: 1,000,000
     placement search: none
     routing search: none
     retries: none
 ```
 
-The fallback may be very large. That is intentional: this milestone separates "can the compiler emit a
-valid physical blueprint?" from the later problem of optimizing net routing, relay count, and area.
+Two same-color physical nets reuse one bus track whenever their horizontal endpoint intervals are
+disjoint with relay clearance. The temporary tracks are then reordered so feeder-heavy tracks sit
+closest to the entity row. This keeps the fallback constructive while avoiding the first version's
+one-net-per-row quadratic relay explosion.
+
+Before allocating relays, safe-crossbar reports the number of physical groups, routed groups,
+singletons, red/green track counts, and the exact predicted relay count. If the prediction exceeds one
+million relays, compilation stops before constructing the huge layout or encoding blueprint JSON.
+
+The fallback can still be large when the fixed entity order has high same-color interval overlap. That
+is intentional: this milestone separates "can the compiler emit a valid physical blueprint?" from the
+later problem of optimizing net routing, relay count, and area.
 
 The previous physical-layout paths remain available for diagnosis and the next optimization milestone:
 
@@ -84,7 +98,7 @@ By default the snake moves once per compiler-inferred periodic state occurrence.
 game, add a logical divider when generating the circuit:
 
 ```bash
-uv run python -m examples.snake_blueprint --steps-per-move 2
+uv run python -m examples.snake_blueprint --steps-per-move 2 --output snake-blueprint.txt
 ```
 
 The real-time move interval is the inferred state-domain period multiplied by this divider. The script
@@ -122,10 +136,10 @@ soon as the occupied cell is vacated.
 - there is no restart/reset input yet;
 - an optional game-speed divider is implemented as state, rather than as a separately declared game
   clock;
-- safe-crossbar does not optimize area or relay count and does not support fixed user placement
-  anchors;
-- optimized physical-net routing is intentionally deferred to the next physical-synthesis milestone.
+- safe-crossbar is a correctness fallback, not the final routing/layout optimizer;
+- the first prototype is intended to validate the complete input -> state -> packed framebuffer ->
+  lamp path before adding richer gameplay or device composition helpers.
 
 The semantic state machine can be built without the framebuffer renderer by calling
 `build_snake_circuit(render_framebuffer=False)`. Contract tests use that form for most game-state
-checks. The full physical smoke test compiles the full renderer through safe-crossbar.
+checks. The physical smoke test compiles the full renderer using the safe-crossbar path.
