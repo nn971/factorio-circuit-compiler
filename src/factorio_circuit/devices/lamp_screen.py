@@ -16,8 +16,8 @@ PACKED_RGB_COLOR_MODE: Final = 2
 FACTORIO_BLUEPRINT_VERSION: Final = 562954249306113
 
 # These base-game prototypes all have item, recipe, and entity signal identities with the same name.
-# Reusing the three signal kinds gives a compact, deterministic catalogue without depending on
-# Space Age content or signal quality.
+# They are only fallback framebuffer lanes: every ordinary virtual signal in the compiler's verified
+# base-game catalogue is consumed first.
 _PLACEABLE_SIGNAL_NAMES: Final[tuple[str, ...]] = (
     "wooden-chest",
     "iron-chest",
@@ -101,20 +101,25 @@ _BASIC_ITEM_SIGNAL_NAMES: Final[tuple[str, ...]] = (
     "advanced-circuit",
 )
 
-PIXEL_SIGNALS: Final[tuple[SignalId, ...]] = (
-    DEFAULT_VIRTUAL_SIGNAL_POOL
-    + tuple(
-        SignalId(kind, name)
-        for name in _PLACEABLE_SIGNAL_NAMES
-        for kind in ("item", "recipe", "entity")
-    )
-    + tuple(SignalId("item", name) for name in _BASIC_ITEM_SIGNAL_NAMES)
-)
+_FALLBACK_PIXEL_SIGNALS: Final[tuple[SignalId, ...]] = tuple(
+    SignalId(kind, name)
+    for name in _PLACEABLE_SIGNAL_NAMES
+    for kind in ("item", "recipe", "entity")
+) + tuple(SignalId("item", name) for name in _BASIC_ITEM_SIGNAL_NAMES)
 
-if len(PIXEL_SIGNALS) != PIXEL_COUNT:  # pragma: no cover - import-time invariant
+_PIXEL_SIGNAL_CANDIDATES: Final[tuple[SignalId, ...]] = (
+    DEFAULT_VIRTUAL_SIGNAL_POOL + _FALLBACK_PIXEL_SIGNALS
+)
+if len(_PIXEL_SIGNAL_CANDIDATES) < PIXEL_COUNT:  # pragma: no cover - import-time invariant
     raise RuntimeError(
-        f"pixel signal catalogue contains {len(PIXEL_SIGNALS)} lanes; expected {PIXEL_COUNT}"
+        f"pixel signal catalogue contains only {len(_PIXEL_SIGNAL_CANDIDATES)} candidates; "
+        f"expected at least {PIXEL_COUNT}"
     )
+
+# Stable row-major screen ABI.  The preferred prefix is entirely real base-game virtual signals;
+# only the tail falls back to item/recipe/entity channels.
+PIXEL_SIGNALS: Final[tuple[SignalId, ...]] = _PIXEL_SIGNAL_CANDIDATES[:PIXEL_COUNT]
+
 if len(set(PIXEL_SIGNALS)) != PIXEL_COUNT:  # pragma: no cover - import-time invariant
     raise RuntimeError("pixel signal catalogue contains duplicate lanes")
 
