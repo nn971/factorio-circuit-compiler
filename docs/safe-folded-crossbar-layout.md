@@ -37,10 +37,13 @@ predicted extent    = 3,004 x 2,792 tiles
 state period        = 60 ticks
 ```
 
-The layout-relay count is important: almost all blueprint constant combinators in this benchmark are
-1x1 routing relays, rather than implementation constants. Consequently the first compactness pass
-focuses on relay-lane geometry. Packing the small number of implementation constants more tightly
-would have little effect on the Snake footprint by itself.
+Almost all blueprint constant combinators in this benchmark are 1x1 routing relays rather than
+implementation constants. The first density pass therefore attacks both dominant pieces of geometric
+slack directly:
+
+- relay bus/portal lanes use the true 1x1 relay footprint;
+- real implementation rows use the smallest simple center lattice that still preserves failproof
+  feeder separation for 2x1 arithmetic/decider/selector combinators.
 
 The benchmark should retain the following measurements after every physical-density change:
 
@@ -76,9 +79,9 @@ stitch at that row boundary. Public input and output markers appear first in the
 first row acts as a compact external I/O front panel.
 
 The number of entities per row is chosen deterministically from a conservative linear-overlap estimate
-to balance width and height. This is formula-driven sizing rather than placement search. Because row
-pitch is part of the balancing calculation, denser relay tracks can also change the chosen number of
-rows/columns rather than merely shrinking the old geometry in place.
+to balance width and height. This is formula-driven sizing rather than placement search. Because both
+entity pitch and row pitch enter this calculation, density improvements can change the selected
+row/column shape rather than merely shrinking the old rectangle in place.
 
 ## Why row-local tracks are required
 
@@ -109,14 +112,11 @@ A net may use different local track numbers on adjacent rows. For each row/color
 uses the minimum number of tracks for the already-fixed segment intervals. Segments sharing a physical
 track remain separated by the relay-center clearance.
 
-## Packed relay lanes
-
-The first Snake compactness pass exploits the actual 1x1 footprint of layout relay constant
-combinators.
+## Density pass 1: packed relay lanes
 
 ### Bus tracks
 
-The previous folded baseline used:
+The old folded baseline used:
 
 ```text
 first bus offset:   3 tiles
@@ -139,53 +139,81 @@ RED:   row_y - (3.5 + local_track)
 GREEN: row_y + (3.5 + local_track)
 ```
 
-The half-tile offset is part of the failproof construction. Regular endpoint-feeder and fold-stitch
-relays remain on integer y coordinates separated by six tiles, so a vertical relay center never
-coincides with a horizontal bus-relay center even though bus tracks are now only one tile apart.
-Adjacent 1x1 constants may touch footprint boundaries; their centers remain distinct.
+Regular endpoint-feeder and fold-stitch relays remain on integer y coordinates separated by six tiles,
+so a vertical relay center never coincides with a horizontal bus-relay center. Adjacent 1x1 constants
+may touch footprint boundaries; their centers remain distinct.
 
 ### Portal columns
 
-Fold portals are also 1x1 constants. The old policy spent two columns per portal merely to keep every
-portal on an odd x coordinate. The dense policy instead packs portal centers onto adjacent integer
-columns and skips only `x = 0 (mod 6)` columns used by ordinary horizontal row-bus relays.
+Fold portals are also 1x1 constants. The old policy spent two columns per portal to keep every portal
+on an odd x coordinate. The dense policy packs portal centers onto adjacent integer columns and skips
+only `x = 0 (mod 6)` columns used by ordinary horizontal row-bus relays.
 
-For a right-side fold whose computation-row edge is itself `x = 0 (mod 6)`, portal offsets begin:
+For a fold whose computation-row edge is `x = 0 (mod 6)`, portal offsets begin:
 
 ```text
 9, 10, 11, 13, 14, 15, 16, 17, 19, ...
 ```
 
-Thus portal lanes have average pitch close to one tile while maintaining the constructive crossing
-invariant. The same sequence is mirrored on left-side folds.
+Thus portal lanes have average pitch close to one tile while preserving the deterministic crossing
+invariant.
 
-### What remains deliberately sparse
+## Density pass 1: three-tile real-entity rows
 
-Real implementation entities retain the existing six-tile center spacing in this first density pass.
-This keeps endpoint feeder columns on the proven `x = +/-2 (mod 6)` lattice while the much larger
-source of wasted area—the hundreds of thousands of relay constants—is compacted first.
-
-The current target has only two relevant implementation footprints: 1x1 constant combinators and 2x1
-arithmetic/decider/selector combinators. A later real-entity packing pass can therefore use a small
-entity-type helper directly; a general `EntityGeometry` abstraction is unnecessary for this target.
-
-## Crossing invariant
-
-The compact geometry separates relay families structurally:
+The old policy also spent six horizontal tiles on every implementation entity. The current Factorio
+target only needs two implementation footprint cases:
 
 ```text
-real entity centers:          x = 0 (mod 6), y = 0 (mod row_pitch)
-INPUT/SINGLE feeder columns:  x = -2 (mod 6)
-OUTPUT feeder columns:        x = +2 (mod 6)
+constant combinator                 1 x 1
+arithmetic / decider / selector     2 x 1
+```
+
+A general `EntityGeometry` abstraction is unnecessary for this target. The failproof row can use a
+uniform **three-tile center pitch**, which is already safe for the larger 2x1 case.
+
+Entity centers therefore alternate between:
+
+```text
+x = 0 (mod 6)
+x = 3 (mod 6)
+```
+
+With the existing two-tile feeder offset, endpoint feeder columns occupy only:
+
+```text
+INPUT / SINGLE: center - 2  -> residues 1 or 4 (mod 6)
+OUTPUT:         center + 2  -> residues 2 or 5 (mod 6)
+```
+
+They never occupy `x = 0 (mod 6)`, which remains reserved for ordinary horizontal row-bus relays.
+Input/output feeder columns from neighbouring entities are also distinct; their minimum center spacing
+is one tile, which is legal for 1x1 relay constants.
+
+Two 2x1 implementation combinators whose centers are three tiles apart retain one full tile of empty
+space between their footprints.
+
+For multi-row layouts, the planner only considers an odd number of entity columns. Then the final
+entity center of every row is again `x = 0 (mod 6)`, so the existing compact portal-offset sequence is
+valid on both fold sides. A single-row circuit may use an even column count because it has no fold
+portals.
+
+## Combined crossing invariant
+
+The dense constructive geometry separates relay families structurally:
+
+```text
+real entity centers:          x = 0 or 3 (mod 6), y = 0 (mod row_pitch)
+INPUT/SINGLE feeder columns:  x = 1 or 4 (mod 6)
+OUTPUT feeder columns:        x = 2 or 5 (mod 6)
 regular vertical relays:      y = 0 (mod 6) relative to their entity row
 horizontal bus rows:          half-tile y coordinates
 regular horizontal relays:    x = 0 (mod 6)
 portal columns:                integer x, excluding x = 0 (mod 6)
 ```
 
-This permits one-tile relay packing without turning layout into a collision-search problem. The
-existing row-local interval-coloring invariant still prevents unrelated horizontal segments assigned
-to one bus track from overlapping.
+This permits one-tile relay packing and three-tile implementation packing without introducing
+collision search. The existing row-local interval-coloring invariant still prevents unrelated
+horizontal segments assigned to one bus track from overlapping.
 
 ## Compact I/O front panel
 
@@ -227,19 +255,21 @@ Tests cover the properties on which the constructive proof depends:
 - adjacent bus-track relay centers may be exactly one tile apart;
 - all bus tracks are half-tile y rows, away from the regular vertical-relay lattice;
 - packed portal columns are at least one tile apart and never occupy `x = 0 (mod 6)`;
+- real entity rows use three-tile centers, and +/-2 feeder columns stay off `x = 0 (mod 6)`;
+- every multi-row folded plan uses an odd column count, keeping both row edges on the six-tile lattice;
 - folded layout remains deterministic and performs no heuristic routing search;
 - linear and folded safe strategies remain independent rollback paths.
 
 ## Next compactness targets
 
-Once the dense relay-lane blueprint is confirmed in game, useful next steps are:
+Once this denser blueprint is confirmed in game, the next useful targets are more structural:
 
 1. measure the new Snake relay count and extent against the 3,004 x 2,792 / 470,732 baseline;
-2. pack real 1x1 constants separately from 2x1 arithmetic/decider/selector entities while preserving
-   deterministic feeder columns;
-3. improve deterministic entity ordering using physical-net topology to shorten row segments and
-   reduce portal crossings;
-4. reduce relay count by sharing trunks and introducing stronger constructive routing structures.
+2. improve deterministic entity ordering using physical-net topology to shorten row segments and reduce
+   fold crossings;
+3. reduce relay count by sharing trunks and introducing stronger constructive routing structures;
+4. only then consider more aggressive mixed-width packing of the comparatively few implementation
+   constants if the benchmark shows a measurable benefit.
 
-The first two stages stay within the failproof constructive-layout philosophy. Topology-aware routing
-can then be benchmarked against a substantially denser correctness baseline.
+The current density pass stays within the failproof constructive-layout philosophy: every coordinate is
+still formula-derived, with no placement search, routing search, retry, or backtracking.
