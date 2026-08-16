@@ -11,6 +11,19 @@ from factorio_circuit.devices.player_movement_detector import (
 )
 
 
+def test_direction_lanes_are_compass_arrow_signals() -> None:
+    assert DIRECTION_SIGNALS == {
+        "N": "up-arrow",
+        "NE": "up-right-arrow",
+        "E": "right-arrow",
+        "SE": "down-right-arrow",
+        "S": "down-arrow",
+        "SW": "down-left-arrow",
+        "W": "left-arrow",
+        "NW": "up-left-arrow",
+    }
+
+
 def test_player_movement_detector_preserves_tested_layout_and_fixed_lanes() -> None:
     blueprint = build_player_movement_detector_blueprint()
     entities = blueprint["entities"]
