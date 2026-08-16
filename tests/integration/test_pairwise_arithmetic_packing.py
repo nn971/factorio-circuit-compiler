@@ -1,5 +1,5 @@
 from examples.walsh_hadamard import build_wht_circuit
-from factorio_circuit import Circuit, compile_abstract_circuit
+from factorio_circuit import Circuit, compile_circuit
 from factorio_circuit.ir.abstract_physical import ArithmeticCombinator
 from factorio_circuit.simulate.compare import assert_same_values
 
@@ -16,7 +16,7 @@ def _two_pairwise_sums() -> Circuit:
 
 
 def test_dynamic_dynamic_additions_pack_into_each_each() -> None:
-    result = compile_abstract_circuit(_two_pairwise_sums())
+    result = compile_circuit(_two_pairwise_sums())
 
     packed = [
         entity
@@ -50,7 +50,7 @@ def test_dynamic_dynamic_additions_pack_into_each_each() -> None:
 
 
 def test_wht8_uses_generic_pairwise_batches_and_remains_equivalent() -> None:
-    result = compile_abstract_circuit(build_wht_circuit(3))
+    result = compile_circuit(build_wht_circuit(3))
 
     packed = [
         entity

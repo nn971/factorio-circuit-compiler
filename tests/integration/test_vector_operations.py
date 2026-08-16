@@ -2,7 +2,7 @@
 
 from typing import Any, cast
 
-from factorio_circuit import SignalId, compile_abstract_circuit
+from factorio_circuit import SignalId, compile_circuit
 from factorio_circuit.frontend import Circuit
 from factorio_circuit.ir.physical import ArithmeticCombinator, DeciderCombinator
 from factorio_circuit.simulate.physical import simulate_stream
@@ -52,7 +52,7 @@ def _value_at(
 
 
 def test_vector_arithmetic_matches_sparse_map_semantics() -> None:
-    result = compile_abstract_circuit(_vector_circuit())
+    result = compile_circuit(_vector_circuit())
     stream = [
         {
             "left": {IRON: 7, COPPER: -3, COAL: 4},
@@ -104,7 +104,7 @@ def test_vector_arithmetic_matches_sparse_map_semantics() -> None:
 
 
 def test_positive_and_any_lower_to_factorio_wildcards() -> None:
-    result = compile_abstract_circuit(_vector_circuit())
+    result = compile_circuit(_vector_circuit())
     deciders = [
         entity
         for entity in result.physical_circuit.entities
@@ -136,7 +136,7 @@ def test_positive_and_any_lower_to_factorio_wildcards() -> None:
 
 
 def test_max_lowers_to_one_factorio_selector_combinator() -> None:
-    result = compile_abstract_circuit(_max_circuit())
+    result = compile_circuit(_max_circuit())
 
     scaffold = next(
         entity
