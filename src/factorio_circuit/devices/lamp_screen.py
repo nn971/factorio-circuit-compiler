@@ -15,9 +15,106 @@ GREEN_CONNECTOR: Final = 2
 PACKED_RGB_COLOR_MODE: Final = 2
 FACTORIO_BLUEPRINT_VERSION: Final = 562954249306113
 
+# Real base-game virtual signals not already present in the compiler's intentionally small allocator
+# pool.  Selector pseudo-signals (signal-each/everything/anything) are deliberately excluded because
+# they are circuit-language operands, not independent framebuffer channels.
+_ADDITIONAL_DISPLAY_VIRTUAL_SIGNAL_NAMES: Final[tuple[str, ...]] = (
+    "signal-no-entry",
+    "signal-heart",
+    "signal-alert",
+    "signal-comma",
+    "signal-letter-dot",
+    "signal-exclamation-mark",
+    "signal-question-mark",
+    "signal-colon",
+    "signal-slash",
+    "signal-apostrophe",
+    "signal-quotation-mark",
+    "signal-ampersand",
+    "signal-circumflex-accent",
+    "signal-number-sign",
+    "signal-percent",
+    "shape-vertical",
+    "shape-horizontal",
+    "shape-diagonal",
+    "shape-diagonal-2",
+    "shape-curve",
+    "shape-curve-2",
+    "shape-curve-3",
+    "shape-curve-4",
+    "shape-cross",
+    "shape-diagonal-cross",
+    "shape-corner",
+    "shape-corner-2",
+    "shape-corner-3",
+    "shape-corner-4",
+    "shape-t",
+    "shape-t-2",
+    "shape-t-3",
+    "shape-t-4",
+    "shape-circle",
+    "up-arrow",
+    "up-right-arrow",
+    "right-arrow",
+    "down-right-arrow",
+    "down-arrow",
+    "down-left-arrow",
+    "left-arrow",
+    "up-left-arrow",
+    "signal-rightwards-leftwards-arrow",
+    "signal-upwards-downwards-arrow",
+    "signal-shuffle",
+    "signal-left-right-arrow",
+    "signal-up-down-arrow",
+    "signal-clockwise-circle-arrow",
+    "signal-anticlockwise-circle-arrow",
+    "signal-input",
+    "signal-output",
+    "signal-fuel",
+    "signal-lightning",
+    "signal-battery-full",
+    "signal-battery-mid-level",
+    "signal-battery-low",
+    "signal-radioactivity",
+    "signal-thermometer-blue",
+    "signal-thermometer-red",
+    "signal-fire",
+    "signal-explosion",
+    "signal-snowflake",
+    "signal-liquid",
+    "signal-stack-size",
+    "signal-recycle",
+    "signal-trash-bin",
+    "signal-science-pack",
+    "signal-map-marker",
+    "signal-white-flag",
+    "signal-lock",
+    "signal-unlock",
+    "signal-mining",
+    "signal-hourglass",
+    "signal-alarm",
+    "signal-sun",
+    "signal-moon",
+    "signal-speed",
+    "signal-skull",
+    "signal-damage",
+    "signal-weapon",
+    "signal-ghost",
+)
+
+DISPLAY_VIRTUAL_SIGNAL_POOL: Final[tuple[SignalId, ...]] = DEFAULT_VIRTUAL_SIGNAL_POOL + tuple(
+    SignalId("virtual", name) for name in _ADDITIONAL_DISPLAY_VIRTUAL_SIGNAL_NAMES
+)
+if len(DISPLAY_VIRTUAL_SIGNAL_POOL) != 132:  # pragma: no cover - import-time invariant
+    raise RuntimeError(
+        f"display virtual signal catalogue contains {len(DISPLAY_VIRTUAL_SIGNAL_POOL)} lanes; "
+        "expected 132"
+    )
+if len(set(DISPLAY_VIRTUAL_SIGNAL_POOL)) != len(DISPLAY_VIRTUAL_SIGNAL_POOL):  # pragma: no cover
+    raise RuntimeError("display virtual signal catalogue contains duplicate lanes")
+
 # These base-game prototypes all have item, recipe, and entity signal identities with the same name.
-# They are only fallback framebuffer lanes: every ordinary virtual signal in the compiler's verified
-# base-game catalogue is consumed first.
+# They are only fallback framebuffer lanes: the display-specific virtual catalogue is consumed first.
 _PLACEABLE_SIGNAL_NAMES: Final[tuple[str, ...]] = (
     "wooden-chest",
     "iron-chest",
@@ -108,7 +205,7 @@ _FALLBACK_PIXEL_SIGNALS: Final[tuple[SignalId, ...]] = tuple(
 ) + tuple(SignalId("item", name) for name in _BASIC_ITEM_SIGNAL_NAMES)
 
 _PIXEL_SIGNAL_CANDIDATES: Final[tuple[SignalId, ...]] = (
-    DEFAULT_VIRTUAL_SIGNAL_POOL + _FALLBACK_PIXEL_SIGNALS
+    DISPLAY_VIRTUAL_SIGNAL_POOL + _FALLBACK_PIXEL_SIGNALS
 )
 if len(_PIXEL_SIGNAL_CANDIDATES) < PIXEL_COUNT:  # pragma: no cover - import-time invariant
     raise RuntimeError(
@@ -116,7 +213,7 @@ if len(_PIXEL_SIGNAL_CANDIDATES) < PIXEL_COUNT:  # pragma: no cover - import-tim
         f"expected at least {PIXEL_COUNT}"
     )
 
-# Stable row-major screen ABI.  The preferred prefix is entirely real base-game virtual signals;
+# Stable row-major screen ABI. The preferred prefix is entirely real base-game virtual signals;
 # only the tail falls back to item/recipe/entity channels.
 PIXEL_SIGNALS: Final[tuple[SignalId, ...]] = _PIXEL_SIGNAL_CANDIDATES[:PIXEL_COUNT]
 
