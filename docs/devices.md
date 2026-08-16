@@ -70,12 +70,14 @@ green = rgb(0, 255, 0)
 ```
 
 `PIXEL_SIGNALS` is the complete 256-lane table used by the generated blueprint. The table is fixed and
-deterministic. It first exhausts a screen-local catalogue of 132 verified ordinary base-game virtual
-signals: the compiler's small stable allocation pool plus additional symbols, punctuation, shapes,
-compass and miscellaneous arrows, and pictographs. Selector pseudo-signals such as `signal-each`,
-`signal-everything`, and `signal-anything` are excluded. Only the remaining framebuffer lanes fall back
-to base-game item/recipe/entity signals. Programs should normally use `pixel_signal(x, y)` rather than
-depend on the concrete catalogue ordering directly.
+deterministic. It first exhausts 81 verified ordinary base-game virtual signals reserved specifically
+for display pixels: symbols, punctuation, shapes, compass and miscellaneous arrows, and pictographs.
+Those lanes are deliberately disjoint from `DEFAULT_VIRTUAL_SIGNAL_POOL`, leaving the compiler's
+small stable virtual-signal allocator free for intermediate arithmetic while a program drives the
+framebuffer. Selector pseudo-signals such as `signal-each`, `signal-everything`, and `signal-anything`
+are excluded. The remaining 175 framebuffer lanes use base-game item/recipe/entity signal identities.
+Programs should normally use `pixel_signal(x, y)` rather than depend on the concrete catalogue ordering
+directly.
 
 All 256 lamps are wired into one short-hop serpentine green network. The empty constant combinator to
 the left of the top row is labelled `DISPLAY INPUT: 16x16 packed-RGB framebuffer` and is the preferred
