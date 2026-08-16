@@ -153,7 +153,16 @@ def test_full_snake_compiles_to_a_physical_blueprint() -> None:
     result = compile_circuit(
         build_snake_circuit(render_framebuffer=True),
         optimize=False,
-        placement=PlacementOptions(strategy="net-aware", iterations=0, restarts=1),
+        placement=PlacementOptions(
+            strategy="net-aware",
+            iterations=0,
+            block_width_tiles=8,
+            block_height_tiles=8,
+            corridor_width=4.0,
+            target_fill=0.60,
+            restarts=4,
+            retry_fill_scale=0.8,
+        ),
     )
 
     assert result.physical_circuit.combinator_count > 0
