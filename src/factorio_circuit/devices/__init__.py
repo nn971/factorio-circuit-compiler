@@ -1,6 +1,7 @@
 """Reusable generators for fixed external Factorio devices."""
 
 from factorio_circuit.devices.lamp_screen import (
+    DISPLAY_VIRTUAL_SIGNAL_POOL,
     PIXEL_SIGNALS,
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
@@ -19,6 +20,7 @@ from factorio_circuit.devices.player_movement_detector import (
 __all__ = [
     "DIRECTION_ORDER",
     "DIRECTION_SIGNALS",
+    "DISPLAY_VIRTUAL_SIGNAL_POOL",
     "PIXEL_SIGNALS",
     "SCREEN_HEIGHT",
     "SCREEN_WIDTH",
