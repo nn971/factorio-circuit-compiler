@@ -38,7 +38,7 @@ from factorio_circuit.synthesis.placement import PlacementOptions
 
 @dataclass(frozen=True, slots=True)
 class CompilationResult:
-    """Result of the canonical abstract-physical compilation pipeline."""
+    """Snapshots produced by the canonical compiler pipeline."""
 
     semantic_ir: CircuitModule
     optimized_ir: CircuitModule
@@ -58,10 +58,6 @@ class CompilationResult:
     @property
     def combinators_saved(self) -> int:
         return self.naive_physical.combinator_count - self.physical_circuit.combinator_count
-
-
-# Compatibility name retained while callers migrate to ``CompilationResult``.
-AbstractCompilationResult = CompilationResult
 
 
 def _contains_vector_output(module: CircuitModule) -> bool:
@@ -105,11 +101,11 @@ def compile_circuit(
     blueprint_safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN,
     placement: PlacementOptions | None = None,
 ) -> CompilationResult:
-    """Compile through Abstract Physical IR, physical synthesis, and final Layout.
+    """Compile semantic dataflow through physical synthesis to a final Layout and blueprint.
 
-    Level modules retain the established optimizer/timing/lowering route.  Event-bearing modules use
-    clock-aware timing and the incremental physical Event lowerer; semantic Event optimization and
-    packing remain disabled until those transforms carry explicit clock proofs.
+    Level modules retain the established optimizer/timing/lowering route. Event-bearing modules use
+    clock-aware timing and the physical Event lowerer; semantic Event optimization and packing remain
+    disabled until those transforms carry explicit clock proofs.
     """
 
     source_output = _source_output(source)
@@ -129,7 +125,7 @@ def compile_circuit(
             safe_wire_span=blueprint_safe_wire_span,
             placement=placement,
         )
-        # Clock-aware packing is deliberately postponed.  Treat the implemented route as its own
+        # Clock-aware packing is deliberately postponed. Treat the implemented route as its own
         # structural baseline rather than pretending the Level naive lowerer is comparable.
         naive_physical = layout.circuit
     else:
@@ -175,21 +171,4 @@ def compile_circuit(
         naive_physical=naive_physical,
         blueprint_json=layout_to_blueprint_json(layout),
         blueprint_string=encode_layout_blueprint_string(layout),
-    )
-
-
-def compile_abstract_circuit(
-    source: Circuit | CircuitModule,
-    *,
-    optimize: bool = True,
-    blueprint_safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN,
-    placement: PlacementOptions | None = None,
-) -> AbstractCompilationResult:
-    """Compatibility alias for :func:`compile_circuit`."""
-
-    return compile_circuit(
-        source,
-        optimize=optimize,
-        blueprint_safe_wire_span=blueprint_safe_wire_span,
-        placement=placement,
     )
