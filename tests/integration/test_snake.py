@@ -142,7 +142,18 @@ def test_snake_stops_on_wall_collision() -> None:
 
 
 def test_reset_wins_over_movement_restores_initial_state_and_rearms_game() -> None:
-    movements = [_movement(E=1), *({} for _ in range(7)), _movement(W=1), _movement(W=1)]
+    movements = [
+        _movement(E=1),
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        _movement(W=1),
+        _movement(W=1),
+    ]
     resets = [0] * 8 + [1, 0]
     rows = _simulate(movements, resets=resets)
 
@@ -160,7 +171,7 @@ def test_reset_wins_over_movement_restores_initial_state_and_rearms_game() -> No
     assert reset_row["started"] == 0
     assert reset_row["food_cell"] == FOOD_CELL_IDS[0]
 
-    # The same held/queued gesture did not leak through reset; a fresh gesture starts a new game.
+    # The simultaneous gesture did not survive reset; a fresh gesture starts the next game.
     assert (rows[9]["head_x"], rows[9]["head_y"]) == (7, 8)
     assert rows[9]["started"] == 1
 
