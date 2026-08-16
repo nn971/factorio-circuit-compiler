@@ -2,17 +2,20 @@
 
 ## Purpose
 
-`safe-crossbar` is the compiler's constructive physical-layout fallback. It exists to separate two
-questions that were previously entangled:
+`safe-crossbar` is the compiler's constructive physical-layout fallback. It separates two questions
+that were previously entangled:
 
-1. can a supported physical circuit always be materialized into a valid Factorio blueprint?;
+1. can a supported physical circuit be materialized without routing search?;
 2. can that blueprint be compact and relay-efficient?
 
-The safe crossbar answers only the first question. It deliberately spends map area and blank constant
-combinators so placement and routing never need heuristic search.
+Safe-crossbar answers only the first question. It deliberately spends map area and blank constant
+combinators so placement and routing never need A*, collision backtracking, annealing, or retries.
 
-The first implementation is used by `examples.snake_blueprint` because the previous row and spacious
-greedy layouts could still exhaust the collision-aware router on the full Snake circuit.
+The first implementation assigned one globally unique bus row to every physical electrical group.
+Snake exposed why that is too pessimistic: 4,623 physical groups produced more than twenty million
+relays because progressively farther bus rows made endpoint feeders grow roughly quadratically. The
+current implementation keeps the constructive guarantee but **reuses bus tracks for disjoint net
+intervals**.
 
 ## Construction
 
@@ -22,24 +25,55 @@ All real implementation entities are placed on one sparse horizontal row at six-
 C0      C1      C2      C3      ...
 ```
 
-Physical electrical groups are built directly from the synthesis-stage `net_groups` result rather than
-first being flattened into geometry-selected spanning-tree edges.
+Physical electrical groups are built directly from synthesis-stage `net_groups` rather than first
+being flattened into geometry-selected spanning-tree edges.
 
-- every RED physical group receives one horizontal bus above the entity row;
-- every GREEN physical group receives one horizontal bus below the entity row;
+- RED groups use horizontal bus segments above the entity row;
+- GREEN groups use horizontal bus segments below the entity row;
 - every concrete connector/color incidence receives one vertical feeder from the entity to its bus.
 
 INPUT and SINGLE connectors use the feeder column two tiles left of the entity centre. OUTPUT
 connectors use the column two tiles right of the entity centre. Because entity centres are spaced by
-six tiles, all feeder columns are globally distinct.
+six tiles, feeder columns are globally distinct for a given connector/color incidence.
 
-High-fanout groups are ordered closest to the entity row. This minimizes weighted feeder length without
-changing any correctness invariant.
+Single-endpoint physical groups require no wire and therefore consume no bus track or relay.
+
+## Reusable interval tracks
+
+For every multi-endpoint physical group, safe-crossbar computes the closed horizontal interval between
+its leftmost and rightmost feeder columns. For each color independently, those intervals are assigned
+to reusable bus tracks.
+
+Two groups may share one track when the previous group's right edge plus relay-center clearance is at
+or before the next group's left edge. The current clearance is 1.1 tiles, matching the normal router's
+1x1 relay collision margin.
+
+```text
+track 0:   ===== net A =====          === net D ===
+track 1:        ========= net B =========
+track 2:                ===== net C =====
+
+entity row:
+C0      C1      C2      C3      C4      C5
+```
+
+Track assignment is the standard deterministic interval-partitioning algorithm:
+
+1. sort intervals by left endpoint, then right endpoint, then physical group id;
+2. release every track whose previous interval has ended plus clearance;
+3. reuse the lowest-numbered available track;
+4. otherwise allocate the next track.
+
+A heap implementation runs in `O(G log G)` for `G` routed physical groups and uses the minimum possible
+number of tracks for the fixed entity order and clearance rule.
+
+The important size parameter is therefore no longer the total number of physical nets. It is the
+**maximum same-color interval overlap**, i.e. the routing cutwidth induced by the current entity order.
 
 ## Six-tile lattice
 
-The default compiler wire span is conservatively seven tiles. Safe-crossbar uses a six-tile relay pitch.
-Its longest local entity-to-first-feeder hop is
+The default compiler wire span is conservatively seven tiles. Safe-crossbar uses a six-tile relay
+pitch. Its longest local entity-to-first-feeder hop is
 
 ```text
 sqrt(2^2 + 6^2) = sqrt(40) ~= 6.325 tiles
@@ -77,29 +111,55 @@ disconnected.
 The feeder's owning bus receives an explicit tap relay at the crossing. Only that crossing joins the
 feeder to a bus.
 
-Different feeders are globally distinct columns. Different buses are distinct rows. RED and GREEN
-relay systems are separated into opposite half-planes. Consequently the construction never needs to
-ask whether a candidate relay position is free.
+Different feeders are globally distinct columns. Different simultaneously overlapping buses use
+distinct track rows. Groups that reuse one track have disjoint relay intervals with at least the
+configured center clearance. RED and GREEN relay systems live in opposite half-planes.
 
 The implementation asserts that no formula-generated relay coordinate is assigned to two distinct
 physical groups.
+
+## Exact preflight and safety cap
+
+Because track assignment happens before relay allocation, the relay count is known exactly before any
+`LayoutRelay` objects are created.
+
+For a group on track `t`:
+
+- every endpoint contributes one tap and `t` ordinary feeder relays;
+- ordinary bus relays occur every six tiles between the group's leftmost and rightmost feeder columns.
+
+Safe-crossbar reports a preflight summary such as:
+
+```text
+safe-layout: preflight: groups=4623; routed=...; singletons=...;
+             tracks=red:...,green:...; predicted_relays=...
+```
+
+The default safety cap is **1,000,000 generated relays**. If the exact prediction exceeds that value,
+synthesis refuses before allocating the huge relay graph or attempting blueprint JSON/zlib encoding.
+The low-level builder accepts `max_relays=None` only for deliberate experiments that explicitly want an
+unbounded fallback layout.
+
+After construction, the implementation asserts that the emitted relay count equals the preflight
+prediction.
 
 ## Routing algorithm
 
 For every multi-endpoint physical group:
 
-1. assign its deterministic bus row;
-2. construct one tap for every endpoint;
-3. connect the real endpoint to the first feeder relay;
-4. emit feeder relays every six tiles until the tap;
-5. emit ordinary bus relays at six-tile x positions between the leftmost and rightmost taps;
-6. sort all bus relays and taps by x and connect adjacent nodes.
+1. compute its endpoint feeder interval;
+2. assign the interval to the minimum deterministic reusable track;
+3. construct one tap for every endpoint;
+4. connect the real endpoint to the first feeder relay;
+5. emit feeder relays every six tiles until the tap;
+6. emit ordinary bus relays every six tiles inside that group's own interval;
+7. sort that group's bus relays and taps by x and connect adjacent nodes.
 
 The normal `route_wires()` implementation, parallel-lane search, grid fallback, placement annealing, and
 retry loop are not called.
 
 For physical simulation, `PhysicalCircuit.connections` still contains a relay-free deterministic chain
-between the real endpoints of each physical group. The `Layout` contains the actual reach-safe relay
+between the real endpoints of each physical group. `Layout.wires` contains the actual reach-safe relay
 geometry used by blueprint serialization.
 
 ## Complexity
@@ -107,20 +167,21 @@ geometry used by blueprint serialization.
 Let
 
 - `V` be real physical entities;
-- `I` be endpoint/net incidences;
+- `G` be routed physical groups;
 - `R` be generated relay entities;
 - `W` be emitted blueprint wire segments.
 
-The construction is output-sensitive. Apart from sorting endpoints/groups and bus nodes, work is
-proportional to the generated structure. There is no A*, collision backtracking, annealing, or random
-restart factor.
+Track assignment is `O(G log G)`. Construction is output-sensitive in `R + W`; there is no search or
+backtracking factor.
 
-The relay count may be large and in bad cases may grow superlinearly with the original circuit because
-farther bus rows require longer endpoint feeders. That is an accepted cost of the fallback.
+The fallback can still be large when the fixed entity order has high interval overlap or very long net
+spans. That is intentional: safe-crossbar guarantees a predictable construction, while the next
+physical-synthesis milestone is responsible for improving entity order, physical-net routing, area, and
+relay count.
 
 ## Supported subset and deliberate limitations
 
-The first implementation assumes:
+The current implementation assumes:
 
 - compiler-generated arithmetic, decider, and constant combinators with the existing horizontal target
   orientation;
@@ -129,21 +190,23 @@ The first implementation assumes:
 - no fixed user placement anchors;
 - a configured safe wire span of at least `sqrt(40)` tiles.
 
-It does not attempt compactness, walking corridors, substation placement, device-aware placement, or
-optimized net routing.
+It does not attempt walking corridors, substation placement, device-aware placement, or optimized
+physical-net routing.
 
-The next physical-synthesis milestone may optimize physical-net routing and layout quality. Safe-crossbar
-should remain as the correctness baseline against which those optimizers are tested.
+Safe-crossbar should remain the correctness baseline against which later optimizers are tested.
 
 ## Snake
 
-The recommended first-playtest command now uses safe-crossbar by default:
+The recommended first-playtest command uses safe-crossbar by default:
 
 ```bash
-uv run python -m examples.snake_blueprint
+uv run python -m examples.snake_blueprint > snake-blueprint.txt
 ```
 
-The old strategies remain available for diagnostics and future optimization work:
+Redirecting stdout is recommended for any large physical build so a long blueprint string is not sent
+to the terminal. Progress and synthesis diagnostics remain on stderr.
+
+The old strategies remain available for routing/layout experiments:
 
 ```bash
 uv run python -m examples.snake_blueprint --greedy-layout
