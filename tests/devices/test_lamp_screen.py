@@ -34,22 +34,22 @@ def test_pixel_catalogue_is_fixed_row_major_and_unique() -> None:
     assert pixel_signal(15, 15) == PIXEL_SIGNALS[-1]
 
 
-def test_pixel_catalogue_prefers_real_virtual_signals() -> None:
-    # Keep the compiler allocator itself small/stable; the larger catalogue belongs to the screen.
+def test_pixel_catalogue_prefers_display_only_virtual_signals() -> None:
+    # The screen must not reserve the compiler's temporary allocation lanes: a compiled framebuffer
+    # needs those virtual identities for its own intermediate arithmetic and predicates.
     assert len(DEFAULT_VIRTUAL_SIGNAL_POOL) == 51
-    assert len(DISPLAY_VIRTUAL_SIGNAL_POOL) == 132
-    assert DISPLAY_VIRTUAL_SIGNAL_POOL[: len(DEFAULT_VIRTUAL_SIGNAL_POOL)] == (
-        DEFAULT_VIRTUAL_SIGNAL_POOL
-    )
+    assert len(DISPLAY_VIRTUAL_SIGNAL_POOL) == 81
+    assert not set(DISPLAY_VIRTUAL_SIGNAL_POOL) & set(DEFAULT_VIRTUAL_SIGNAL_POOL)
     assert PIXEL_SIGNALS[: len(DISPLAY_VIRTUAL_SIGNAL_POOL)] == DISPLAY_VIRTUAL_SIGNAL_POOL
+    assert not set(PIXEL_SIGNALS) & set(DEFAULT_VIRTUAL_SIGNAL_POOL)
     assert all(signal.name != "signal-signal" for signal in PIXEL_SIGNALS)
 
-    # The fixed ABI changes from virtual lanes to fallback prototype lanes only after exhausting
-    # the verified display virtual-signal catalogue.
-    assert PIXEL_SIGNALS[131].kind == "virtual"
-    assert PIXEL_SIGNALS[131].name == "signal-ghost"
-    assert PIXEL_SIGNALS[132].kind == "item"
-    assert PIXEL_SIGNALS[132].name == "wooden-chest"
+    # The fixed ABI falls back to ordinary prototype signal kinds only after exhausting the real,
+    # screen-local virtual catalogue.
+    assert PIXEL_SIGNALS[80].kind == "virtual"
+    assert PIXEL_SIGNALS[80].name == "signal-ghost"
+    assert PIXEL_SIGNALS[81].kind == "item"
+    assert PIXEL_SIGNALS[81].name == "wooden-chest"
 
 
 @pytest.mark.parametrize("x,y", [(-1, 0), (0, -1), (16, 0), (0, 16)])
