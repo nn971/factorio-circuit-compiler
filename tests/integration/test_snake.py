@@ -29,6 +29,7 @@ def _movement(**directions: int) -> dict[object, int]:
 def _simulate(
     movements: list[dict[object, int]],
     *,
+    resets: list[int] | None = None,
     logical_steps_per_move: int = 1,
     render_framebuffer: bool = False,
 ) -> list[dict[str, LogicalOutput]]:
@@ -36,7 +37,16 @@ def _simulate(
         logical_steps_per_move=logical_steps_per_move,
         render_framebuffer=render_framebuffer,
     ).build()
-    trace = simulate_stream(module, [{"movement": row} for row in movements])
+    reset_rows = [0] * len(movements) if resets is None else resets
+    if len(reset_rows) != len(movements):
+        raise ValueError("resets must have the same length as movements")
+    trace = simulate_stream(
+        module,
+        [
+            {"movement": movement, "reset": reset}
+            for movement, reset in zip(movements, reset_rows, strict=True)
+        ],
+    )
     names = tuple(name for name in module.output.names if name is not None)
     assert len(names) == len(module.output.values)
     return [dict(zip(names, row, strict=True)) for row in trace]
@@ -131,6 +141,46 @@ def test_snake_stops_on_wall_collision() -> None:
     assert rows[8]["dead"] == 1
 
 
+def test_reset_wins_over_movement_restores_initial_state_and_rearms_game() -> None:
+    movements = [_movement(E=1), *({} for _ in range(7)), _movement(W=1), _movement(W=1)]
+    resets = [0] * 8 + [1, 0]
+    rows = _simulate(movements, resets=resets)
+
+    assert rows[7]["dead"] == 1
+    assert rows[7]["score"] == 1
+
+    # Reset is asserted together with a west gesture. Reset wins atomically and restores every
+    # externally visible game-state field to the startup state.
+    reset_row = rows[8]
+    assert (reset_row["head_x"], reset_row["head_y"]) == (8, 8)
+    assert reset_row["direction"] == DIR_E
+    assert reset_row["score"] == 0
+    assert reset_row["length"] == 1
+    assert reset_row["dead"] == 0
+    assert reset_row["started"] == 0
+    assert reset_row["food_cell"] == FOOD_CELL_IDS[0]
+
+    # The same held/queued gesture did not leak through reset; a fresh gesture starts a new game.
+    assert (rows[9]["head_x"], rows[9]["head_y"]) == (7, 8)
+    assert rows[9]["started"] == 1
+
+
+def test_reset_clears_body_framebuffer_history() -> None:
+    rows = _simulate(
+        [_movement(E=1), {}, {}, {}],
+        resets=[0, 0, 0, 1],
+        render_framebuffer=True,
+    )
+    frame = rows[3]["framebuffer"]
+
+    assert isinstance(frame, dict)
+    assert frame[pixel_signal(8, 8)] == HEAD_COLOR
+    assert frame[pixel_signal(11, 8)] == FOOD_COLOR
+    assert frame.get(pixel_signal(10, 8), 0) == 0
+    assert rows[3]["score"] == 0
+    assert rows[3]["length"] == 1
+
+
 def test_framebuffer_matches_head_body_and_next_food_after_first_growth() -> None:
     rows = _simulate([_movement(E=1), {}, {}], render_framebuffer=True)
     frame = rows[2]["framebuffer"]
@@ -142,9 +192,11 @@ def test_framebuffer_matches_head_body_and_next_food_after_first_growth() -> Non
     assert frame[pixel_signal(4, 13)] == FOOD_COLOR
 
 
-def test_full_snake_build_contains_framebuffer_and_pixel_history() -> None:
+def test_full_snake_build_contains_reset_framebuffer_and_pixel_history() -> None:
     module = build_snake_circuit(render_framebuffer=True).build()
 
+    assert [item.name for item in module.inputs] == ["reset"]
+    assert [item.name for item in module.vector_inputs] == ["movement"]
     assert module.output.names[0] == "framebuffer"
     assert is_vector_value(module.output.values[0])
     assert len(module.state_registers) == 37
@@ -162,6 +214,9 @@ def test_full_snake_compiles_to_a_physical_blueprint() -> None:
     assert result.layout.relays
     assert result.state_timing.uniform_period is not None
     assert result.blueprint_string.startswith("0")
+    assert {port.name for port in result.physical_circuit.inputs} == {"movement", "reset"}
+    reset_port = next(port for port in result.physical_circuit.inputs if port.name == "reset")
+    assert reset_port.signal is not None
     blueprint = result.blueprint_json["blueprint"]
     assert isinstance(blueprint, dict)
     assert blueprint["entities"]
