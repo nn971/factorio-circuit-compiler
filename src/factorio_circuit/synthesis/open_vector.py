@@ -68,14 +68,14 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
         if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
             if selected.anchors:
                 raise ValueError(
-                    f"{strategy} does not support fixed placement anchors; "
+                    f"{strategy} does not yet support fixed placement anchors; "
                     "use the net-aware layout for anchored synthesis"
                 )
             if strategy == "safe-crossbar":
                 report_progress(
                     self.progress,
                     "safe-layout",
-                    detail="using linear constructive bus/feeder geometry; routing search disabled",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
                 )
                 return build_safe_crossbar_layout(
                     self.circuit,
@@ -90,7 +90,7 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
             report_progress(
                 self.progress,
                 "safe-folded-layout",
-                detail="folding the linear crossbar into serpentine rows; routing search disabled",
+                detail="using row-local folded bus geometry; routing search disabled",
             )
             return build_safe_folded_crossbar_layout(
                 self.circuit,
