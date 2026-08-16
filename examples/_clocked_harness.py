@@ -258,9 +258,7 @@ def build_driver_blueprint(
 
     for input_name, sources, terminal in terminal_groups:
         output_connector, terminal_connector = _wire_connectors(input_color(compiled, input_name))
-        wires.extend(
-            [source, output_connector, terminal, terminal_connector] for source in sources
-        )
+        wires.extend([source, output_connector, terminal, terminal_connector] for source in sources)
 
     return {
         "blueprint": {
