@@ -22,6 +22,8 @@ CIRCUIT_RED = 1
 CIRCUIT_GREEN = 2
 COMBINATOR_OUTPUT_RED = 3
 COMBINATOR_OUTPUT_GREEN = 4
+DRIVER_ROW_SPACING = 7
+POWER_SPACING = 16
 
 DriverValue = int | Mapping[SignalId, int]
 DriverSchedule = Mapping[str, Mapping[int, DriverValue]]
@@ -149,6 +151,15 @@ def _terminal(entity_number: int, x: float, y: float, description: str) -> dict[
     }
 
 
+def _substation(entity_number: int, y: float) -> dict[str, object]:
+    return {
+        "entity_number": entity_number,
+        "name": "substation",
+        "position": {"x": 1, "y": y},
+        "player_description": "POWER SPINE: connect any substation to your electric grid",
+    }
+
+
 def _encode_blueprint(payload: Blueprint) -> str:
     raw = json.dumps(payload, separators=(",", ":")).encode()
     return "0" + base64.b64encode(zlib.compress(raw, level=9)).decode("ascii")
@@ -179,7 +190,7 @@ def build_driver_blueprint(
         color = input_color(compiled, input_name)
         port = _input_port(compiled, input_name)
         sources: list[int] = []
-        base_y = row_index * 8
+        base_y = row_index * DRIVER_ROW_SPACING
 
         for phase, payload in sorted(occurrences.items()):
             if not 0 <= phase < period:
@@ -230,14 +241,12 @@ def build_driver_blueprint(
         )
         terminal_groups.append((input_name, sources, terminal))
 
-    entities.append(
-        {
-            "entity_number": next_entity,
-            "name": "substation",
-            "position": {"x": 1, "y": -3},
-            "player_description": "POWER: connect this driver to your electric grid",
-        }
-    )
+    max_y = max(0, (len(schedule) - 1) * DRIVER_ROW_SPACING + 5)
+    power_y = 0
+    while power_y <= max_y:
+        entities.append(_substation(next_entity, power_y))
+        next_entity += 1
+        power_y += POWER_SPACING
 
     if pulse_entities:
         wires.append([2, COMBINATOR_OUTPUT_RED, pulse_entities[0], CIRCUIT_RED])
