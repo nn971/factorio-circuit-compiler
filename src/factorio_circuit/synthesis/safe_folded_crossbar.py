@@ -14,8 +14,10 @@ Cross-row nets use deterministic vertical fold stitches on boundary-local portal
 columns.  Bus tracks are packed on adjacent half-tile rows so the 1x1 relay
 constant combinators consume their actual footprint rather than a two-tile lane.
 Fold portals use adjacent integer columns while skipping the ordinary six-tile
-horizontal relay lattice.  There is no placement search, routing search, retry
-loop, or backtracking.
+horizontal relay lattice.  Real implementation entities use a three-tile center
+pitch, which keeps the +/-2 feeder columns off that same relay lattice even for
+2x1 combinators.  There is no placement search, routing search, retry loop, or
+backtracking.
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
 from factorio_circuit.synthesis.placement import PlacementOptions
 
 _SAFE_PITCH = 6.0
-_ENTITY_SPACING = 6.0
+_ENTITY_SPACING = 3.0
 _FEEDER_OFFSET = 2.0
 _FIRST_BUS_OFFSET = 3.5
 _TRACK_SPACING = 1.0
@@ -739,6 +741,11 @@ def _choose_entities_per_row(
     best: tuple[float, float, float, int] | None = None
     for columns in range(1, entity_count + 1):
         rows = ceil(entity_count / columns)
+        # Three-tile entity pitch alternates centers between x = 0 and 3 (mod 6).
+        # A multi-row fold needs its outer entity center back on x = 0 (mod 6), so
+        # require an odd number of columns. Single-row layouts have no portals.
+        if rows > 1 and columns % 2 == 0:
+            continue
         side_margin = portal_margin if rows > 1 else 0.0
         width = (columns - 1) * _ENTITY_SPACING + 2 * side_margin
         height = rows * row_pitch
