@@ -4,6 +4,7 @@ import pytest
 
 from factorio_circuit.devices._blueprint import decode_blueprint
 from factorio_circuit.devices.lamp_screen import (
+    BUS_CONNECTORS,
     DISPLAY_VIRTUAL_SIGNAL_POOL,
     PACKED_RGB_COLOR_MODE,
     PIXEL_COUNT,
@@ -91,29 +92,30 @@ def test_screen_blueprint_has_one_terminal_and_256_rgb_lamps() -> None:
         }
 
 
-def test_screen_wiring_is_one_connected_green_bus() -> None:
+def test_screen_wiring_has_parallel_connected_red_and_green_buses() -> None:
     blueprint = build_lamp_screen_blueprint()
     wires = blueprint["wires"]
 
-    assert len(wires) == 256
-    assert all(
-        source_connector == 2 and target_connector == 2
-        for _, source_connector, _, target_connector in wires
-    )
+    assert BUS_CONNECTORS == (1, 2)
+    assert len(wires) == 512
+    expected_entities = set(range(1, 258))
+    for connector in BUS_CONNECTORS:
+        adjacency: dict[int, set[int]] = {entity: set() for entity in expected_entities}
+        for source, source_connector, target, target_connector in wires:
+            if source_connector != connector:
+                continue
+            assert target_connector == connector
+            adjacency[source].add(target)
+            adjacency[target].add(source)
 
-    adjacency: dict[int, set[int]] = {entity: set() for entity in range(1, 258)}
-    for source, _source_connector, target, _target_connector in wires:
-        adjacency[source].add(target)
-        adjacency[target].add(source)
-
-    seen = {1}
-    stack = [1]
-    while stack:
-        current = stack.pop()
-        for neighbor in adjacency[current] - seen:
-            seen.add(neighbor)
-            stack.append(neighbor)
-    assert seen == set(range(1, 258))
+        seen = {1}
+        stack = [1]
+        while stack:
+            current = stack.pop()
+            for neighbor in adjacency[current] - seen:
+                seen.add(neighbor)
+                stack.append(neighbor)
+        assert seen == expected_entities
 
 
 def test_screen_blueprint_round_trip() -> None:
