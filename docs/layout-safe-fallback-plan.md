@@ -11,7 +11,14 @@ connections into long physical edges. The current collision-aware router then sp
 finding relay chains, including bounded half-tile graph searches. For a large circuit this can make a
 "simple" fallback slower and less predictable than the optimized layout path.
 
-We therefore want a separate **safe fallback** whose goal is not compactness. Its priorities are:
+A second Snake playtest exposed the complementary failure mode: a single deterministic greedy placement
+can be fast to compute and still leave no collision-free route for one of the later physical
+connections. The intermediate mitigation is now to retry greedy placement deterministically while
+spending progressively more area: lower target fill and wider routing corridors on every failed
+attempt. This improves robustness, but it remains heuristic because the existing router still searches
+for relay positions and may exhaust its search.
+
+We therefore still want a separate **safe fallback** whose goal is not compactness. Its priorities are:
 
 1. deterministic behavior;
 2. guaranteed termination for every circuit inside its declared supported physical subset;
@@ -20,8 +27,8 @@ We therefore want a separate **safe fallback** whose goal is not compactness. It
 5. runtime proportional to the amount of structure it actually emits;
 6. willingness to consume very large amounts of map area and relay entities.
 
-This is a later layout milestone. The current Snake change only switches the playtest generator to the
-existing deterministic greedy net-aware seed (`iterations=0`).
+This is a later layout milestone. The current Snake path uses spacious deterministic greedy retries as
+an intermediate robustness measure.
 
 ## Complexity target
 
@@ -66,6 +73,12 @@ abstract physical circuit
         |       greedy seed
         |       annealing / relaxation
         |       collision-aware routing search
+        |
+        +--> spacious greedy retries
+        |       deterministic greedy seed
+        |       lower target fill on failure
+        |       wider routing corridors on failure
+        |       still uses collision-aware routing search
         |
         +--> deterministic safe fallback
                 sparse construction
@@ -218,69 +231,3 @@ after that, abandon the attempt and rebuild with safe layout.
 ```
 
 This is preferable to letting one pathological edge consume minutes without a predictable bound.
-
-## Suggested implementation stages
-
-### Stage A — prove the geometry
-
-- Specify entity-island, fanout-trunk, horizontal-track, and vertical-track pitches.
-- Prove relay boxes from different reserved site classes cannot overlap.
-- Prove every consecutive relay hop is within `DEFAULT_SAFE_WIRE_SPAN`.
-- Make tiny generated probe blueprints for crossings, fanout trunks, maximum connector degree seen in
-  synthesized circuits, and track turns.
-
-### Stage B — fallback physical-net construction
-
-- Add the deterministic endpoint-chain spanning-tree policy.
-- Keep it isolated from the optimized minimum-relay spanning-tree implementation.
-- Verify electrical connectivity and non-merging on adversarial synthetic net graphs.
-
-### Stage C — channelized placement/routing
-
-- Add `safe` placement/layout strategy.
-- Allocate entity islands and routing yards in one pass.
-- Allocate fanout taps and connection tracks in one pass.
-- Emit relay chains directly with no route search.
-
-### Stage D — output-sensitive validation
-
-- Replace quadratic collision validation for safe layouts with a spatial hash/grid index.
-- Assert measured work is `O(V + I + E + R)` up to bounded dictionary/hash operations.
-- Add scale tests that double circuit size and check work counters grow proportionally to emitted
-  structure.
-
-### Stage E — automatic fallback policy
-
-- Give optimized synthesis explicit deterministic work budgets.
-- Abort an over-budget placement/routing attempt cleanly.
-- Re-run only layout/synthesis with the safe policy; do not redo semantic compilation unnecessarily.
-- Report the fallback in `CompileProgress` so the user knows why the resulting blueprint is large.
-
-## Acceptance criteria
-
-The safe fallback milestone is complete when:
-
-- it uses no randomized optimization or graph-search routing;
-- the same physical circuit always produces byte-for-byte deterministic layout geometry;
-- runtime is output-sensitive, targeted at `O(V + I + E + R)`;
-- all emitted wire spans and collision constraints are valid by construction and revalidated;
-- adversarial large circuits terminate without heuristic retries;
-- optimized synthesis can hand off to it after a deterministic work budget;
-- a fallback result remains electrically equivalent even when it is dramatically larger than the
-  optimized layout.
-
-## Open questions
-
-1. What fixed track pitch gives the cleanest proof with the current combinator and relay collision
-   boxes?
-2. Should safe layout reserve substation corridors, or should power remain entirely the caller's
-   responsibility for this intentionally huge fallback?
-3. Can physical-net endpoint degree be bounded strongly enough by the compiler to simplify fanout
-   yards?
-4. Can we derive an upper bound on `R` from `(V, I, E)` for the compiler's actual physical graph
-   family, or should the public complexity guarantee remain output-sensitive?
-5. Should safe fallback preserve external I/O anchors exactly, or allow relocating unanchored ports
-   to simplify the routing fabric?
-
-The central principle is that the fallback should sacrifice **area and aesthetics**, not termination or
-correctness.
