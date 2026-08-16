@@ -1,127 +1,90 @@
-# Deterministic safe layout fallback
+# Layout safe fallback plan
 
-## Status
+## Goal
 
-The first safe fallback is now implemented as `safe-crossbar`; see `safe-crossbar-layout.md` for the
-construction and detailed geometry.
+Physical synthesis needs a deterministic correctness baseline that can materialize supported abstract
+physical circuits without depending on heuristic placement/routing success.
 
-This supersedes the earlier plan to postpone a guaranteed layout until after more heuristic routing
-work. Snake demonstrated that row placement and increasingly spacious deterministic greedy placement
-could both leave the collision-aware router with no legal late-edge relay chain. The fallback therefore
-became a prerequisite for continuing physical-synthesis experiments.
+The key requirement is not compactness. It is a construction whose failure modes are explicit and whose
+runtime is output-sensitive in the geometry it emits.
 
-## Design goal
+For a realized layout with
 
-The fallback answers only:
+- `V` real physical entities,
+- `I` endpoint/net incidences,
+- `E` chosen real-endpoint electrical connections, and
+- `R` emitted relay entities,
 
-> Can every circuit in the currently supported physical subset be materialized into a deterministic,
-> reach-safe blueprint without geometric search?
+a strict `O(V + E)` target is impossible when bounded wire reach forces `R` relays. The relevant target
+is therefore output-sensitive work such as `O(V + I + E + R)` plus small deterministic sorting terms.
 
-It deliberately does not optimize compactness, relay count, walking access, or power distribution.
-Those belong to the next physical-synthesis milestone.
+## Implemented canonical fallback: linear safe crossbar
 
-The priorities are:
+`safe-crossbar` is now the canonical search-free reference implementation.
 
-1. deterministic behavior;
-2. no placement search, routing search, annealing, or random restart;
-3. correctness by construction;
-4. predictable termination inside the declared supported subset;
-5. willingness to consume large amounts of map area and blank relay combinators.
+It places real entities on one sparse horizontal row, builds one bus segment per physical electrical
+group, reuses same-color tracks for disjoint linear intervals, and connects endpoints through fixed
+vertical feeder columns. Relay hops use a six-tile lattice under the normal seven-tile conservative wire
+span. No A*, lane search, annealing, or retry loop is used.
 
-## Implemented construction
+The initial one-net-per-row version produced more than twenty million relays for full Snake. The current
+interval-packed version reduced the observed Snake construction to roughly 330k relays with 52 red and
+36 green reusable tracks, but the one-row module was still tens of thousands of tiles wide.
 
-The implementation uses one sparse row of real combinators and separates the two Factorio wire colors
-into opposite routing half-planes:
+This linear strategy remains intentionally available as the canonical rollback/reference path even as
+more practical safe layouts are added.
 
-```text
-RED physical-net buses
-======================
-      |       |
-      |       |
-C0    C1      C2      C3      ...
-      |               |
-      |               |
-======================
-GREEN physical-net buses
-```
+## Optional placeability refinement: folded safe crossbar
 
-Every synthesized RED physical electrical group receives a unique horizontal bus above the entity row.
-Every GREEN group receives a unique horizontal bus below it. Each connector/color incidence reaches its
-owning bus through a unique vertical feeder column.
+`safe-folded-crossbar` is implemented separately. It preserves the virtual one-dimensional entity order
+and interval-track assignment of the linear reference, then folds that order into deterministic
+serpentine rows.
 
-The relay lattice uses six-tile hops and fixed coordinate phases. Foreign feeder/bus crossings contain
-no relay entity, while the owning crossing receives an explicit tap. As a result, the fallback never
-needs to test candidate relay positions or search alternative paths.
+A net confined to one row remains a horizontal bus segment. A net whose virtual interval crosses a fold
+receives a vertical stitch on a track-specific portal column outside the computation row. Public input
+and output markers are placed together at the start of the first row.
 
-The current implementation requires the compiler's default-style wire span to be at least
-`sqrt(40) ~= 6.325` tiles; the normal `7.0` span satisfies this.
-
-## Complexity target
-
-Let:
-
-- `V` = real physical entities;
-- `I` = physical-net endpoint incidences;
-- `R` = emitted relay entities;
-- `W` = emitted blueprint wire segments.
-
-The fallback is output-sensitive: construction work is proportional to the generated bus/feeder
-structure apart from deterministic sorting. There is no hidden A*, retry, or annealing factor.
-
-A strict `O(V + I)` relay bound is not promised. Farther buses require longer feeders, so `R` can be
-superlinear in the original circuit size. This is acceptable for the correctness fallback.
-
-## Supported subset
-
-The first implementation assumes:
-
-- compiler-generated arithmetic, decider, and constant combinators in the existing horizontal target
-  orientation;
-- blank constant combinators as circuit-wire relays;
-- successful synthesis-stage signal allocation and red/green physical-net grouping;
-- no fixed user placement anchors;
-- a conservative wire span of at least `sqrt(40)` tiles.
-
-Unsupported configuration should fail immediately with a clear contract error, rather than entering a
-search/retry process.
-
-## Relationship to optimized synthesis
-
-The physical backend now has a useful conceptual separation:
+The folded implementation is deliberately **not** allowed to replace the linear fallback. It is a
+separate strategy so an in-game defect can be bypassed immediately:
 
 ```text
-safe-crossbar
-    constructive
-    search-free
-    potentially huge
-    correctness baseline
-
-greedy / net-aware
-    topology-aware placement
-    collision-aware routing
-    smaller when successful
-    still heuristic
-
-future optimized net routing
-    route physical nets as nets
-    share same-net trunks/relays
-    optimize area and relay count
-    compare against safe-crossbar correctness
+safe-crossbar          canonical one-row reference
+safe-folded-crossbar   bounded-footprint refinement
 ```
 
-The next milestone should optimize physical-net routing rather than make safe-crossbar more clever. The
-fallback should remain simple enough that its correctness argument stays local and mechanical.
+Folded preflight computes the exact relay count and predicted width/height before relay allocation. The
+initial guards are one million relays and a 4096-tile maximum dimension.
 
-## Work remaining for the fallback itself
+## Why the folded construction is still search-free
 
-The safe path is intentionally minimal. Future maintenance work may improve it without changing its
-role:
+The folding map is monotone inside each row, alternating direction on adjacent rows. Therefore two
+same-color groups that have disjoint virtual intervals remain disjoint within every folded row.
 
-- widen the public `PlacementStrategy` type to include `safe-crossbar` directly; the current Snake path
-  recognizes it before the older optimizer-specific validator;
-- support additional target entity orientations or footprints when the compiler emits them;
-- add a spatially indexed validation pass if fallback blueprints become large enough that stronger
-  geometric postconditions are desirable;
-- add explicit anchor support only if it can preserve the constructive guarantee.
+At a row boundary, only a group whose virtual interval crosses that boundary receives a vertical stitch.
+Two disjoint groups sharing a track cannot both cross the same boundary.
 
-None of these is required before beginning optimized net-routing work.
+Relay lattice phases keep foreign crossings empty:
+
+- ordinary horizontal bus relays are at `x = 0 mod 6`;
+- endpoint feeder columns are at `x = +/-2 mod 6` relative to entity centers;
+- fold portal columns are odd x coordinates outside the computation row;
+- ordinary vertical feeder/stitch relays are at `y = 0 mod 6`;
+- bus rows are odd y offsets from entity rows.
+
+Only owning intersections receive explicit tap relays.
+
+## Still deferred: optimized net routing
+
+Neither safe strategy is intended to solve the next optimization milestone. Future physical synthesis
+may improve:
+
+- topology-aware entity ordering;
+- shared trunks and Steiner-like routing for physical nets;
+- local versus global channel allocation;
+- relay and area minimization;
+- placement of substations/walking corridors;
+- device-aware placement and module composition;
+- parallel execution of independent search attempts.
+
+Optimized strategies should be tested against `safe-crossbar` for electrical equivalence and may use
+`safe-folded-crossbar` as a practical integration baseline.
