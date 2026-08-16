@@ -40,12 +40,29 @@ def _simulate(
     return [dict(zip(names, row, strict=True)) for row in trace]
 
 
+def test_snake_waits_at_center_until_first_direction_gesture() -> None:
+    rows = _simulate([{}, {}, {}])
+
+    assert all(row["head_x"] == 8 and row["head_y"] == 8 for row in rows)
+    assert all(row["started"] == 0 for row in rows)
+    assert all(row["dead"] == 0 for row in rows)
+
+
+def test_snake_first_gesture_can_choose_any_direction() -> None:
+    rows = _simulate([_movement(W=1), {}])
+
+    assert rows[0]["started"] == 1
+    assert (rows[0]["head_x"], rows[0]["head_y"]) == (7, 8)
+    assert rows[1]["head_x"] == 6
+
+
 def test_snake_starts_east_eats_first_food_and_grows() -> None:
-    rows = _simulate([{}, {}, {}, {}])
+    rows = _simulate([_movement(E=1), {}, {}, {}])
 
     assert rows[0]["head_x"] == 9
     assert rows[0]["head_y"] == 8
     assert rows[0]["direction"] == DIR_E
+    assert rows[0]["started"] == 1
     assert rows[0]["score"] == 0
     assert rows[0]["length"] == 1
 
@@ -63,7 +80,7 @@ def test_snake_starts_east_eats_first_food_and_grows() -> None:
 def test_snake_rejects_reverse_and_uses_diagonal_as_a_turn() -> None:
     rows = _simulate(
         [
-            {},
+            _movement(E=1),
             _movement(N=1),
             _movement(S=1),
             _movement(NE=1),
@@ -86,7 +103,7 @@ def test_snake_rejects_reverse_and_uses_diagonal_as_a_turn() -> None:
 
 def test_snake_queues_a_short_direction_gesture_until_next_move() -> None:
     rows = _simulate(
-        [{}, _movement(N=1), {}, {}],
+        [_movement(E=1), _movement(N=1), {}, {}],
         logical_steps_per_move=3,
     )
 
@@ -101,7 +118,7 @@ def test_snake_queues_a_short_direction_gesture_until_next_move() -> None:
 
 
 def test_snake_stops_on_wall_collision() -> None:
-    rows = _simulate([{} for _ in range(9)])
+    rows = _simulate([_movement(E=1), *({} for _ in range(8))])
 
     # The east wall is after x=15. The failed move leaves the head at x=15 and latches dead=1.
     assert rows[6]["head_x"] == 15
@@ -113,7 +130,7 @@ def test_snake_stops_on_wall_collision() -> None:
 
 
 def test_framebuffer_matches_head_body_and_next_food_after_first_growth() -> None:
-    rows = _simulate([{}, {}, {}], render_framebuffer=True)
+    rows = _simulate([_movement(E=1), {}, {}], render_framebuffer=True)
     frame = rows[2]["framebuffer"]
 
     assert isinstance(frame, dict)
@@ -128,7 +145,7 @@ def test_full_snake_build_contains_framebuffer_and_pixel_history() -> None:
 
     assert module.output.names[0] == "framebuffer"
     assert is_vector_value(module.output.values[0])
-    assert len(module.state_registers) == 36
+    assert len(module.state_registers) == 37
     assert len(set(module.state_registers)) == len(module.state_registers)
 
 
