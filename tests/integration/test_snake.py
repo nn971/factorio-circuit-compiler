@@ -17,6 +17,7 @@ from factorio_circuit import compile_circuit
 from factorio_circuit.devices import pixel_signal
 from factorio_circuit.ir.semantic import is_vector_value
 from factorio_circuit.simulate.semantic import LogicalOutput, simulate_stream
+from factorio_circuit.synthesis.placement import PlacementOptions
 
 
 def _movement(**directions: int) -> dict[object, int]:
@@ -132,7 +133,11 @@ def test_full_snake_build_contains_framebuffer_and_pixel_history() -> None:
 
 
 def test_full_snake_compiles_to_a_physical_blueprint() -> None:
-    result = compile_circuit(build_snake_circuit(render_framebuffer=True), optimize=False)
+    result = compile_circuit(
+        build_snake_circuit(render_framebuffer=True),
+        optimize=False,
+        placement=PlacementOptions(strategy="row"),
+    )
 
     assert result.physical_circuit.combinator_count > 0
     assert result.state_timing.uniform_period is not None
