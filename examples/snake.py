@@ -14,6 +14,7 @@ Generate the three blueprints separately, place them in game, and wire:
     compiled OUTPUT framebuffer -> lamp-screen DISPLAY INPUT
 
 Use only the red or green device bus matching the color printed for the compiled port.
+The game waits at the center until the first direction gesture, so it can be wired and powered safely.
 The first prototype intentionally uses deterministic food placement and has no restart input yet.
 """
 
@@ -48,6 +49,7 @@ QUEUED_DIR_SIGNAL = SignalId("virtual", "signal-R")
 PHASE_SIGNAL = SignalId("virtual", "signal-P")
 SCORE_SIGNAL = SignalId("virtual", "signal-Q")
 DEAD_SIGNAL = SignalId("virtual", "signal-skull")
+STARTED_SIGNAL = SignalId("virtual", "signal-check")
 POSITION_SIGNAL = SignalId("virtual", "signal-dot")
 
 ARROW_SIGNALS = {
@@ -179,8 +181,9 @@ def build_snake_circuit(
 ) -> Circuit:
     """Build the first bounded Snake prototype.
 
-    The snake starts at screen coordinate (8, 8), initially moving east, with length one. Each food
-    increases the visible/collidable length by one until the fixed maximum length of 16 is reached.
+    The snake waits at screen coordinate (8, 8), with initial reference direction east and length one.
+    The first direction gesture starts the game and may choose any direction. Each food increases the
+    visible/collidable length by one until the fixed maximum length of 16 is reached.
     ``render_framebuffer=False`` keeps the same game state machine but omits the pixel-history state
     and renderer; it exists so contract tests can exercise game semantics cheaply.
     """
@@ -204,6 +207,7 @@ def build_snake_circuit(
     phase_reg = circuit.freeze("move_phase") if logical_steps_per_move > 1 else None
     score_reg = circuit.accumulator("score")
     dead_reg = circuit.freeze("dead")
+    started_reg = circuit.freeze("started")
 
     body_position_regs = [circuit.freeze(f"body_pos_{index}") for index in range(BODY_CAPACITY)]
     body_pixel_regs = (
@@ -219,27 +223,31 @@ def build_snake_circuit(
     old_queued_direction = queued_direction_reg.sample().signal(QUEUED_DIR_SIGNAL)
     old_score = score_reg.sample().signal(SCORE_SIGNAL)
     old_dead = dead_reg.sample().signal(DEAD_SIGNAL)
+    old_started = started_reg.sample().signal(STARTED_SIGNAL)
     old_body_positions = [
         register.sample().signal(POSITION_SIGNAL) for register in body_position_regs
     ]
     old_body_pixels = [register.sample() for register in body_pixel_regs]
 
     requested_direction, request_present = _requested_direction(movement, old_direction)
+    alive = old_dead == 0
+    started = old_started != 0
     opposite_direction = (old_direction + 2) % 4
-    legal_request = request_present * (requested_direction != opposite_direction)
-    queued_direction = legal_request.select(requested_direction, old_queued_direction)
+    request_is_legal = started.logical_not() | (requested_direction != opposite_direction)
+    accepted_request = alive * request_present * request_is_legal
+    queued_direction = accepted_request.select(requested_direction, old_queued_direction)
 
     dx = (queued_direction == DIR_E) - (queued_direction == DIR_W)
     dy = (queued_direction == DIR_S) - (queued_direction == DIR_N)
 
-    alive = old_dead == 0
+    running = alive * (started | accepted_request)
     if phase_reg is None:
-        advance = alive
+        advance = running
     else:
         old_phase = phase_reg.sample().signal(PHASE_SIGNAL)
-        advance = alive * (old_phase == 0)
+        advance = running * (old_phase == 0)
         next_phase = (old_phase + 1) % logical_steps_per_move
-        phase_reg.set(_lane_value(circuit, PHASE_SIGNAL, next_phase), when=alive)
+        phase_reg.set(_lane_value(circuit, PHASE_SIGNAL, next_phase), when=running)
     attempt_move = advance
 
     next_x = old_x + dx
@@ -273,8 +281,9 @@ def build_snake_circuit(
     move_ok = attempt_move * collision.logical_not()
     eat = move_ok * (next_cell_id == current_food_id)
 
+    started_reg.set(circuit.constant_signals({STARTED_SIGNAL: 1}), when=accepted_request)
     queued_direction_reg.set(
-        _lane_value(circuit, QUEUED_DIR_SIGNAL, requested_direction), when=alive * legal_request
+        _lane_value(circuit, QUEUED_DIR_SIGNAL, requested_direction), when=accepted_request
     )
     direction_reg.set(_lane_value(circuit, DIR_SIGNAL, queued_direction), when=move_ok)
 
@@ -308,6 +317,7 @@ def build_snake_circuit(
     direction = direction_reg.sample().signal(DIR_SIGNAL)
     score = score_reg.sample().signal(SCORE_SIGNAL)
     dead = dead_reg.sample().signal(DEAD_SIGNAL)
+    started_now = started_reg.sample().signal(STARTED_SIGNAL)
     body_positions = [
         register.sample().signal(POSITION_SIGNAL) for register in body_position_regs
     ]
@@ -345,6 +355,7 @@ def build_snake_circuit(
     circuit.output("score", score)
     circuit.output("length", length)
     circuit.output("dead", dead)
+    circuit.output("started", started_now)
     circuit.output("head_x", head_x + ORIGIN_X)
     circuit.output("head_y", head_y + ORIGIN_Y)
     circuit.output("direction", direction)
