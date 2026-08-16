@@ -1,9 +1,10 @@
 """Generate the first Snake circuit blueprint with observable, predictable synthesis.
 
-The game model lives in :mod:`examples.snake`. The default uses the deterministic greedy seed of the
-net-aware placer (zero optimization iterations, one attempt): it keeps connected logic local without
-turning the first in-game iteration into a placement-optimization benchmark. Progress is printed to
-stderr while the final importable blueprint string remains on stdout.
+The game model lives in :mod:`examples.snake`. The default uses a deliberately spacious,
+deterministic greedy seed of the net-aware placer (zero optimization iterations): it keeps connected
+logic local while reserving frequent routing corridors, then retries with progressively more space if
+routing fails. Progress is printed to stderr while the final importable blueprint string remains on
+stdout.
 """
 
 from __future__ import annotations
@@ -63,10 +64,26 @@ class _TerminalProgress:
 def _placement_from_args(args: argparse.Namespace) -> PlacementOptions:
     if args.row_layout:
         return PlacementOptions(strategy="row", restarts=1)
+
+    common = dict(
+        strategy="net-aware",
+        corridor_width=args.corridor_width,
+        target_fill=args.target_fill,
+        restarts=args.layout_retries,
+        retry_fill_scale=0.8,
+    )
     if args.net_aware_layout:
-        return PlacementOptions(strategy="net-aware")
-    # Fast default: use the topology-aware greedy seed, but skip annealing/relaxation and retries.
-    return PlacementOptions(strategy="net-aware", iterations=0, restarts=1)
+        return PlacementOptions(**common)
+
+    # Safe-first prototype default: use the topology-aware greedy seed, but skip annealing/relaxation.
+    # Smaller blocks create more frequent routing corridors; later deterministic retries lower fill
+    # and widen those corridors further if routing still fails.
+    return PlacementOptions(
+        **common,
+        iterations=0,
+        block_width_tiles=8,
+        block_height_tiles=8,
+    )
 
 
 def main() -> None:
@@ -95,6 +112,24 @@ def main() -> None:
         "--row-layout",
         action="store_true",
         help="use the old one-dimensional diagnostic row placement (routing may be very slow)",
+    )
+    parser.add_argument(
+        "--corridor-width",
+        type=float,
+        default=4.0,
+        help="initial routing-corridor width in tiles for net-aware layouts (default: 4.0)",
+    )
+    parser.add_argument(
+        "--target-fill",
+        type=float,
+        default=0.60,
+        help="initial fraction of candidate placement slots to target (default: 0.60)",
+    )
+    parser.add_argument(
+        "--layout-retries",
+        type=int,
+        default=4,
+        help="deterministic placement/routing attempts before giving up (default: 4)",
     )
     parser.add_argument(
         "--no-progress",
