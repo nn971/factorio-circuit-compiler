@@ -33,7 +33,8 @@ OUTPUT framebuffer -- printed color -->  DISPLAY INPUT
 
 `reset` is a scalar compiler input, so the generator also prints the concrete signal lane allocated to
 it. Drive that signal nonzero for at least one Snake state occurrence, then return it to zero. Holding
-it nonzero simply keeps the game in its initial state.
+it nonzero simply keeps the game in its initial state. A convenient in-game test source is a constant
+combinator whose printed reset signal can be toggled between `0`/absent and `1`.
 
 Leave the unused device-bus color unattached. The screen deliberately contains no power-distribution
 entities.
