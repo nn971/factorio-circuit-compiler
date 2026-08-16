@@ -35,13 +35,17 @@ uv run python -m examples.snake_blueprint --optimize
 uv run python -m examples.snake_blueprint --net-aware-layout
 ```
 
-## Controls
+## Controls and startup
+
+The game stays frozen at the center until the movement detector produces its first direction signal.
+That first gesture starts the game and may choose any cardinal direction, including west; this makes it
+safe to place, wire, and power the three blueprints before stepping into the controller.
 
 The movement detector exposes the eight mutually exclusive compass-arrow virtual signals. Snake moves
 on the four cardinal neighbours. Cardinal detector regions request that direction directly. Diagonal
 regions act as turns: while travelling horizontally, NE/NW request north and SE/SW request south;
 while travelling vertically, NE/SE request east and NW/SW request west. Exact 180-degree reversals are
-ignored.
+ignored after the game has started.
 
 A legal direction gesture is queued until the next movement boundary, so the player does not need to
 remain inside a gate sensor until the snake advances. Reverse rejection is checked against the most
@@ -60,8 +64,8 @@ reports the inferred state period after compilation.
 
 ## Game model
 
-The first prototype starts at `(8, 8)` moving east with length one. Food placement is deterministic but
-cheap to compute: score `s` maps to cell
+The first prototype waits at `(8, 8)` with length one. Food placement is deterministic but cheap to
+compute: score `s` maps to cell
 
 ```text
 ((73 * s + 139) mod 256) + 1
