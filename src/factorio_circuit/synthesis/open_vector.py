@@ -13,6 +13,36 @@ from factorio_circuit.synthesis.physical import PhysicalSynthesizer
 from factorio_circuit.synthesis.placement import PlacementOptions, plan_physical_circuit
 
 
+def _placement_attempt_count(options: PlacementOptions) -> int:
+    """Return deterministic synthesis attempts for the requested placement policy."""
+
+    # Row placement is invariant under target-fill/corridor retry parameters.  Greedy net-aware
+    # placement (iterations=0), however, *does* change when the candidate grid is made sparser, so it
+    # should retain deterministic retries instead of being forced to a single attempt.
+    return 1 if options.strategy == "row" else options.restarts
+
+
+def _placement_attempt_options(options: PlacementOptions, restart: int) -> PlacementOptions:
+    """Make later deterministic attempts progressively easier to route.
+
+    Lower target fill supplies more unused grid slots.  When routing corridors are enabled, widen
+    them by the inverse factor as well.  This deliberately spends area after a routing failure rather
+    than repeating nearly the same hostile geometry.
+    """
+
+    scale = options.retry_fill_scale**restart
+    corridor_width = options.corridor_width
+    if options.reserve_corridors:
+        corridor_width = options.corridor_width / scale
+    return replace(
+        options,
+        random_seed=options.random_seed + restart,
+        target_fill=options.target_fill * scale,
+        corridor_width=corridor_width,
+        restarts=1,
+    )
+
+
 @dataclass(slots=True)
 class VectorPhysicalSynthesizer(PhysicalSynthesizer):
     progress: ProgressCallback | None = None
@@ -33,18 +63,11 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
 
         selected = self.placement_options or PlacementOptions()
         selected.validate()
-        attempts = selected.restarts
-        if selected.strategy == "row" or selected.iterations == 0:
-            attempts = 1
+        attempts = _placement_attempt_count(selected)
 
         last_routing_error: ValueError | None = None
         for restart in range(attempts):
-            attempt_options = replace(
-                selected,
-                random_seed=selected.random_seed + restart,
-                target_fill=selected.target_fill * selected.retry_fill_scale**restart,
-                restarts=1,
-            )
+            attempt_options = _placement_attempt_options(selected, restart)
             report_progress(
                 self.progress,
                 "placement",
@@ -52,7 +75,9 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                 total=attempts,
                 detail=(
                     f"strategy={attempt_options.strategy}; "
-                    f"iterations={attempt_options.iterations}"
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
                 ),
             )
             placement = plan_physical_circuit(
@@ -84,6 +109,19 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                 if "parallel lanes and grid search were both exhausted" not in str(exc):
                     raise
                 last_routing_error = exc
+                if restart + 1 < attempts:
+                    next_options = _placement_attempt_options(selected, restart + 1)
+                    report_progress(
+                        self.progress,
+                        "retry",
+                        completed=restart + 1,
+                        total=attempts,
+                        detail=(
+                            "routing failed; rebuilding with more space: "
+                            f"fill={next_options.target_fill:.3f}; "
+                            f"corridor={next_options.corridor_width:.2f}"
+                        ),
+                    )
                 continue
 
             final_positions = routed_positions(physical, positions, routing)
