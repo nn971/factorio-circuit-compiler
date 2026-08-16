@@ -2,20 +2,16 @@
 
 ## Status and rollback contract
 
-`safe-folded-crossbar` is an experimental placeability refinement of the already working linear
-`safe-crossbar`. It is intentionally implemented in a separate module and selected by a separate
-strategy name.
-
-The linear construction remains the canonical correctness reference:
+`safe-folded-crossbar` is the search-free, physically bounded refinement of the linear
+`safe-crossbar`. The linear construction remains the canonical correctness reference:
 
 ```python
 safe_crossbar_options()          # strategy = "safe-crossbar"
 safe_folded_crossbar_options()   # strategy = "safe-folded-crossbar"
 ```
 
-The folded implementation must never replace or silently alter the linear strategy. If an in-game
-probe exposes a folded-layout bug, callers can immediately switch back to `safe-crossbar` without
-reverting compiler history.
+The two implementations remain separate. If an in-game probe exposes a folded-layout geometry bug,
+callers can immediately switch back to `safe-crossbar` without reverting compiler history.
 
 For Snake the CLI switch is:
 
@@ -23,21 +19,38 @@ For Snake the CLI switch is:
 uv run python -m examples.snake_blueprint --linear-safe-layout --output snake-linear.txt
 ```
 
-## Motivation
+## Snake compactness benchmark
 
-The interval-packed linear safe crossbar successfully materialized full Snake without routing search:
+The successfully played full Snake circuit is now the physical-layout benchmark. The pre-density-pass
+baseline is:
 
 ```text
-real entities    = 4,912
-physical groups  = 4,623
-red tracks       = 52
-green tracks     = 36
-relays           = 330,361
+real entities       = 5,668
+physical groups     = 5,338
+routed groups       = 5,338
+red row tracks      = 61
+green row tracks    = 38
+entity rows         = 13
+entities per row    = 436
+layout relays       = 470,732
+predicted extent    = 3,004 x 2,792 tiles
+state period        = 60 ticks
 ```
 
-However, every real entity still occupied one six-tile-spaced horizontal row. The resulting blueprint
-was tens of thousands of tiles wide and not practical to place in game. The folded strategy addresses
-that extent problem only; it is not the later optimized-net-routing milestone.
+The layout-relay count is important: almost all blueprint constant combinators in this benchmark are
+1x1 routing relays, rather than implementation constants. Consequently the first compactness pass
+focuses on relay-lane geometry. Packing the small number of implementation constants more tightly
+would have little effect on the Snake footprint by itself.
+
+The benchmark should retain the following measurements after every physical-density change:
+
+- real combinator count;
+- physical net/group count;
+- RED/GREEN maximum row-local track count;
+- entity rows and entities per row;
+- layout relay count;
+- predicted width and height;
+- in-game placeability and functional Snake behavior.
 
 ## Accordion entity geometry
 
@@ -63,15 +76,16 @@ stitch at that row boundary. Public input and output markers appear first in the
 first row acts as a compact external I/O front panel.
 
 The number of entities per row is chosen deterministically from a conservative linear-overlap estimate
-to balance width and height. This is formula-driven sizing rather than placement search.
+to balance width and height. This is formula-driven sizing rather than placement search. Because row
+pitch is part of the balancing calculation, denser relay tracks can also change the chosen number of
+rows/columns rather than merely shrinking the old geometry in place.
 
-## Important correction: global linear tracks do not survive folding
+## Why row-local tracks are required
 
 The first folded implementation incorrectly reused the linear crossbar's global interval-track
-assignment. The proof claimed that disjoint virtual intervals would remain disjoint after folding.
-That is not sufficient because a cross-row route's *physical row segment* is extended from its endpoint
-to an incoming or outgoing fold portal. The portal extension is not part of the original virtual
-endpoint interval.
+assignment. Disjoint virtual intervals do not necessarily remain disjoint after folding because a
+cross-row route's physical row segment extends from its endpoint to an incoming or outgoing fold
+portal.
 
 Full Snake exposed the counterexample directly:
 
@@ -80,79 +94,105 @@ safe-folded-crossbar formula assigned one relay site to distinct groups:
 (2262.0, 179.0) -> 355, 356
 ```
 
-Two groups that were permitted to reuse one linear track acquired overlapping horizontal row segments
-after portal extension.
+The corrected planner therefore works from actual physical row segments:
 
-The corrected folded strategy therefore does **not** inherit global bus-track identities from
-`safe-crossbar`.
-
-## Correct row-local construction
-
-The corrected planner proceeds in this order:
-
-1. choose the deterministic folded entity rows;
+1. choose deterministic folded entity rows;
 2. determine which physical nets cross each fold boundary;
 3. assign every crossing net a boundary-local portal column;
-4. for every `(physical net, entity row)`, collect all actual horizontal attachments:
-   - endpoint feeder taps on that row;
-   - incoming fold portal, if present;
-   - outgoing fold portal, if present;
+4. for every `(physical net, entity row)`, collect endpoint feeder taps plus incoming/outgoing portals;
 5. form the exact closed physical x interval between those attachments;
-6. for each `(row, wire color)` independently, interval-color those **actual physical row segments**;
+6. for each `(row, wire color)` independently, interval-color those physical intervals;
 7. place RED row tracks above the entity row and GREEN row tracks below it;
-8. connect adjacent rows of the same physical net through the deterministic portal stitch.
+8. connect adjacent rows of the same physical net through deterministic portal stitches.
 
-A net is allowed to use different local track numbers on adjacent rows. The fold stitch connects the
-corresponding two bus heights, so no global track identity is required.
+A net may use different local track numbers on adjacent rows. For each row/color, interval partitioning
+uses the minimum number of tracks for the already-fixed segment intervals. Segments sharing a physical
+track remain separated by the relay-center clearance.
 
-For each row/color, interval partitioning uses the minimum number of tracks for the already-fixed
-segment intervals. Therefore two segments sharing one physical bus row are guaranteed disjoint with
-the relay-center clearance applied.
+## Packed relay lanes
 
-## Portal columns
+The first Snake compactness pass exploits the actual 1x1 footprint of layout relay constant
+combinators.
 
-Portal columns are assigned independently at every row boundary. All physical nets crossing one
-boundary receive distinct portal ordinals, across both wire colors. The same ordinal may be reused at a
-different boundary because the vertical stitch bands are vertically disjoint.
+### Bus tracks
 
-The fold side alternates with the serpentine rows. Portal columns remain outside the computation row and
-on odd x coordinates. This keeps them disjoint from ordinary horizontal bus-relay sites at
-`x = 0 mod 6`.
-
-## Relay lattice
-
-The folded construction retains:
+The previous folded baseline used:
 
 ```text
-wire relay pitch:   6 tiles
-bus track spacing:  2 tiles
 first bus offset:   3 tiles
+bus track spacing:  2 tiles
 ```
 
-Real entity rows are at y coordinates divisible by six. Local bus rows are odd offsets:
+That left an unused tile between adjacent 1x1 relay rows. The dense policy uses:
 
 ```text
-RED:   row_y - (3 + 2 * local_track)
-GREEN: row_y + (3 + 2 * local_track)
+wire relay hop pitch:  6 tiles
+first bus offset:      3.5 tiles
+bus track spacing:     1 tile
 ```
 
-Endpoint feeder columns are two tiles left/right of entity centers, while ordinary endpoint-feeder
-relays stay on six-tile y positions. Fold stitches use odd portal x coordinates and ordinary relays at
-six-tile y positions. Foreign horizontal/vertical wire crossings therefore contain no relay entity;
-only owning routes receive explicit taps.
+Real entity rows remain on y coordinates divisible by six. Local bus rows are therefore half-tile
+coordinates:
 
-Row pitch is computed from the maximum RED and GREEN **row-local** track counts, plus a fixed margin, so
-relay bands belonging to adjacent entity rows remain separated.
+```text
+RED:   row_y - (3.5 + local_track)
+GREEN: row_y + (3.5 + local_track)
+```
+
+The half-tile offset is part of the failproof construction. Regular endpoint-feeder and fold-stitch
+relays remain on integer y coordinates separated by six tiles, so a vertical relay center never
+coincides with a horizontal bus-relay center even though bus tracks are now only one tile apart.
+Adjacent 1x1 constants may touch footprint boundaries; their centers remain distinct.
+
+### Portal columns
+
+Fold portals are also 1x1 constants. The old policy spent two columns per portal merely to keep every
+portal on an odd x coordinate. The dense policy instead packs portal centers onto adjacent integer
+columns and skips only `x = 0 (mod 6)` columns used by ordinary horizontal row-bus relays.
+
+For a right-side fold whose computation-row edge is itself `x = 0 (mod 6)`, portal offsets begin:
+
+```text
+9, 10, 11, 13, 14, 15, 16, 17, 19, ...
+```
+
+Thus portal lanes have average pitch close to one tile while maintaining the constructive crossing
+invariant. The same sequence is mirrored on left-side folds.
+
+### What remains deliberately sparse
+
+Real implementation entities retain the existing six-tile center spacing in this first density pass.
+This keeps endpoint feeder columns on the proven `x = +/-2 (mod 6)` lattice while the much larger
+source of wasted area—the hundreds of thousands of relay constants—is compacted first.
+
+The current target has only two relevant implementation footprints: 1x1 constant combinators and 2x1
+arithmetic/decider/selector combinators. A later real-entity packing pass can therefore use a small
+entity-type helper directly; a general `EntityGeometry` abstraction is unnecessary for this target.
+
+## Crossing invariant
+
+The compact geometry separates relay families structurally:
+
+```text
+real entity centers:          x = 0 (mod 6), y = 0 (mod row_pitch)
+INPUT/SINGLE feeder columns:  x = -2 (mod 6)
+OUTPUT feeder columns:        x = +2 (mod 6)
+regular vertical relays:      y = 0 (mod 6) relative to their entity row
+horizontal bus rows:          half-tile y coordinates
+regular horizontal relays:    x = 0 (mod 6)
+portal columns:                integer x, excluding x = 0 (mod 6)
+```
+
+This permits one-tile relay packing without turning layout into a collision-search problem. The
+existing row-local interval-coloring invariant still prevents unrelated horizontal segments assigned
+to one bus track from overlapping.
 
 ## Compact I/O front panel
 
-The folded entity order deliberately starts with all public input markers followed by all public output
-markers, before internal implementation entities. The external terminals therefore occupy a small
-cluster at the beginning of the first row.
-
-This is a layout-only decision. The markers still attach to their ordinary synthesized physical nets.
-It fixes the practical Snake problem where movement input and framebuffer output were separated by the
-entire linear implementation.
+The folded entity order starts with public input markers followed by public output markers, before
+internal implementation entities. External terminals therefore occupy a small cluster at the beginning
+of the first row. This remains a layout-only decision; markers attach to ordinary synthesized physical
+nets.
 
 ## Preflight
 
@@ -168,7 +208,7 @@ exact predicted relay count
 predicted width x height
 ```
 
-The initial safety guards remain:
+Safety guards remain:
 
 ```text
 max relays       = 1,000,000
@@ -176,26 +216,30 @@ max dimension    = 4,096 tiles
 ```
 
 Relay counting uses the same finalized row-local track and portal plan as construction, and the builder
-asserts that the emitted relay count matches preflight exactly.
+asserts that emitted relay count matches preflight exactly.
 
-A rejected folded preflight does not imply that the circuit is unsynthesizable. The caller may always
-switch to the canonical linear `safe-crossbar`, or proceed to a later optimized layout strategy.
+## Regression invariants
 
-## Regression invariant
+Tests cover the properties on which the constructive proof depends:
 
-Tests now inspect the planner directly. For every `(row, color, local track)`, the actual portal-extended
-physical intervals assigned to that track must remain disjoint by at least the relay-center clearance.
-This is the invariant violated by the original `(2262, 179)` Snake failure.
+- actual portal-extended segments sharing a `(row, color, track)` remain disjoint by the configured
+  relay-center clearance;
+- adjacent bus-track relay centers may be exactly one tile apart;
+- all bus tracks are half-tile y rows, away from the regular vertical-relay lattice;
+- packed portal columns are at least one tile apart and never occupy `x = 0 (mod 6)`;
+- folded layout remains deterministic and performs no heuristic routing search;
+- linear and folded safe strategies remain independent rollback paths.
 
-## Non-goals
+## Next compactness targets
 
-The folded strategy deliberately does not attempt:
+Once the dense relay-lane blueprint is confirmed in game, useful next steps are:
 
-- topology-aware entity ordering;
-- Steiner or shared-trunk net routing beyond existing physical-net grouping;
-- optimized portal assignment;
-- area or relay-count optimization beyond deterministic folding and interval packing;
-- substations, walking corridors, or device-aware placement.
+1. measure the new Snake relay count and extent against the 3,004 x 2,792 / 470,732 baseline;
+2. pack real 1x1 constants separately from 2x1 arithmetic/decider/selector entities while preserving
+   deterministic feeder columns;
+3. improve deterministic entity ordering using physical-net topology to shorten row segments and
+   reduce portal crossings;
+4. reduce relay count by sharing trunks and introducing stronger constructive routing structures.
 
-Those belong to the next physical-synthesis/net-routing milestone. The folded construction exists only
-to make the search-free correctness baseline physically placeable enough for integration testing.
+The first two stages stay within the failproof constructive-layout philosophy. Topology-aware routing
+can then be benchmarked against a substantially denser correctness baseline.
