@@ -192,7 +192,7 @@ def build_lamp_screen_blueprint() -> Blueprint:
     for y in range(SCREEN_HEIGHT):
         xs = range(SCREEN_WIDTH) if y % 2 == 0 else range(SCREEN_WIDTH - 1, -1, -1)
         path.extend((x, y) for x in xs)
-    for (left_x, left_y), (right_x, right_y) in zip(path, path[1:], strict=True):
+    for (left_x, left_y), (right_x, right_y) in zip(path[:-1], path[1:], strict=True):
         wires.append(
             [
                 _lamp_number(left_x, left_y),
