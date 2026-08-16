@@ -1,21 +1,23 @@
 # Snake prototype
 
-`examples/snake.py` is the first interactive program built for the external movement detector and
-16x16 packed-RGB lamp screen.
+`examples/snake.py` contains the first interactive Snake game model built for the external movement
+detector and 16x16 packed-RGB lamp screen. `examples/snake_blueprint.py` is the recommended first
+in-game generator: it defaults to deterministic row placement and one unpacked synthesis so blueprint
+generation does not turn the first gameplay test into a layout-optimization benchmark.
 
 ## Generate the three blueprints
 
 ```bash
 uv run python -m factorio_circuit.devices.player_movement_detector
 uv run python -m factorio_circuit.devices.lamp_screen
-uv run python -m examples.snake
+uv run python -m examples.snake_blueprint
 ```
 
-The Snake command prints a short synthesis summary, the exact synthesized wire color required for the
-`movement` input and `framebuffer` output, and then the compiled circuit blueprint string.
+The Snake generator prints a short synthesis summary, the exact synthesized wire color required for
+the `movement` input and `framebuffer` output, and then the compiled circuit blueprint string.
 
 Place all three blueprints in game. The detector and screen each carry parallel red and green buses.
-Connect exactly the color printed by the Snake command:
+Connect exactly the color printed by the Snake generator:
 
 ```text
 movement detector  -- printed color -->  INPUT movement
@@ -24,6 +26,14 @@ OUTPUT framebuffer -- printed color -->  DISPLAY INPUT
 
 Leave the other device-bus color unattached. The screen deliberately contains no power-distribution
 entities.
+
+For later physical-synthesis stress testing, the generator can opt into vector packing and/or the full
+net-aware placer:
+
+```bash
+uv run python -m examples.snake_blueprint --optimize
+uv run python -m examples.snake_blueprint --net-aware-layout
+```
 
 ## Controls
 
@@ -42,7 +52,7 @@ By default the snake moves once per compiler-inferred periodic state occurrence.
 game, add a logical divider when generating the circuit:
 
 ```bash
-uv run python -m examples.snake --steps-per-move 2
+uv run python -m examples.snake_blueprint --steps-per-move 2
 ```
 
 The real-time move interval is the inferred state-domain period multiplied by this divider. The script
@@ -85,4 +95,5 @@ soon as the occupied cell is vacated.
 
 The semantic state machine can be built without the framebuffer renderer by calling
 `build_snake_circuit(render_framebuffer=False)`. Contract tests use that form for most game-state
-checks, while separate tests exercise the full framebuffer and physical compilation path.
+checks. The physical smoke test compiles the full renderer with deterministic row placement; the
+net-aware placer remains an explicit stress-test mode rather than part of the fast contract test.
