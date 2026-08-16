@@ -4,6 +4,7 @@ import pytest
 
 from factorio_circuit.devices._blueprint import decode_blueprint
 from factorio_circuit.devices.lamp_screen import (
+    DISPLAY_VIRTUAL_SIGNAL_POOL,
     PACKED_RGB_COLOR_MODE,
     PIXEL_COUNT,
     PIXEL_SIGNALS,
@@ -34,12 +35,17 @@ def test_pixel_catalogue_is_fixed_row_major_and_unique() -> None:
 
 
 def test_pixel_catalogue_prefers_real_virtual_signals() -> None:
-    assert len(DEFAULT_VIRTUAL_SIGNAL_POOL) == 132
-    assert PIXEL_SIGNALS[: len(DEFAULT_VIRTUAL_SIGNAL_POOL)] == DEFAULT_VIRTUAL_SIGNAL_POOL
+    # Keep the compiler allocator itself small/stable; the larger catalogue belongs to the screen.
+    assert len(DEFAULT_VIRTUAL_SIGNAL_POOL) == 51
+    assert len(DISPLAY_VIRTUAL_SIGNAL_POOL) == 132
+    assert DISPLAY_VIRTUAL_SIGNAL_POOL[: len(DEFAULT_VIRTUAL_SIGNAL_POOL)] == (
+        DEFAULT_VIRTUAL_SIGNAL_POOL
+    )
+    assert PIXEL_SIGNALS[: len(DISPLAY_VIRTUAL_SIGNAL_POOL)] == DISPLAY_VIRTUAL_SIGNAL_POOL
     assert all(signal.name != "signal-signal" for signal in PIXEL_SIGNALS)
 
     # The fixed ABI changes from virtual lanes to fallback prototype lanes only after exhausting
-    # the verified ordinary base-game virtual-signal catalogue.
+    # the verified display virtual-signal catalogue.
     assert PIXEL_SIGNALS[131].kind == "virtual"
     assert PIXEL_SIGNALS[131].name == "signal-ghost"
     assert PIXEL_SIGNALS[132].kind == "item"
