@@ -82,12 +82,11 @@ def test_folded_safe_crossbar_is_deterministic() -> None:
 def test_folded_bus_tracks_pack_one_tile_apart_off_vertical_relay_lattice() -> None:
     red_rows = [_bus_y(0.0, WireColor.RED, track) for track in range(8)]
     green_rows = [_bus_y(0.0, WireColor.GREEN, track) for track in range(8)]
+    red_gaps = [abs(right - left) for left, right in zip(red_rows, red_rows[1:])]
+    green_gaps = [abs(right - left) for left, right in zip(green_rows, green_rows[1:])]
 
-    assert all(abs(abs(right - left) - 1.0) < 1e-9 for left, right in zip(red_rows, red_rows[1:]))
-    assert all(
-        abs(abs(right - left) - 1.0) < 1e-9
-        for left, right in zip(green_rows, green_rows[1:])
-    )
+    assert all(abs(gap - 1.0) < 1e-9 for gap in red_gaps)
+    assert all(abs(gap - 1.0) < 1e-9 for gap in green_gaps)
     # Feeders and fold stitches place their regular relays at integer multiples of six.
     # Half-tile bus rows therefore never place a horizontal relay on the same center.
     assert all(abs(row - round(row)) == 0.5 for row in (*red_rows, *green_rows))
@@ -102,9 +101,10 @@ def test_folded_portals_pack_adjacent_tiles_but_skip_row_bus_lattice() -> None:
         _portal_x_values(20, boundary=1, ordinal=ordinal)
         for ordinal in range(20)
     ]
+    gaps = [right - left for left, right in zip(right_side, right_side[1:])]
 
-    assert min(right - left for left, right in zip(right_side, right_side[1:])) == 1.0
-    assert max(right - left for left, right in zip(right_side, right_side[1:])) == 2.0
+    assert min(gaps) == 1.0
+    assert max(gaps) == 2.0
     assert all(abs(value % 6.0) > 1e-9 for value in right_side)
     assert all(abs(value % 6.0) > 1e-9 for value in left_side)
 
