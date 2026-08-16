@@ -4,9 +4,10 @@
 detector and 16x16 packed-RGB lamp screen. `examples/snake_blueprint.py` is the recommended first
 in-game generator.
 
-The first-playtest generator deliberately prefers routing robustness over compactness. It uses the
-deterministic greedy seed of the net-aware placer with zero optimization iterations, frequent routing
-corridors, and deterministic retries that spend progressively more map area if routing fails.
+The first-playtest generator now uses the constructive `safe-crossbar` physical layout by default.
+This deliberately prefers guaranteed materialization over compactness: it performs no placement
+optimization, collision-avoiding routing search, or retry loop. See `safe-crossbar-layout.md` for the
+construction and proof obligations.
 
 ## Generate the three blueprints
 
@@ -16,9 +17,9 @@ uv run python -m factorio_circuit.devices.lamp_screen
 uv run python -m examples.snake_blueprint
 ```
 
-The Snake generator prints compiler progress, a short synthesis summary, and the exact synthesized wire
-color required for the `movement` input and `framebuffer` output to stderr. The final importable
-blueprint string alone is printed to stdout, so it may be redirected directly to a file.
+The Snake generator prints compiler progress, a synthesis summary including relay count, and the exact
+synthesized wire color required for the `movement` input and `framebuffer` output to stderr. The final
+importable blueprint string alone is printed to stdout, so it may be redirected directly to a file.
 
 Place all three blueprints in game. The detector and screen each carry parallel red and green buses.
 Connect exactly the color printed by the Snake generator:
@@ -33,64 +34,34 @@ entities.
 
 ## First-playtest layout policy
 
-The default Snake physical placement is intentionally spacious:
+The default is:
 
 ```text
-strategy            = net-aware greedy seed
-optimization steps  = 0
-computation block   = 8 x 8 tiles
-initial corridor    = 4.0 tiles
-initial target fill = 0.60
-attempts             = 4
-retry fill scale     = 0.8
+safe-crossbar
+    real combinators: sparse horizontal row
+    RED physical nets: horizontal buses above the row
+    GREEN physical nets: horizontal buses below the row
+    endpoint access: unique vertical feeder columns
+    relay pitch: 6 tiles
+    placement search: none
+    routing search: none
+    retries: none
 ```
 
-A failed routing attempt rebuilds the placement deterministically with more routing space. The default
-sequence is approximately:
+The fallback may be very large. That is intentional: this milestone separates "can the compiler emit a
+valid physical blueprint?" from the later problem of optimizing net routing, relay count, and area.
 
-```text
-attempt    target fill    corridor width
-1          0.600          4.00
-2          0.480          5.00
-3          0.384          6.25
-4          0.307          7.81
-```
-
-No annealing or random optimization is performed in these attempts. The retry exists because a
-placement that is cheap to compute can still leave too little collision-free space for relay chains.
-
-The initial policy can be adjusted from the CLI:
+The previous physical-layout paths remain available for diagnosis and the next optimization milestone:
 
 ```bash
-uv run python -m examples.snake_blueprint --corridor-width 6
-uv run python -m examples.snake_blueprint --target-fill 0.45
-uv run python -m examples.snake_blueprint --layout-retries 6
-```
-
-These options can be combined. For example, a deliberately very spacious diagnostic build is:
-
-```bash
-uv run python -m examples.snake_blueprint \
-    --corridor-width 8 \
-    --target-fill 0.40 \
-    --layout-retries 6
-```
-
-The old one-dimensional baseline remains available only for diagnosis:
-
-```bash
+uv run python -m examples.snake_blueprint --greedy-layout
+uv run python -m examples.snake_blueprint --net-aware-layout
 uv run python -m examples.snake_blueprint --row-layout
 ```
 
-It is not recommended for Snake because trivial row placement can create a much harder routing problem.
-The full iterative net-aware optimizer remains available for later layout-quality testing:
-
-```bash
-uv run python -m examples.snake_blueprint --net-aware-layout
-```
-
-The deterministic search-free safe layout described in `layout-safe-fallback-plan.md` is a later
-milestone. The spacious greedy retries are an intermediate robustness measure, not the final guarantee.
+`--greedy-layout` and `--net-aware-layout` still accept the diagnostic tuning options
+`--corridor-width`, `--target-fill`, and `--layout-retries`. Those options are ignored by the default
+safe-crossbar path because its geometry is formula-generated rather than searched.
 
 ## Controls and startup
 
@@ -151,12 +122,10 @@ soon as the occupied cell is vacated.
 - there is no restart/reset input yet;
 - an optional game-speed divider is implemented as state, rather than as a separately declared game
   clock;
-- the first prototype is intended to validate the complete input -> state -> packed framebuffer ->
-  lamp path before adding richer gameplay or device composition helpers;
-- the current routing path is still heuristic and may fail; the planned safe fallback will provide the
-  later construction-by-design guarantee.
+- safe-crossbar does not optimize area or relay count and does not support fixed user placement
+  anchors;
+- optimized physical-net routing is intentionally deferred to the next physical-synthesis milestone.
 
 The semantic state machine can be built without the framebuffer renderer by calling
 `build_snake_circuit(render_framebuffer=False)`. Contract tests use that form for most game-state
-checks. The physical smoke test compiles the full renderer using the same spacious deterministic greedy
-policy as the first-playtest generator.
+checks. The full physical smoke test compiles the full renderer through safe-crossbar.
