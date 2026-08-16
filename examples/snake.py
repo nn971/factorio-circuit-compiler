@@ -3,6 +3,7 @@
 The game is deliberately built only from existing compiler primitives:
 
 - the eight-way gate movement detector is consumed as one persistent Level[Vector];
+- a scalar reset Level restores the complete game state atomically;
 - periodic state uses the compiler-inferred recurrence clock, with an optional logical divider;
 - head coordinates, movement/queued directions, score, death state, and body history are registers;
 - body positions use a bounded FIFO with a maximum snake length of 16;
@@ -11,11 +12,12 @@ The game is deliberately built only from existing compiler primitives:
 Generate the three blueprints separately, place them in game, and wire:
 
     movement detector bus -> compiled INPUT movement
+    pulse compiled INPUT reset to restart
     compiled OUTPUT framebuffer -> lamp-screen DISPLAY INPUT
 
-Use only the red or green device bus matching the color printed for the compiled port.
+Use only the red or green device bus matching the color printed for each compiled port.
 The game waits at the center until the first direction gesture, so it can be wired and powered safely.
-The first prototype intentionally uses deterministic food placement and has no restart input yet.
+Food placement is deterministic in this first prototype.
 """
 
 from __future__ import annotations
@@ -183,7 +185,10 @@ def build_snake_circuit(
 
     The snake waits at screen coordinate (8, 8), with initial reference direction east and length one.
     The first direction gesture starts the game and may choose any direction. Each food increases the
-    visible/collidable length by one until the fixed maximum length of 16 is reached.
+    visible/collidable length by one until the fixed maximum length of 16 is reached. A nonzero
+    ``reset`` input restores this complete initial state and wins over movement/collision updates on
+    the same logical occurrence.
+
     ``render_framebuffer=False`` keeps the same game state machine but omits the pixel-history state
     and renderer; it exists so contract tests can exercise game semantics cheaply.
     """
@@ -199,6 +204,10 @@ def build_snake_circuit(
 
     circuit = Circuit("snake_16x16")
     movement = circuit.signals("movement")
+    reset = circuit.input("reset")
+    reset_active = reset != 0
+    reset_inactive = reset_active.logical_not()
+    empty_vector = circuit.constant_signals({})
 
     x_reg = circuit.accumulator("head_x")
     y_reg = circuit.accumulator("head_y")
@@ -247,7 +256,10 @@ def build_snake_circuit(
         old_phase = phase_reg.sample().signal(PHASE_SIGNAL)
         advance = running * (old_phase == 0)
         next_phase = (old_phase + 1) % logical_steps_per_move
-        phase_reg.set(_lane_value(circuit, PHASE_SIGNAL, next_phase), when=running)
+        phase_reg.set(
+            _lane_value(circuit, PHASE_SIGNAL, next_phase).gate(reset_inactive),
+            when=running | reset_active,
+        )
     attempt_move = advance
 
     next_x = old_x + dx
@@ -281,32 +293,66 @@ def build_snake_circuit(
     move_ok = attempt_move * collision.logical_not()
     eat = move_ok * (next_cell_id == current_food_id)
 
-    started_reg.set(circuit.constant_signals({STARTED_SIGNAL: 1}), when=accepted_request)
-    queued_direction_reg.set(
-        _lane_value(circuit, QUEUED_DIR_SIGNAL, requested_direction), when=accepted_request
+    # Freeze registers currently lower one periodic set source each. Fold reset priority into that
+    # single source: when reset is active the gated data becomes the empty vector, and the combined
+    # control forces that empty vector into the register. This is equivalent to a last-writer reset
+    # while preserving the current physical-lowering contract.
+    started_reg.set(
+        circuit.constant_signals({STARTED_SIGNAL: 1}).gate(reset_inactive),
+        when=accepted_request | reset_active,
     )
-    direction_reg.set(_lane_value(circuit, DIR_SIGNAL, queued_direction), when=move_ok)
+    queued_direction_reg.set(
+        _lane_value(circuit, QUEUED_DIR_SIGNAL, requested_direction).gate(reset_inactive),
+        when=accepted_request | reset_active,
+    )
+    direction_reg.set(
+        _lane_value(circuit, DIR_SIGNAL, queued_direction).gate(reset_inactive),
+        when=move_ok | reset_active,
+    )
 
+    # Accumulator clear suppresses same-occurrence adds in physical lowering, so reset wins even when
+    # movement/eating is also active.
     x_reg.add(_lane_value(circuit, X_SIGNAL, dx), when=move_ok)
+    x_reg.clear(reset_active)
     y_reg.add(_lane_value(circuit, Y_SIGNAL, dy), when=move_ok)
+    y_reg.clear(reset_active)
     score_reg.add(circuit.constant_signals({SCORE_SIGNAL: 1}), when=eat)
-    dead_reg.set(circuit.constant_signals({DEAD_SIGNAL: 1}), when=collision)
+    score_reg.clear(reset_active)
+    dead_reg.set(
+        circuit.constant_signals({DEAD_SIGNAL: 1}).gate(reset_inactive),
+        when=collision | reset_active,
+    )
 
     old_head_cell_id = (old_y + ORIGIN_Y) * SCREEN_WIDTH + (old_x + ORIGIN_X) + 1
     body_position_regs[0].set(
-        _lane_value(circuit, POSITION_SIGNAL, old_head_cell_id), when=move_ok
+        _lane_value(circuit, POSITION_SIGNAL, old_head_cell_id).gate(reset_inactive),
+        when=move_ok | reset_active,
     )
     for index in range(1, BODY_CAPACITY):
         body_position_regs[index].set(
-            _lane_value(circuit, POSITION_SIGNAL, old_body_positions[index - 1]), when=move_ok
+            _lane_value(circuit, POSITION_SIGNAL, old_body_positions[index - 1]).gate(
+                reset_inactive
+            ),
+            when=move_ok | reset_active,
         )
 
     if render_framebuffer:
         assert pixel_id_rom is not None
         old_head_pixels = _decode_cell_pixels(pixel_id_rom, old_head_cell_id)
-        body_pixel_regs[0].set(old_head_pixels, when=move_ok)
+        body_pixel_regs[0].set(
+            old_head_pixels.gate(reset_inactive),
+            when=move_ok | reset_active,
+        )
         for index in range(1, BODY_CAPACITY):
-            body_pixel_regs[index].set(old_body_pixels[index - 1], when=move_ok)
+            body_pixel_regs[index].set(
+                old_body_pixels[index - 1].gate(reset_inactive),
+                when=move_ok | reset_active,
+            )
+
+    # ``empty_vector`` is intentionally retained as the semantic reset value documentation anchor.
+    # The concrete reset-aware set sources above use ``gate(reset_inactive)`` so every FreezeReg still
+    # has exactly one periodic set source under the current lowering contract.
+    del empty_vector
 
     # Observe the atomic post-transition state. This compatibility cursor is still the established
     # way to expose "after this game step" values for periodic state programs.
@@ -385,11 +431,15 @@ def main() -> None:
     result = compile_circuit(circuit, optimize=not args.no_optimize)
 
     movement_port = next(port for port in result.physical_circuit.inputs if port.name == "movement")
+    reset_port = next(port for port in result.physical_circuit.inputs if port.name == "reset")
     framebuffer_port = next(
         port for port in result.physical_circuit.outputs if port.name == "framebuffer"
     )
     movement_color = _marker_wire_color(result, movement_port.marker_entity)
+    reset_color = _marker_wire_color(result, reset_port.marker_entity)
     framebuffer_color = _marker_wire_color(result, framebuffer_port.marker_entity)
+    if reset_port.signal is None:
+        raise ValueError("scalar reset port unexpectedly has no concrete signal")
 
     print(
         "snake: "
@@ -398,7 +448,8 @@ def main() -> None:
     )
     print(
         "wire movement detector -> INPUT movement with "
-        f"{movement_color.value.upper()}; OUTPUT framebuffer -> display with "
+        f"{movement_color.value.upper()}; pulse INPUT reset [{reset_port.signal.name}] with "
+        f"{reset_color.value.upper()}; OUTPUT framebuffer -> display with "
         f"{framebuffer_color.value.upper()}"
     )
     print(result.blueprint_string)
