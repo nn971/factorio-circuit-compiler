@@ -164,7 +164,7 @@ def build_player_movement_detector_blueprint() -> Blueprint:
         entities.append(entity)
 
     # Ring the sensors and attach each retained indicator on both circuit colors. A consumer should
-    # connect exactly one matching wire color; the parallel bus makes the port synthesis-color agnostic.
+    # connect exactly one matching wire color; the parallel bus makes the port color-agnostic.
     wires: list[list[int]] = []
     for connector in BUS_CONNECTORS:
         for index, direction in enumerate(DIRECTION_ORDER):
