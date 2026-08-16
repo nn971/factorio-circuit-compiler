@@ -2,8 +2,8 @@
 
 ## Purpose
 
-`safe-crossbar` is the compiler's constructive physical-layout fallback. It separates two questions
-that were previously entangled:
+`safe-crossbar` is the compiler's canonical constructive physical-layout fallback. It separates two
+questions that were previously entangled:
 
 1. can a supported physical circuit be materialized without routing search?;
 2. can that blueprint be compact and relay-efficient?
@@ -16,6 +16,11 @@ Snake exposed why that is too pessimistic: 4,623 physical groups produced more t
 relays because progressively farther bus rows made endpoint feeders grow roughly quadratically. The
 current implementation keeps the constructive guarantee but **reuses bus tracks for disjoint net
 intervals**, packs those tracks two tiles apart, and puts feeder-heavy tracks closest to the entity row.
+
+This one-row construction is intentionally retained unchanged as the **reference/rollback strategy**.
+The experimental `safe-folded-crossbar` lives in a separate module and mechanically folds this linear
+ordering into serpentine rows. If folded placement exposes an in-game problem, callers can switch back
+to `safe-crossbar` without reverting compiler history.
 
 ## Construction
 
@@ -210,23 +215,18 @@ The current implementation assumes:
 It does not attempt walking corridors, substation placement, device-aware placement, or optimized
 physical-net routing.
 
-Safe-crossbar should remain the correctness baseline against which later optimizers are tested.
+Safe-crossbar should remain the correctness baseline against which the folded fallback and later
+optimizers are tested.
 
-## Snake
+## Snake reference command
 
-The recommended first-playtest command uses safe-crossbar by default. For a large circuit, write the
-blueprint directly to a file rather than sending a long encoded string to the terminal:
+Snake now defaults to `safe-folded-crossbar` for placeability. To deliberately use this canonical
+one-row reference instead:
 
 ```bash
-uv run python -m examples.snake_blueprint --output snake-blueprint.txt
+uv run python -m examples.snake_blueprint \
+  --linear-safe-layout \
+  --output snake-linear.txt
 ```
 
 Progress and synthesis diagnostics remain on stderr.
-
-The old strategies remain available for routing/layout experiments:
-
-```bash
-uv run python -m examples.snake_blueprint --greedy-layout
-uv run python -m examples.snake_blueprint --net-aware-layout
-uv run python -m examples.snake_blueprint --row-layout
-```
