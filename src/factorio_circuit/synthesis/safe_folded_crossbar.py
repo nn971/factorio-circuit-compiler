@@ -11,8 +11,11 @@ colors the actual physical horizontal segment intervals independently on every
 entity row after all endpoint and portal attachment positions are known.
 
 Cross-row nets use deterministic vertical fold stitches on boundary-local portal
-columns.  There is no placement search, routing search, retry loop, or
-backtracking.
+columns.  Bus tracks are packed on adjacent half-tile rows so the 1x1 relay
+constant combinators consume their actual footprint rather than a two-tile lane.
+Fold portals use adjacent integer columns while skipping the ordinary six-tile
+horizontal relay lattice.  There is no placement search, routing search, retry
+loop, or backtracking.
 """
 
 from __future__ import annotations
@@ -43,13 +46,12 @@ from factorio_circuit.synthesis.placement import PlacementOptions
 _SAFE_PITCH = 6.0
 _ENTITY_SPACING = 6.0
 _FEEDER_OFFSET = 2.0
-_FIRST_BUS_OFFSET = 3.0
-_TRACK_SPACING = 2.0
+_FIRST_BUS_OFFSET = 3.5
+_TRACK_SPACING = 1.0
 _RELAY_CENTER_CLEARANCE = 1.1
 _ROW_MARGIN = 12.0
 _PORTAL_GAP = 6.0
 _PORTAL_FIRST_OFFSET = 3.0
-_PORTAL_SPACING = 2.0
 DEFAULT_SAFE_FOLDED_MAX_RELAYS = 1_000_000
 DEFAULT_SAFE_FOLDED_MAX_EXTENT = 4096.0
 _MINIMUM_SAFE_SPAN = sqrt(_FEEDER_OFFSET**2 + _SAFE_PITCH**2)
@@ -708,7 +710,21 @@ def _track_extent(track_count: int) -> float:
 def _portal_outer_offset(portal_count: int) -> float:
     if portal_count <= 0:
         return 0.0
-    return _PORTAL_GAP + _PORTAL_FIRST_OFFSET + (portal_count - 1) * _PORTAL_SPACING
+    return _portal_lane_offset(portal_count - 1)
+
+
+def _portal_lane_offset(ordinal: int) -> float:
+    """Pack 1x1 portal relays one tile apart while skipping x = 0 (mod 6)."""
+
+    if ordinal < 0:
+        raise ValueError("portal ordinal must be nonnegative")
+    offset = int(_PORTAL_GAP + _PORTAL_FIRST_OFFSET)
+    seen = 0
+    while seen < ordinal:
+        offset += 1
+        if offset % int(_SAFE_PITCH) != 0:
+            seen += 1
+    return float(offset)
 
 
 def _choose_entities_per_row(
@@ -767,7 +783,7 @@ def _portal_x_values(
     boundary: int,
     ordinal: int,
 ) -> float:
-    offset = _PORTAL_GAP + _PORTAL_FIRST_OFFSET + ordinal * _PORTAL_SPACING
+    offset = _portal_lane_offset(ordinal)
     right_edge = (entities_per_row - 1) * _ENTITY_SPACING
     return right_edge + offset if boundary % 2 == 0 else -offset
 
