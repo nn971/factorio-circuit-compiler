@@ -26,6 +26,7 @@ from factorio_circuit.ir.physical import (
     WireColor,
     WireEndpoint,
 )
+from factorio_circuit.progress import ProgressCallback, report_progress
 
 # Arithmetic/decider combinators have a nominal circuit-wire reach of 9 tiles in vanilla
 # Factorio 2.x. Route more conservatively because the game measures between circuit connector
@@ -83,6 +84,7 @@ def route_wires(
     *,
     safe_span: float = DEFAULT_SAFE_WIRE_SPAN,
     relay_forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
+    progress: ProgressCallback | None = None,
 ) -> RoutingPlan:
     """Route all logical wires with collision-free blank constant-combinator relays.
 
@@ -105,6 +107,15 @@ def route_wires(
     for entity in circuit.entities:
         occupied.append((positions[entity.id], _entity_half_extent(entity), entity.id))
 
+    total_connections = len(circuit.connections)
+    report_progress(
+        progress,
+        "routing",
+        completed=0,
+        total=total_connections,
+        detail="starting wire routing; relays=0",
+    )
+
     for index, connection in enumerate(circuit.connections, start=1):
         source_pos = positions[connection.source.entity]
         target_pos = positions[connection.target.entity]
@@ -118,7 +129,9 @@ def route_wires(
                 safe_span=safe_span,
                 occupied=occupied,
                 edge_index=index,
+                edge_total=total_connections,
                 forbidden_areas=relay_forbidden_areas,
+                progress=progress,
             )
 
         relay_ids: list[int] = []
@@ -156,6 +169,14 @@ def route_wires(
                 )
             )
 
+        report_progress(
+            progress,
+            "routing",
+            completed=index,
+            total=total_connections,
+            detail=f"relays={len(relays)}; last_edge_relays={len(relay_positions)}",
+        )
+
     plan = RoutingPlan(relays=tuple(relays), wires=tuple(wires))
     all_positions = routed_positions(circuit, positions, plan)
     validate_wire_spans(plan.wires, all_positions, maximum_span=safe_span)
@@ -175,7 +196,9 @@ def _find_relay_positions(
     safe_span: float,
     occupied: list[tuple[tuple[float, float], tuple[float, float], int]],
     edge_index: int,
+    edge_total: int,
     forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
+    progress: ProgressCallback | None = None,
 ) -> list[tuple[float, float]]:
     distance = _distance(source, target)
     dx = target[0] - source[0]
@@ -226,7 +249,10 @@ def _find_relay_positions(
         target,
         safe_span=safe_span,
         occupied=occupied,
+        edge_index=edge_index,
+        edge_total=edge_total,
         forbidden_areas=forbidden_areas,
+        progress=progress,
     )
     if fallback is not None:
         return fallback
@@ -243,7 +269,10 @@ def _find_grid_relay_positions(
     *,
     safe_span: float,
     occupied: list[tuple[tuple[float, float], tuple[float, float], int]],
+    edge_index: int,
+    edge_total: int,
     forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
+    progress: ProgressCallback | None = None,
 ) -> list[tuple[float, float]] | None:
     """Find a relay chain on a half-tile lattice when straight parallel lanes fail.
 
@@ -278,7 +307,17 @@ def _find_grid_relay_positions(
 
     serial = count()
     expansion_limit = max(6_000, min(40_000, 120 * max(1, len(occupied))))
-    for margin_scale in (1.0, 2.0, 4.0):
+    margin_scales = (1.0, 2.0, 4.0)
+    total_expansion_budget = expansion_limit * len(margin_scales)
+    report_progress(
+        progress,
+        "routing-search",
+        completed=0,
+        total=total_expansion_budget,
+        detail=f"edge {edge_index}/{edge_total}: grid fallback",
+    )
+
+    for margin_index, margin_scale in enumerate(margin_scales):
         margin = safe_span * margin_scale + 1.0
         bounds = (min_x - margin, max_x + margin, min_y - margin, max_y + margin)
         frontier: list[tuple[float, int, int, tuple[float, float]]] = []
@@ -293,6 +332,14 @@ def _find_grid_relay_positions(
             if best_hops.get(current) != hops:
                 continue
             expansions += 1
+            if expansions == 1 or expansions % 1000 == 0:
+                report_progress(
+                    progress,
+                    "routing-search",
+                    completed=margin_index * expansion_limit + expansions,
+                    total=total_expansion_budget,
+                    detail=f"edge {edge_index}/{edge_total}: grid fallback",
+                )
 
             if _distance(current, target) <= safe_span + 1e-9:
                 path: list[tuple[float, float]] = []
@@ -304,6 +351,13 @@ def _find_grid_relay_positions(
                 if _chain_is_in_reach(
                     source, path, target, safe_span
                 ) and _relay_candidates_are_clear(path, occupied, forbidden_areas=forbidden_areas):
+                    report_progress(
+                        progress,
+                        "routing-search",
+                        completed=margin_index * expansion_limit + expansions,
+                        total=total_expansion_budget,
+                        detail=f"edge {edge_index}/{edge_total}: route found",
+                    )
                     return path
 
             for dx, dy in offsets:
@@ -333,6 +387,13 @@ def _find_grid_relay_positions(
                     (next_hops + heuristic + tie_break, next_hops, next(serial), candidate),
                 )
 
+    report_progress(
+        progress,
+        "routing-search",
+        completed=total_expansion_budget,
+        total=total_expansion_budget,
+        detail=f"edge {edge_index}/{edge_total}: search exhausted",
+    )
     return None
 
 
