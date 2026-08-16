@@ -4,10 +4,11 @@
 detector and 16x16 packed-RGB lamp screen. `examples/snake_blueprint.py` is the recommended first
 in-game generator.
 
-The first-playtest generator uses the constructive `safe-crossbar` physical layout by default. This
-prefers guaranteed materialization over compactness: it performs no placement optimization,
-collision-avoiding routing search, or retry loop. See `safe-crossbar-layout.md` for the construction
-and proof obligations.
+The first-playtest generator now uses the constructive `safe-folded-crossbar` physical layout by
+default. It mechanically folds the already-proven linear safe-crossbar into serpentine rows and adds
+deterministic fold stitches; it still performs no placement optimization, collision-avoiding routing
+search, or retry loop. The original linear `safe-crossbar` remains available unchanged as an explicit
+rollback/reference path. See `safe-folded-crossbar-layout.md` and `safe-crossbar-layout.md`.
 
 ## Generate the three blueprints
 
@@ -17,10 +18,10 @@ uv run python -m factorio_circuit.devices.lamp_screen
 uv run python -m examples.snake_blueprint --output snake-blueprint.txt
 ```
 
-The Snake generator prints compiler progress, safe-layout preflight statistics, the final relay count,
+The Snake generator prints compiler progress, folded-layout preflight statistics, the final relay count,
 and the exact synthesized wire color required for the `movement` input and `framebuffer` output to
 stderr. `--output` writes the encoded blueprint directly to a file instead of sending a potentially
-large string to the terminal. Omitting it retains the stdout behavior for smaller experiments.
+large string to the terminal.
 
 Place all three blueprints in game. The detector and screen each carry parallel red and green buses.
 Connect exactly the color printed by the Snake generator:
@@ -38,34 +39,46 @@ entities.
 The default is:
 
 ```text
-safe-crossbar
-    real combinators: sparse horizontal row
-    RED physical nets: reusable horizontal bus tracks above the row
-    GREEN physical nets: reusable horizontal bus tracks below the row
-    track assignment: deterministic interval partitioning
+safe-folded-crossbar
+    virtual entity order: deterministic
+    physical entity rows: serpentine / accordion folded
+    public I/O markers: clustered first on row 0
+    RED/GREEN track assignment: deterministic interval partitioning
+    cross-row continuation: fixed track-specific fold portals
     bus track spacing: 2 tiles
     relay hop pitch: 6 tiles
-    endpoint access: unique vertical feeder columns
     relay preflight cap: 1,000,000
+    maximum preflight dimension: 4,096 tiles
     placement search: none
     routing search: none
     retries: none
 ```
 
-Two same-color physical nets reuse one bus track whenever their horizontal endpoint intervals are
-disjoint with relay clearance. The temporary tracks are then reordered so feeder-heavy tracks sit
-closest to the entity row. This keeps the fallback constructive while avoiding the first version's
-one-net-per-row quadratic relay explosion.
+The fold width is chosen deterministically to balance predicted width and height after red/green track
+counts are known. Within a row, the virtual linear order is monotone (alternating direction on adjacent
+rows), so disjoint linear net intervals remain disjoint after folding. A net crossing a fold receives a
+vertical stitch on a track-specific portal column outside the computation row.
 
-Before allocating relays, safe-crossbar reports the number of physical groups, routed groups,
-singletons, red/green track counts, and the exact predicted relay count. If the prediction exceeds one
-million relays, compilation stops before constructing the huge layout or encoding blueprint JSON.
+Before allocating relays, the folded path reports physical/routed/singleton group counts, red/green
+track counts, entity rows and columns, exact predicted relay count, and predicted width x height. It
+refuses pathological relay counts or a dimension above 4,096 tiles before constructing the relay graph.
 
-The fallback can still be large when the fixed entity order has high same-color interval overlap. That
-is intentional: this milestone separates "can the compiler emit a valid physical blueprint?" from the
-later problem of optimizing net routing, relay count, and area.
+### Canonical linear rollback
 
-The previous physical-layout paths remain available for diagnosis and the next optimization milestone:
+The already-successful one-row crossbar is intentionally retained as a separate implementation and
+strategy. To switch back without reverting code:
+
+```bash
+uv run python -m examples.snake_blueprint \
+  --linear-safe-layout \
+  --output snake-linear.txt
+```
+
+This produces the known electrically valid but extremely wide construction. The folded implementation
+must not silently replace or modify this reference path.
+
+The older heuristic physical-layout paths also remain available for diagnosis and the next optimization
+milestone:
 
 ```bash
 uv run python -m examples.snake_blueprint --greedy-layout
@@ -73,9 +86,8 @@ uv run python -m examples.snake_blueprint --net-aware-layout
 uv run python -m examples.snake_blueprint --row-layout
 ```
 
-`--greedy-layout` and `--net-aware-layout` still accept the diagnostic tuning options
-`--corridor-width`, `--target-fill`, and `--layout-retries`. Those options are ignored by the default
-safe-crossbar path because its geometry is formula-generated rather than searched.
+`--greedy-layout` and `--net-aware-layout` still accept `--corridor-width`, `--target-fill`, and
+`--layout-retries`.
 
 ## Controls and startup
 
@@ -136,10 +148,11 @@ soon as the occupied cell is vacated.
 - there is no restart/reset input yet;
 - an optional game-speed divider is implemented as state, rather than as a separately declared game
   clock;
-- safe-crossbar is a correctness fallback, not the final routing/layout optimizer;
+- safe-folded-crossbar is a placeability refinement of the correctness fallback, not the final
+  routing/layout optimizer;
 - the first prototype is intended to validate the complete input -> state -> packed framebuffer ->
   lamp path before adding richer gameplay or device composition helpers.
 
 The semantic state machine can be built without the framebuffer renderer by calling
 `build_snake_circuit(render_framebuffer=False)`. Contract tests use that form for most game-state
-checks. The physical smoke test compiles the full renderer using the safe-crossbar path.
+checks. The physical smoke test compiles the full renderer using `safe-folded-crossbar`.
