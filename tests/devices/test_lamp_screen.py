@@ -76,7 +76,10 @@ def test_screen_wiring_is_one_connected_green_bus() -> None:
     wires = blueprint["wires"]
 
     assert len(wires) == 256
-    assert all(source_connector == 2 and target_connector == 2 for _, source_connector, _, target_connector in wires)
+    assert all(
+        source_connector == 2 and target_connector == 2
+        for _, source_connector, _, target_connector in wires
+    )
 
     adjacency: dict[int, set[int]] = {entity: set() for entity in range(1, 258)}
     for source, _source_connector, target, _target_connector in wires:
