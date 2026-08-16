@@ -1,20 +1,20 @@
 """Constructive, search-free physical layout for supported Factorio circuits.
 
 The safe crossbar deliberately spends area and relay entities to make materialization predictable.
-All implementation entities are placed on one sparse horizontal row.  Every synthesized RED physical
+All implementation entities are placed on one sparse horizontal row. Every synthesized RED physical
 network receives one horizontal bus above that row; every GREEN network receives one horizontal bus
-below it.  Each concrete combinator connector reaches its owning bus through a unique vertical feeder
+below it. Each concrete combinator connector reaches its owning bus through a unique vertical feeder
 column.
 
 The geometry uses a six-tile lattice under the compiler's default seven-tile conservative wire span.
-Implementation entities sit at ``x = 0 (mod 6)``.  INPUT/SINGLE feeders use ``x = -2 (mod 6)`` and
-OUTPUT feeders use ``x = +2 (mod 6)``.  Ordinary feeder relays use ``y = 0 (mod 6)`` away from the
-entity row, while bus rows use ``y = 3 (mod 6)``.  Ordinary bus relays remain at ``x = 0 (mod 6)``;
-only the owning endpoint inserts a tap at its feeder column.  Unrelated feeder/bus crossings therefore
+Implementation entities sit at ``x = 0 (mod 6)``. INPUT/SINGLE feeders use ``x = -2 (mod 6)`` and
+OUTPUT feeders use ``x = +2 (mod 6)``. Ordinary feeder relays use ``y = 0 (mod 6)`` away from the
+entity row, while bus rows use ``y = 3 (mod 6)``. Ordinary bus relays remain at ``x = 0 (mod 6)``;
+only the owning endpoint inserts a tap at its feeder column. Unrelated feeder/bus crossings therefore
 contain no relay, and every generated relay site is separated from other relay sites and real entities
 by construction.
 
-This policy does not call the normal placement optimizer or collision-avoiding wire router.  It is a
+This policy does not call the normal placement optimizer or collision-avoiding wire router. It is a
 correctness fallback, not a compactness strategy.
 """
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from math import ceil, floor, sqrt
+from typing import Any, cast
 
 from factorio_circuit.ir import abstract_physical as abstract
 from factorio_circuit.ir.physical import (
@@ -46,6 +47,18 @@ _FIRST_BUS_OFFSET = 3.0
 _MINIMUM_SAFE_SPAN = sqrt(_FEEDER_OFFSET**2 + _SAFE_PITCH**2)
 
 
+def safe_crossbar_options() -> Any:
+    """Return a PlacementOptions instance selecting the joint safe-crossbar synthesis policy.
+
+    ``PlacementStrategy`` still names only the older optimizer-specific strategies. Keeping the cast
+    here localizes that temporary typing gap until the next physical-synthesis API cleanup.
+    """
+
+    from factorio_circuit.synthesis.placement import PlacementOptions
+
+    return PlacementOptions(strategy=cast(Any, "safe-crossbar"), restarts=1)
+
+
 def build_safe_crossbar_layout(
     abstract_circuit: abstract.AbstractPhysicalCircuit,
     physical: PhysicalCircuit,
@@ -60,7 +73,7 @@ def build_safe_crossbar_layout(
 
     The supported subset currently assumes the compiler's ordinary horizontal combinators and blank
     constant-combinator relays, no user-specified fixed entity coordinates, and a conservative wire
-    span large enough for the six-tile construction.  Within that subset there is no geometric search
+    span large enough for the six-tile construction. Within that subset there is no geometric search
     or retry path: every relay coordinate follows directly from entity, endpoint, and physical-net
     order.
     """
@@ -71,7 +84,7 @@ def build_safe_crossbar_layout(
             f"{_MINIMUM_SAFE_SPAN:.3f}; got {safe_wire_span:.3f}"
         )
 
-    ordered_entities = sorted(physical.entities, key=lambda entity: entity.id)
+    ordered_entities = _ordered_entities(physical)
     positions = {
         entity.id: (float(index) * _ENTITY_SPACING, 0.0)
         for index, entity in enumerate(ordered_entities)
@@ -87,7 +100,7 @@ def build_safe_crossbar_layout(
         if previous != color:  # pragma: no cover - grouping invariant
             raise AssertionError(f"physical net group {group} contains multiple wire colors")
 
-    # High-fanout groups are deliberately kept closest to the entity row.  This does not affect the
+    # High-fanout groups are deliberately kept closest to the entity row. This does not affect the
     # correctness proof, but minimizes the weighted vertical feeder length for this fixed bus scheme.
     bus_y_by_group: dict[int, float] = {}
     for color, sign in ((WireColor.RED, -1.0), (WireColor.GREEN, 1.0)):
@@ -145,7 +158,7 @@ def build_safe_crossbar_layout(
         wire_keys.add(key)
         wires.append(LayoutWire(left_entity, left_connector, right_entity, right_connector, color))
 
-    # Keep the relay-free logical PhysicalCircuit useful for physical simulation.  Geometry belongs
+    # Keep the relay-free logical PhysicalCircuit useful for physical simulation. Geometry belongs
     # to Layout; the direct connections below merely encode the same electrical components.
     physical.connections.clear()
     total_groups = len(endpoints_by_group)
@@ -180,7 +193,7 @@ def build_safe_crossbar_layout(
                 feeder_nodes: list[int] = []
                 sign = -1 if bus_y < 0 else 1
                 y = sign * _SAFE_PITCH
-                while y > bus_y if sign < 0 else y < bus_y:
+                while (y > bus_y if sign < 0 else y < bus_y):
                     feeder_nodes.append(
                         add_relay(
                             (feeder_x, y),
@@ -265,6 +278,23 @@ def build_safe_crossbar_layout(
         net_colors=tuple(sorted(net_colors.items())),
         net_groups=tuple(sorted(net_groups.items())),
     )
+
+
+def _ordered_entities(physical: PhysicalCircuit) -> list[object]:
+    """Keep public input/output markers at the two accessible ends of the sparse row."""
+
+    input_ids = [port.marker_entity for port in physical.inputs]
+    output_ids = [port.marker_entity for port in physical.outputs]
+    edge_ids = set(input_ids) | set(output_ids)
+    body_ids = sorted(entity.id for entity in physical.entities if entity.id not in edge_ids)
+
+    ordered_ids: list[int] = []
+    seen: set[int] = set()
+    for entity_id in [*input_ids, *body_ids, *output_ids]:
+        if entity_id not in seen:
+            ordered_ids.append(entity_id)
+            seen.add(entity_id)
+    return [physical.entity_by_id(entity_id) for entity_id in ordered_ids]
 
 
 def _feeder_offset(connector: abstract.Connector) -> float:
