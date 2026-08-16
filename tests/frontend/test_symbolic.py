@@ -1,7 +1,13 @@
 import pytest
 
 from factorio_circuit import Circuit, CircuitBuildError
-from factorio_circuit.ir.semantic import BinaryOp, InputSample, VectorInputSample, VectorScalarOp
+from factorio_circuit.ir.semantic import (
+    BinaryOp,
+    InputSample,
+    VectorFilter,
+    VectorInputSample,
+    VectorScalarOp,
+)
 from factorio_circuit.ir.state import (
     AccumulatorAdd,
     AccumulatorClear,
@@ -66,6 +72,19 @@ def test_whole_vector_subtracts_runtime_scalar_lane_wise() -> None:
     assert shifted.ir.op == "-"
     assert shifted.ir.vector is data.ir
     assert shifted.ir.scalar is scalar.ir
+
+
+def test_whole_vector_filter_eq_builds_generic_vector_filter() -> None:
+    c = Circuit("vector_filter_eq")
+    data = c.signals("data")
+
+    selected = data.filter_eq(1)
+    c.output("selected", selected)
+
+    assert isinstance(selected.ir, VectorFilter)
+    assert selected.ir.op == "=="
+    assert selected.ir.vector is data.ir
+    assert selected.ir.right == 1
 
 
 def test_python_runtime_branching_on_expr_is_rejected() -> None:
