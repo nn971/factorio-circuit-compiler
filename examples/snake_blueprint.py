@@ -199,7 +199,7 @@ def main() -> None:
         file=sys.stderr,
     )
     print(
-        "front-panel marker positions: "
+        "front-panel marker positions (relative blueprint coordinates): "
         f"reset={result.layout.positions[reset_port.marker_entity]}, "
         f"movement={result.layout.positions[movement_port.marker_entity]}, "
         f"framebuffer={result.layout.positions[framebuffer_port.marker_entity]}",
