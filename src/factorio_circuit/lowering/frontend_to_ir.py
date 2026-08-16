@@ -1,10 +1,10 @@
 """Symbolic-frontend lowering and the canonical Level Flow normalization boundary.
 
 The symbolic frontend intentionally keeps its long-standing compatibility nodes: ``Input`` and
-``InputSample`` are useful public records and ``Circuit.step()`` remains the elaboration API.  The
-compiler never sends those raw records directly to later semantic passes.  ``normalize_module``
+``InputSample`` are useful public records and ``Circuit.step()`` remains the elaboration API. The
+compiler never sends those raw records directly to later semantic passes. ``normalize_module``
 contextualizes raw Level observations and annotates every ordinary scalar/vector expression with a
-Flow.  The canonical nodes remain instances of the legacy records where practical, so unchanged
+Flow. The canonical nodes remain instances of the legacy records where practical, so unchanged
 backend consumers retain their field and ``isinstance`` contracts.
 """
 
@@ -20,7 +20,6 @@ from factorio_circuit.ir.semantic import (
     ClockProvenance,
     Compare,
     Constant,
-    DerivedValue,
     Flow,
     FlowInput,
     FlowInputSample,
@@ -29,7 +28,6 @@ from factorio_circuit.ir.semantic import (
     FlowVectorRegisterRead,
     Input,
     InputSample,
-    OutputValue,
     PayloadShape,
     ReturnValue,
     ScalarValue,
@@ -107,7 +105,7 @@ class _Normalizer:
             for source in referenced:
                 union(transition.register, source)
 
-        # A single ordinary output expression is one evaluation region too.  If it observes
+        # A single ordinary output expression is one evaluation region too. If it observes
         # multiple state registers, give the region one structural clock just as timing analysis
         # does; otherwise normalization would invent an implicit cross-domain crossing.
         for output in self.module.output.values:
@@ -251,7 +249,7 @@ class _Normalizer:
                 source=value.source,
                 offset=value.offset,
                 name=value.name,
-                flow=self._make_flow(value, PayloadShape.SCALAR, expected, value.offset),
+                flow=self._make_flow(value.source, PayloadShape.SCALAR, expected, value.offset),
             )
         elif isinstance(value, Constant):
             result = (
@@ -374,7 +372,7 @@ class _Normalizer:
                 source=value.source,
                 offset=value.offset,
                 name=value.name,
-                flow=self._make_flow(value, PayloadShape.VECTOR, expected, value.offset),
+                flow=self._make_flow(value.source, PayloadShape.VECTOR, expected, value.offset),
             )
         elif isinstance(value, VectorConstant):
             result = (
@@ -580,7 +578,7 @@ class _Normalizer:
             else:
                 outputs.append(self.scalar(cast(ScalarValue, value), clock))
 
-        # Normalize declared operations as well.  This keeps the canonical module self-contained for
+        # Normalize declared operations as well. This keeps the canonical module self-contained for
         # diagnostics/debugging even when an operation is not reachable from an output.
         operations = tuple(
             self.scalar(
@@ -624,9 +622,8 @@ class _Normalizer:
 def normalize_module(module: CircuitModule) -> CircuitModule:
     """Return an idempotently canonical Level semantic module.
 
-    Event-bearing modules deliberately pass through unchanged.  Their production rejection boundary
-    remains in ``reject_event_module`` before timing or physical lowering, while the Event reference
-    simulator continues to consume the compatibility elaboration records.
+    Event-bearing modules already carry explicit clocked-flow metadata and therefore pass through
+    this Level contextualization step unchanged.
     """
 
     state_transitions(module)  # Validate canonical/legacy representation ambiguity first.
@@ -635,131 +632,6 @@ def normalize_module(module: CircuitModule) -> CircuitModule:
     normalized = _Normalizer(module).normalize()
     validate_canonical_module(normalized)
     return normalized
-
-
-def project_legacy(module: CircuitModule) -> CircuitModule:
-    """Project canonical Level nodes to compatibility records for the old direct backend.
-
-    The Abstract Physical path consumes the canonical subclasses directly.  Only the explicitly
-    retained ``compiler_legacy`` oracle needs this bounded projection; keeping it here prevents
-    compatibility handling from spreading through backend consumers.
-    """
-
-    scalar_cache: dict[int, ScalarValue] = {}
-    vector_cache: dict[int, VectorValue] = {}
-
-    def scalar(value: ScalarValue) -> ScalarValue:
-        cached = scalar_cache.get(id(value))
-        if cached is not None:
-            return cached
-        result: ScalarValue
-        if isinstance(value, FlowInput):
-            result = value.source
-        elif isinstance(value, FlowInputSample):
-            result = InputSample(value.source, value.offset, value.name)
-        elif isinstance(value, BinaryOp):
-            result = BinaryOp(value.op, scalar(value.left), scalar(value.right), value.name)
-        elif isinstance(value, Compare):
-            result = Compare(value.op, scalar(value.left), scalar(value.right), value.name)
-        elif isinstance(value, Select):
-            result = Select(
-                scalar(value.condition),
-                scalar(value.when_true),
-                scalar(value.when_false),
-                value.name,
-            )
-        elif isinstance(value, Constant):
-            result = Constant(value.value, value.name)
-        elif isinstance(value, VectorSignal):
-            result = VectorSignal(vector(value.vector), value.signal, value.name)
-        else:
-            result = value
-        scalar_cache[id(value)] = result
-        return result
-
-    def vector(value: VectorValue) -> VectorValue:
-        cached = vector_cache.get(id(value))
-        if cached is not None:
-            return cached
-        result: VectorValue
-        if isinstance(value, FlowVectorInput):
-            result = value.source
-        elif isinstance(value, FlowVectorInputSample):
-            result = VectorInputSample(value.source, value.offset, value.name)
-        elif isinstance(value, FlowVectorRegisterRead):
-            # Keep canonical state reads so a timing plan remains keyed by the same read object.
-            result = value
-        elif isinstance(value, VectorConstant):
-            result = VectorConstant(value.signals, value.name)
-        elif isinstance(value, VectorBinaryOp):
-            result = VectorBinaryOp(value.op, vector(value.left), vector(value.right))
-        elif isinstance(value, VectorScalarOp):
-            result = VectorScalarOp(value.op, vector(value.vector), scalar(value.scalar))
-        elif isinstance(value, VectorSelect):
-            result = VectorSelect(
-                value.op,
-                vector(value.vector),
-                value.right,
-                select_max=value.select_max,
-                index=value.index,
-            )
-        elif isinstance(value, VectorFilter):
-            result = VectorFilter(value.op, vector(value.vector), value.right)
-        else:
-            result = value
-        vector_cache[id(value)] = result
-        return result
-
-    state_operations: list[StateOperation] = []
-    for operation in module.state_operations:
-        if isinstance(operation, AccumulatorAdd):
-            state_operations.append(
-                AccumulatorAdd(
-                    operation.register,
-                    vector(operation.value),
-                    scalar(operation.when),
-                    operation.order,
-                )
-            )
-        elif isinstance(operation, AccumulatorClear):
-            state_operations.append(
-                AccumulatorClear(operation.register, scalar(operation.when), operation.order)
-            )
-        elif isinstance(operation, FreezeSet):
-            state_operations.append(
-                FreezeSet(
-                    operation.register,
-                    vector(operation.value),
-                    scalar(operation.when),
-                    operation.order,
-                )
-            )
-        else:
-            state_operations.append(operation)
-
-    outputs: list[OutputValue] = []
-    for value in module.output.values:
-        if is_vector_value(value):
-            outputs.append(cast(OutputValue, vector(cast(VectorValue, value))))
-        else:
-            outputs.append(scalar(cast(ScalarValue, value)))
-    return CircuitModule(
-        module.name,
-        module.inputs,
-        tuple(
-            cast(DerivedValue, scalar(cast(ScalarValue, operation)))
-            for operation in module.operations
-        ),
-        ReturnValue(tuple(outputs), module.output.names),
-        module.vector_inputs,
-        module.state_registers,
-        tuple(state_operations),
-        module.event_inputs,
-        module.event_state_operations,
-        module.sample_on_crossings,
-        module.register_clocks,
-        (),
-    )
 
 
 def lower_frontend(source: Circuit | CircuitModule) -> CircuitModule:
