@@ -1,9 +1,9 @@
 """Generate the first Snake circuit blueprint with observable, predictable synthesis.
 
-The game model lives in :mod:`examples.snake`. The default uses ``safe-folded-crossbar``: the proven
-linear safe-crossbar ordering and net tracks are folded into deterministic serpentine rows with
-search-free vertical stitches. Public inputs and outputs are clustered at the beginning of the first
-row. The simpler linear ``safe-crossbar`` remains available explicitly as a canonical rollback path.
+The default uses ``safe-folded-crossbar``: deterministic serpentine entity rows, row-local physical
+bus tracks chosen after fold portals are known, and search-free vertical stitches. Public inputs and
+outputs are clustered at the beginning of the first row. The simpler linear ``safe-crossbar`` remains
+available explicitly as a canonical rollback path.
 
 Progress is printed to stderr. The final importable blueprint string is printed to stdout unless
 ``--output`` names a file. Greedy, full net-aware, row, and linear-safe layouts remain explicit
@@ -52,7 +52,7 @@ class _TerminalProgress:
             bar = "#" * filled + "-" * (self._BAR_WIDTH - filled)
             detail = f"  {event.detail}" if event.detail else ""
             line = (
-                f"\r[{self._elapsed()}] {event.phase:14} [{bar}] "
+                f"\r[{self._elapsed()}] {event.phase:18} [{bar}] "
                 f"{event.completed}/{event.total}{detail}"
             )
             print(line, end="", file=sys.stderr, flush=True)
