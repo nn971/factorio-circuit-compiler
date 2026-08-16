@@ -229,7 +229,9 @@ def build_safe_crossbar_layout(
         endpoints = route.endpoints
         color = route.color
         for left, right in zip(endpoints, endpoints[1:], strict=False):
-            physical.connections.append(WireConnection(_wire_endpoint(left), _wire_endpoint(right), color))
+            physical.connections.append(
+                WireConnection(_wire_endpoint(left), _wire_endpoint(right), color)
+            )
 
         tap_nodes: list[tuple[float, int]] = []
         for endpoint in endpoints:
