@@ -174,11 +174,15 @@ def main() -> None:
             terminal_progress.close()
 
     movement_port = next(port for port in result.physical_circuit.inputs if port.name == "movement")
+    reset_port = next(port for port in result.physical_circuit.inputs if port.name == "reset")
     framebuffer_port = next(
         port for port in result.physical_circuit.outputs if port.name == "framebuffer"
     )
     movement_color = _marker_wire_color(result, movement_port.marker_entity)
+    reset_color = _marker_wire_color(result, reset_port.marker_entity)
     framebuffer_color = _marker_wire_color(result, framebuffer_port.marker_entity)
+    if reset_port.signal is None:
+        raise ValueError("scalar reset port unexpectedly has no concrete signal")
 
     print(
         "snake: "
@@ -189,8 +193,16 @@ def main() -> None:
     )
     print(
         "wire movement detector -> INPUT movement with "
-        f"{movement_color.value.upper()}; OUTPUT framebuffer -> display with "
+        f"{movement_color.value.upper()}; pulse INPUT reset [{reset_port.signal.name}] nonzero with "
+        f"{reset_color.value.upper()}; OUTPUT framebuffer -> display with "
         f"{framebuffer_color.value.upper()}",
+        file=sys.stderr,
+    )
+    print(
+        "front-panel marker positions: "
+        f"reset={result.layout.positions[reset_port.marker_entity]}, "
+        f"movement={result.layout.positions[movement_port.marker_entity]}, "
+        f"framebuffer={result.layout.positions[framebuffer_port.marker_entity]}",
         file=sys.stderr,
     )
     if args.output is None:
