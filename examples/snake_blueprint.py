@@ -1,10 +1,12 @@
 """Generate the first Snake circuit blueprint with observable, predictable synthesis.
 
-The game model lives in :mod:`examples.snake`. The default uses a deliberately spacious,
-deterministic greedy seed of the net-aware placer (zero optimization iterations): it keeps connected
-logic local while reserving frequent routing corridors, then retries with progressively more space if
-routing fails. Progress is printed to stderr while the final importable blueprint string remains on
-stdout.
+The game model lives in :mod:`examples.snake`. The default uses the constructive ``safe-crossbar``
+physical layout: implementation combinators sit on a sparse row, RED physical networks use horizontal
+buses above it, GREEN networks use buses below it, and every endpoint reaches its bus through a fixed
+vertical feeder. The default performs no placement optimization, routing search, or retry loop.
+
+Progress is printed to stderr while the final importable blueprint string remains on stdout. The old
+greedy, full net-aware, and row layouts remain explicit diagnostic/stress-test modes.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 from time import monotonic
+from typing import Any, cast
 
 from examples.snake import (
     DEFAULT_LOGICAL_STEPS_PER_MOVE,
@@ -74,16 +77,18 @@ def _placement_from_args(args: argparse.Namespace) -> PlacementOptions:
     )
     if args.net_aware_layout:
         return PlacementOptions(**common)
+    if args.greedy_layout:
+        return PlacementOptions(
+            **common,
+            iterations=0,
+            block_width_tiles=8,
+            block_height_tiles=8,
+        )
 
-    # Safe-first prototype default: use the topology-aware greedy seed, but skip annealing/relaxation.
-    # Smaller blocks create more frequent routing corridors; later deterministic retries lower fill
-    # and widen those corridors further if routing still fails.
-    return PlacementOptions(
-        **common,
-        iterations=0,
-        block_width_tiles=8,
-        block_height_tiles=8,
-    )
+    # ``safe-crossbar`` is a joint placement+routing synthesis policy recognized before the
+    # optimizer-specific PlacementOptions validator.  Keep the cast local until the next physical-
+    # synthesis milestone widens the public PlacementStrategy type alongside net-routing work.
+    return PlacementOptions(strategy=cast(Any, "safe-crossbar"), restarts=1)
 
 
 def main() -> None:
@@ -104,9 +109,14 @@ def main() -> None:
     )
     placement_group = parser.add_mutually_exclusive_group()
     placement_group.add_argument(
+        "--greedy-layout",
+        action="store_true",
+        help="use deterministic greedy net-aware placement plus collision-aware routing",
+    )
+    placement_group.add_argument(
         "--net-aware-layout",
         action="store_true",
-        help="run the full iterative net-aware placement optimizer",
+        help="run the full iterative net-aware placement optimizer and heuristic router",
     )
     placement_group.add_argument(
         "--row-layout",
@@ -117,19 +127,19 @@ def main() -> None:
         "--corridor-width",
         type=float,
         default=4.0,
-        help="initial routing-corridor width in tiles for net-aware layouts (default: 4.0)",
+        help="initial routing-corridor width for greedy/net-aware layouts (default: 4.0)",
     )
     parser.add_argument(
         "--target-fill",
         type=float,
         default=0.60,
-        help="initial fraction of candidate placement slots to target (default: 0.60)",
+        help="initial candidate-slot fill for greedy/net-aware layouts (default: 0.60)",
     )
     parser.add_argument(
         "--layout-retries",
         type=int,
         default=4,
-        help="deterministic placement/routing attempts before giving up (default: 4)",
+        help="greedy/net-aware placement/routing attempts before giving up (default: 4)",
     )
     parser.add_argument(
         "--no-progress",
@@ -161,6 +171,7 @@ def main() -> None:
     print(
         "snake: "
         f"combinators={result.physical_circuit.combinator_count}, "
+        f"relays={len(result.layout.relays)}, "
         f"state_period={result.state_timing.uniform_period}",
         file=sys.stderr,
     )
