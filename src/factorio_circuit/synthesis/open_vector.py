@@ -63,7 +63,7 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
         physical = self._materialize_circuit(signal_allocation, net_colors)
 
         selected = self.placement_options or PlacementOptions()
-        if selected.strategy == "safe-crossbar":
+        if str(selected.strategy) == "safe-crossbar":
             if selected.anchors:
                 raise ValueError(
                     "safe-crossbar does not yet support fixed placement anchors; "
