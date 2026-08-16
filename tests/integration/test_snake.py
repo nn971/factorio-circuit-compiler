@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from examples.snake import (
@@ -153,19 +155,11 @@ def test_full_snake_compiles_to_a_physical_blueprint() -> None:
     result = compile_circuit(
         build_snake_circuit(render_framebuffer=True),
         optimize=False,
-        placement=PlacementOptions(
-            strategy="net-aware",
-            iterations=0,
-            block_width_tiles=8,
-            block_height_tiles=8,
-            corridor_width=4.0,
-            target_fill=0.60,
-            restarts=4,
-            retry_fill_scale=0.8,
-        ),
+        placement=PlacementOptions(strategy=cast(Any, "safe-crossbar"), restarts=1),
     )
 
     assert result.physical_circuit.combinator_count > 0
+    assert result.layout.relays
     assert result.state_timing.uniform_period is not None
     assert result.blueprint_string.startswith("0")
     blueprint = result.blueprint_json["blueprint"]
