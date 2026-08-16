@@ -17,18 +17,18 @@ uv run python -m factorio_circuit.devices.player_movement_detector
 The command prints one importable blueprint string.
 
 The physical geometry is the tested eight-gate prototype. The gate sensors are mutually exclusive in
-the current in-game test and expose one shared `Level[Vector]`-style circuit bus with fixed virtual
-signal lanes:
+the current in-game test and expose one shared `Level[Vector]`-style circuit bus. Each direction uses
+the matching base-game compass-arrow virtual signal:
 
 ```text
-signal-0 = N
-signal-1 = NE
-signal-2 = E
-signal-3 = SE
-signal-4 = S
-signal-5 = SW
-signal-6 = W
-signal-7 = NW
+up-arrow         = N
+up-right-arrow   = NE
+right-arrow      = E
+down-right-arrow = SE
+down-arrow       = S
+down-left-arrow  = SW
+left-arrow       = W
+up-left-arrow    = NW
 ```
 
 The eight lamps from the tested prototype remain as direction indicators and are connected to the same
@@ -70,9 +70,12 @@ green = rgb(0, 255, 0)
 ```
 
 `PIXEL_SIGNALS` is the complete 256-lane table used by the generated blueprint. The table is fixed and
-deterministic: existing compiler virtual signals come first, followed by base-game item/recipe/entity
-signals and a small tail of basic item signals. Programs should normally use `pixel_signal(x, y)` rather
-than depend on the concrete catalogue ordering directly.
+deterministic. It first exhausts the compiler's verified ordinary base-game virtual-signal catalogue
+(letters, digits, colors, symbols, punctuation, shapes, the compass and miscellaneous arrows, and
+pictographs). Selector pseudo-signals such as `signal-each`, `signal-everything`, and `signal-anything`
+are excluded. Only the remaining framebuffer lanes fall back to base-game item/recipe/entity signals.
+Programs should normally use `pixel_signal(x, y)` rather than depend on the concrete catalogue ordering
+directly.
 
 All 256 lamps are wired into one short-hop serpentine green network. The empty constant combinator to
 the left of the top row is labelled `DISPLAY INPUT: 16x16 packed-RGB framebuffer` and is the preferred
