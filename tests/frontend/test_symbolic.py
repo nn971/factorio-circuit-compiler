@@ -1,7 +1,7 @@
 import pytest
 
 from factorio_circuit import Circuit, CircuitBuildError
-from factorio_circuit.ir.semantic import BinaryOp, InputSample, VectorInputSample
+from factorio_circuit.ir.semantic import BinaryOp, InputSample, VectorInputSample, VectorScalarOp
 from factorio_circuit.ir.state import (
     AccumulatorAdd,
     AccumulatorClear,
@@ -52,6 +52,20 @@ def test_whole_vector_source_is_sampleable_but_derived_scalar_is_not() -> None:
     assert isinstance(sampled.ir, VectorInputSample)
     assert sampled.ir.offset == 2
     assert not hasattr(derived, "sample")
+
+
+def test_whole_vector_subtracts_runtime_scalar_lane_wise() -> None:
+    c = Circuit("vector_scalar_subtract")
+    data = c.signals("data")
+    scalar = c.input("scalar")
+
+    shifted = data - scalar
+    c.output("shifted", shifted)
+
+    assert isinstance(shifted.ir, VectorScalarOp)
+    assert shifted.ir.op == "-"
+    assert shifted.ir.vector is data.ir
+    assert shifted.ir.scalar is scalar.ir
 
 
 def test_python_runtime_branching_on_expr_is_rejected() -> None:
