@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 from itertools import combinations
-from typing import Any, cast
+
+import pytest
 
 from factorio_circuit.ir import abstract_physical as abstract
 from factorio_circuit.ir.physical import WireColor
 from factorio_circuit.synthesis import open_vector
 from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
-from factorio_circuit.synthesis.placement import PlacementOptions
-
-
-def _safe_options() -> PlacementOptions:
-    return PlacementOptions(strategy=cast(Any, "safe-crossbar"), restarts=1)
+from factorio_circuit.synthesis.safe_crossbar import safe_crossbar_options
 
 
 def _mixed_color_fixture() -> abstract.AbstractPhysicalCircuit:
@@ -49,7 +46,7 @@ def test_safe_crossbar_constructs_mixed_color_layout_without_router_search(monke
     layout = synthesize_vector_layout(
         _mixed_color_fixture(),
         safe_wire_span=7.0,
-        placement=_safe_options(),
+        placement=safe_crossbar_options(),
     )
 
     groups = layout.coalesced_net_groups
@@ -65,7 +62,7 @@ def test_safe_crossbar_constructs_mixed_color_layout_without_router_search(monke
         else:
             assert relay.position[1] > 0
 
-    # The constructive lattice keeps every pair of 1x1 relay collision boxes apart.  Use the same
+    # The constructive lattice keeps every pair of 1x1 relay collision boxes apart. Use the same
     # 0.1 safety margin as the normal router's clearance model.
     for left, right in combinations(layout.relays, 2):
         dx = abs(left.position[0] - right.position[0])
@@ -77,12 +74,12 @@ def test_safe_crossbar_is_deterministic() -> None:
     first = synthesize_vector_layout(
         _mixed_color_fixture(),
         safe_wire_span=7.0,
-        placement=_safe_options(),
+        placement=safe_crossbar_options(),
     )
     second = synthesize_vector_layout(
         _mixed_color_fixture(),
         safe_wire_span=7.0,
-        placement=_safe_options(),
+        placement=safe_crossbar_options(),
     )
 
     assert first.positions == second.positions
@@ -93,11 +90,9 @@ def test_safe_crossbar_is_deterministic() -> None:
 
 
 def test_safe_crossbar_rejects_too_short_configured_wire_span() -> None:
-    import pytest
-
     with pytest.raises(ValueError, match="safe-crossbar requires"):
         synthesize_vector_layout(
             _mixed_color_fixture(),
             safe_wire_span=6.0,
-            placement=_safe_options(),
+            placement=safe_crossbar_options(),
         )
