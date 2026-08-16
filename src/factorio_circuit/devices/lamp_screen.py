@@ -15,10 +15,10 @@ GREEN_CONNECTOR: Final = 2
 PACKED_RGB_COLOR_MODE: Final = 2
 FACTORIO_BLUEPRINT_VERSION: Final = 562954249306113
 
-# Real base-game virtual signals not already present in the compiler's intentionally small allocator
-# pool.  Selector pseudo-signals (signal-each/everything/anything) are deliberately excluded because
-# they are circuit-language operands, not independent framebuffer channels.
-_ADDITIONAL_DISPLAY_VIRTUAL_SIGNAL_NAMES: Final[tuple[str, ...]] = (
+# Real base-game virtual signals deliberately disjoint from the compiler's small internal allocator
+# pool. Selector pseudo-signals (signal-each/everything/anything) are excluded because they are
+# circuit-language operands, not independent framebuffer channels.
+_DISPLAY_VIRTUAL_SIGNAL_NAMES: Final[tuple[str, ...]] = (
     "signal-no-entry",
     "signal-heart",
     "signal-alert",
@@ -102,19 +102,21 @@ _ADDITIONAL_DISPLAY_VIRTUAL_SIGNAL_NAMES: Final[tuple[str, ...]] = (
     "signal-ghost",
 )
 
-DISPLAY_VIRTUAL_SIGNAL_POOL: Final[tuple[SignalId, ...]] = DEFAULT_VIRTUAL_SIGNAL_POOL + tuple(
-    SignalId("virtual", name) for name in _ADDITIONAL_DISPLAY_VIRTUAL_SIGNAL_NAMES
+DISPLAY_VIRTUAL_SIGNAL_POOL: Final[tuple[SignalId, ...]] = tuple(
+    SignalId("virtual", name) for name in _DISPLAY_VIRTUAL_SIGNAL_NAMES
 )
-if len(DISPLAY_VIRTUAL_SIGNAL_POOL) != 132:  # pragma: no cover - import-time invariant
+if len(DISPLAY_VIRTUAL_SIGNAL_POOL) != 81:  # pragma: no cover - import-time invariant
     raise RuntimeError(
         f"display virtual signal catalogue contains {len(DISPLAY_VIRTUAL_SIGNAL_POOL)} lanes; "
-        "expected 132"
+        "expected 81"
     )
 if len(set(DISPLAY_VIRTUAL_SIGNAL_POOL)) != len(DISPLAY_VIRTUAL_SIGNAL_POOL):  # pragma: no cover
     raise RuntimeError("display virtual signal catalogue contains duplicate lanes")
+if set(DISPLAY_VIRTUAL_SIGNAL_POOL) & set(DEFAULT_VIRTUAL_SIGNAL_POOL):  # pragma: no cover
+    raise RuntimeError("display virtual lanes must not consume compiler allocation signals")
 
 # These base-game prototypes all have item, recipe, and entity signal identities with the same name.
-# They are only fallback framebuffer lanes: the display-specific virtual catalogue is consumed first.
+# They are fallback framebuffer lanes after the display-only virtual catalogue is exhausted.
 _PLACEABLE_SIGNAL_NAMES: Final[tuple[str, ...]] = (
     "wooden-chest",
     "iron-chest",
@@ -182,28 +184,11 @@ _PLACEABLE_SIGNAL_NAMES: Final[tuple[str, ...]] = (
     "electric-mining-drill",
 )
 
-_BASIC_ITEM_SIGNAL_NAMES: Final[tuple[str, ...]] = (
-    "stone-brick",
-    "wood",
-    "coal",
-    "stone",
-    "iron-ore",
-    "copper-ore",
-    "iron-plate",
-    "copper-plate",
-    "copper-cable",
-    "iron-stick",
-    "iron-gear-wheel",
-    "electronic-circuit",
-    "advanced-circuit",
-)
-
 _FALLBACK_PIXEL_SIGNALS: Final[tuple[SignalId, ...]] = tuple(
     SignalId(kind, name)
     for name in _PLACEABLE_SIGNAL_NAMES
     for kind in ("item", "recipe", "entity")
-) + tuple(SignalId("item", name) for name in _BASIC_ITEM_SIGNAL_NAMES)
-
+)
 _PIXEL_SIGNAL_CANDIDATES: Final[tuple[SignalId, ...]] = (
     DISPLAY_VIRTUAL_SIGNAL_POOL + _FALLBACK_PIXEL_SIGNALS
 )
@@ -213,12 +198,13 @@ if len(_PIXEL_SIGNAL_CANDIDATES) < PIXEL_COUNT:  # pragma: no cover - import-tim
         f"expected at least {PIXEL_COUNT}"
     )
 
-# Stable row-major screen ABI. The preferred prefix is entirely real base-game virtual signals;
-# only the tail falls back to item/recipe/entity channels.
+# Stable row-major screen ABI. Pixel lanes never overlap the compiler's temporary virtual allocator,
+# so a compiled program can drive the entire framebuffer without exhausting internal signal colors.
 PIXEL_SIGNALS: Final[tuple[SignalId, ...]] = _PIXEL_SIGNAL_CANDIDATES[:PIXEL_COUNT]
-
 if len(set(PIXEL_SIGNALS)) != PIXEL_COUNT:  # pragma: no cover - import-time invariant
     raise RuntimeError("pixel signal catalogue contains duplicate lanes")
+if set(PIXEL_SIGNALS) & set(DEFAULT_VIRTUAL_SIGNAL_POOL):  # pragma: no cover
+    raise RuntimeError("framebuffer lanes overlap compiler allocation signals")
 
 
 def pixel_index(x: int, y: int) -> int:
