@@ -2,6 +2,7 @@ from collections import Counter
 
 from factorio_circuit.devices._blueprint import decode_blueprint
 from factorio_circuit.devices.player_movement_detector import (
+    BUS_CONNECTORS,
     DIRECTION_ORDER,
     DIRECTION_SIGNALS,
     INDICATOR_POSITIONS,
@@ -58,7 +59,7 @@ def test_player_movement_detector_preserves_tested_layout_and_fixed_lanes() -> N
         }
 
 
-def test_all_direction_sensors_and_indicators_share_one_green_bus() -> None:
+def test_direction_sensors_and_indicators_share_parallel_red_and_green_buses() -> None:
     blueprint = build_player_movement_detector_blueprint()
     entities = blueprint["entities"]
     by_position = {
@@ -69,24 +70,27 @@ def test_all_direction_sensors_and_indicators_share_one_green_bus() -> None:
         for position in (*SENSOR_POSITIONS.values(), *INDICATOR_POSITIONS.values())
     }
 
-    adjacency: dict[int, set[int]] = {}
-    for source, source_connector, target, target_connector in blueprint["wires"]:
-        assert source_connector == 2
-        assert target_connector == 2
-        adjacency.setdefault(source, set()).add(target)
-        adjacency.setdefault(target, set()).add(source)
+    assert BUS_CONNECTORS == (1, 2)
+    assert len(blueprint["wires"]) == 32
+    for connector in BUS_CONNECTORS:
+        adjacency: dict[int, set[int]] = {}
+        for source, source_connector, target, target_connector in blueprint["wires"]:
+            if source_connector != connector:
+                continue
+            assert target_connector == connector
+            adjacency.setdefault(source, set()).add(target)
+            adjacency.setdefault(target, set()).add(source)
 
-    start = next(iter(expected_ids))
-    seen = {start}
-    frontier = [start]
-    while frontier:
-        current = frontier.pop()
-        for neighbor in adjacency.get(current, ()):
-            if neighbor not in seen:
-                seen.add(neighbor)
-                frontier.append(neighbor)
-
-    assert expected_ids <= seen
+        start = next(iter(expected_ids))
+        seen = {start}
+        frontier = [start]
+        while frontier:
+            current = frontier.pop()
+            for neighbor in adjacency.get(current, ()):
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    frontier.append(neighbor)
+        assert expected_ids <= seen
 
 
 def test_blueprint_string_round_trips() -> None:
