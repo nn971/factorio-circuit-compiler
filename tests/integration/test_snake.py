@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, cast
-
 import pytest
 
 from examples.snake import (
@@ -19,7 +17,7 @@ from factorio_circuit import compile_circuit
 from factorio_circuit.devices import pixel_signal
 from factorio_circuit.ir.semantic import is_vector_value
 from factorio_circuit.simulate.semantic import LogicalOutput, simulate_stream
-from factorio_circuit.synthesis.placement import PlacementOptions
+from factorio_circuit.synthesis.safe_folded_crossbar import safe_folded_crossbar_options
 
 
 def _movement(**directions: int) -> dict[object, int]:
@@ -155,7 +153,7 @@ def test_full_snake_compiles_to_a_physical_blueprint() -> None:
     result = compile_circuit(
         build_snake_circuit(render_framebuffer=True),
         optimize=False,
-        placement=PlacementOptions(strategy=cast(Any, "safe-crossbar"), restarts=1),
+        placement=safe_folded_crossbar_options(),
     )
 
     assert result.physical_circuit.combinator_count > 0
