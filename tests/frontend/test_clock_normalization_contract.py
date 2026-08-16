@@ -44,7 +44,9 @@ def test_shared_level_dags_are_contextualized_per_state_consumer(optimize: bool)
     first, second = result.optimized_ir.state_operations[:2]
     assert first.when.flow.clock != second.when.flow.clock
     assert first.value.flow.clock != second.value.flow.clock
-    assert all(getattr(value, "flow", None) is not None for value in result.semantic_ir.output.values)
+    assert all(
+        getattr(value, "flow", None) is not None for value in result.semantic_ir.output.values
+    )
 
 
 def _sole_link_circuit() -> Circuit:

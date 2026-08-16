@@ -104,8 +104,8 @@ def compile_circuit(
     """Compile semantic dataflow through physical synthesis to a final Layout and blueprint.
 
     Level modules retain the established optimizer/timing/lowering route. Event-bearing modules use
-    clock-aware timing and the physical Event lowerer; semantic Event optimization and packing remain
-    disabled until those transforms carry explicit clock proofs.
+    clock-aware timing and the physical Event lowerer; semantic Event optimization and packing
+    remain disabled until those transforms carry explicit clock proofs.
     """
 
     source_output = _source_output(source)
