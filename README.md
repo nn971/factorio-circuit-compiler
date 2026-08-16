@@ -64,12 +64,13 @@ The explicit crossing vocabulary is:
 - `hold_into(source, target)` — latest strict-prior source value on the target clock;
 - `sum_into(source, target)` — additive source history over `(previous_target, current_target]`.
 
-Sparse outputs materialize as `HOLD`, `ZERO`, or `VALID`. See [`examples/clocked_flow.py`](examples/clocked_flow.py) for a compact multi-clock example.
+Sparse outputs materialize as `HOLD`, `ZERO`, or `VALID`. [`examples/README.md`](examples/README.md) is the self-driving in-game semantic ladder; [`examples/clocked_flow.py`](examples/clocked_flow.py) is the compact all-in-one API example.
 
 ## Representative examples
 
+- `examples/README.md` — self-driving clock-aware in-game ladder from Event presence to a multi-rate ledger;
 - `examples/fibonacci.py` — periodic state and inferred timing;
-- `examples/clocked_flow.py` — Event clocks, crossings, and materialization;
+- `examples/clocked_flow.py` — compact Event clocks, crossings, and materialization;
 - `examples/vector_fifo.py` / `vector_stack.py` — state composition;
 - `examples/sorting_network.py` / `walsh_hadamard.py` — physical-synthesis stress cases;
 - `examples/autonomous_market_controller.py` — application-scale controller.
