@@ -80,9 +80,36 @@ class SignalsExpr(_SignalsExpr):
     def __neg__(self) -> SignalsExpr:
         return self * -1
 
+    def _filter(self, op: str, right: int) -> SignalsExpr:
+        return self._wrap_vector(VectorFilter(op, self._value, right))
+
+    def filter_eq(self, right: int) -> SignalsExpr:
+        """Preserve lanes whose count equals ``right``, including their original count."""
+        return self._filter("==", right)
+
+    def filter_ne(self, right: int) -> SignalsExpr:
+        """Preserve lanes whose count differs from ``right``."""
+        return self._filter("!=", right)
+
+    def filter_lt(self, right: int) -> SignalsExpr:
+        """Preserve lanes whose count is less than ``right``."""
+        return self._filter("<", right)
+
+    def filter_le(self, right: int) -> SignalsExpr:
+        """Preserve lanes whose count is at most ``right``."""
+        return self._filter("<=", right)
+
+    def filter_gt(self, right: int) -> SignalsExpr:
+        """Preserve lanes whose count is greater than ``right``."""
+        return self._filter(">", right)
+
+    def filter_ge(self, right: int) -> SignalsExpr:
+        """Preserve lanes whose count is at least ``right``."""
+        return self._filter(">=", right)
+
     def positive(self) -> SignalsExpr:
         """Preserve every lane whose count is positive, including its original count."""
-        return self._wrap_vector(VectorFilter(">", self._value, 0))
+        return self.filter_gt(0)
 
     def max(self) -> SignalsExpr:
         """Select the nonzero lane with the greatest count, preserving that count."""
