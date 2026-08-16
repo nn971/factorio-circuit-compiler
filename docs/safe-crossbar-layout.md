@@ -15,7 +15,7 @@ The first implementation assigned one globally unique bus row to every physical 
 Snake exposed why that is too pessimistic: 4,623 physical groups produced more than twenty million
 relays because progressively farther bus rows made endpoint feeders grow roughly quadratically. The
 current implementation keeps the constructive guarantee but **reuses bus tracks for disjoint net
-intervals**.
+intervals**, packs those tracks two tiles apart, and puts feeder-heavy tracks closest to the entity row.
 
 ## Construction
 
@@ -67,19 +67,38 @@ Track assignment is the standard deterministic interval-partitioning algorithm:
 A heap implementation runs in `O(G log G)` for `G` routed physical groups and uses the minimum possible
 number of tracks for the fixed entity order and clearance rule.
 
+The temporary track identities are then reordered as whole tracks by total endpoint count. The track
+carrying the most endpoint feeders becomes track zero, the next-heaviest becomes track one, and so on.
+This preserves every non-overlap proof while minimizing weighted feeder depth for that fixed interval
+partition.
+
 The important size parameter is therefore no longer the total number of physical nets. It is the
 **maximum same-color interval overlap**, i.e. the routing cutwidth induced by the current entity order.
 
-## Six-tile lattice
+## Decoupled routing pitch and track spacing
 
-The default compiler wire span is conservatively seven tiles. Safe-crossbar uses a six-tile relay
-pitch. Its longest local entity-to-first-feeder hop is
+The default compiler wire span is conservatively seven tiles. Relays along a wire use a six-tile hop
+pitch, but bus tracks do **not** need to be six tiles apart.
+
+Safe-crossbar uses:
+
+```text
+wire relay pitch:   6 tiles
+bus track spacing:  2 tiles
+first bus offset:   3 tiles
+```
+
+Thus RED bus rows are `y = -3, -5, -7, ...` and GREEN rows are `y = +3, +5, +7, ...`.
+All bus rows are odd integer coordinates, while ordinary vertical feeder relays remain at
+`y = +/-6, +/-12, ...`. The two relay lattices therefore never occupy the same point.
+
+The longest local entity-to-first-feeder hop remains
 
 ```text
 sqrt(2^2 + 6^2) = sqrt(40) ~= 6.325 tiles
 ```
 
-so the current implementation requires
+so the implementation requires
 
 ```text
 blueprint_safe_wire_span >= sqrt(40)
@@ -87,33 +106,30 @@ blueprint_safe_wire_span >= sqrt(40)
 
 and works with the default value `7.0`.
 
-The lattice phases are:
+The x-coordinate phases are:
 
 ```text
 real entity centres:       x = 0 mod 6, y = 0
 INPUT/SINGLE feeders:      x = -2 mod 6
 OUTPUT feeders:            x = +2 mod 6
-ordinary feeder relays:    y = 0 mod 6, excluding y = 0
-bus rows:                  y = 3 mod 6
 ordinary bus relays:       x = 0 mod 6
 owning taps:               feeder x on owning bus y
 ```
-
-RED buses/feeders occupy only `y < 0`. GREEN buses/feeders occupy only `y > 0`.
 
 ## Why unrelated nets do not short
 
 Consider a vertical feeder crossing a foreign horizontal bus of the same color. The feeder is at
 `x = +/-2 mod 6`, while ordinary bus relays exist only at `x = 0 mod 6`. Therefore the foreign crossing
-has no relay entity. The wire segments may geometrically cross, but the electrical networks remain
-disconnected.
+has no bus relay entity. Ordinary feeder relays occur only at multiples of six in y, while bus rows are
+odd, so they do not create a relay at that crossing either. The wire segments may geometrically cross,
+but the electrical networks remain disconnected.
 
 The feeder's owning bus receives an explicit tap relay at the crossing. Only that crossing joins the
 feeder to a bus.
 
 Different feeders are globally distinct columns. Different simultaneously overlapping buses use
-distinct track rows. Groups that reuse one track have disjoint relay intervals with at least the
-configured center clearance. RED and GREEN relay systems live in opposite half-planes.
+distinct track rows two tiles apart. Groups that reuse one track have disjoint relay intervals with at
+least the configured center clearance. RED and GREEN relay systems live in opposite half-planes.
 
 The implementation asserts that no formula-generated relay coordinate is assigned to two distinct
 physical groups.
@@ -123,10 +139,11 @@ physical groups.
 Because track assignment happens before relay allocation, the relay count is known exactly before any
 `LayoutRelay` objects are created.
 
-For a group on track `t`:
+For each route, the estimator counts:
 
-- every endpoint contributes one tap and `t` ordinary feeder relays;
-- ordinary bus relays occur every six tiles between the group's leftmost and rightmost feeder columns.
+- one tap for every endpoint;
+- ordinary vertical feeder relays at six-tile steps before the bus row;
+- ordinary horizontal bus relays every six tiles inside that group's own interval.
 
 Safe-crossbar reports a preflight summary such as:
 
@@ -149,9 +166,9 @@ For every multi-endpoint physical group:
 
 1. compute its endpoint feeder interval;
 2. assign the interval to the minimum deterministic reusable track;
-3. construct one tap for every endpoint;
-4. connect the real endpoint to the first feeder relay;
-5. emit feeder relays every six tiles until the tap;
+3. reorder whole tracks by endpoint weight;
+4. construct one tap for every endpoint;
+5. connect the real endpoint through six-tile feeder hops to the tap;
 6. emit ordinary bus relays every six tiles inside that group's own interval;
 7. sort that group's bus relays and taps by x and connect adjacent nodes.
 
@@ -197,14 +214,14 @@ Safe-crossbar should remain the correctness baseline against which later optimiz
 
 ## Snake
 
-The recommended first-playtest command uses safe-crossbar by default:
+The recommended first-playtest command uses safe-crossbar by default. For a large circuit, write the
+blueprint directly to a file rather than sending a long encoded string to the terminal:
 
 ```bash
-uv run python -m examples.snake_blueprint > snake-blueprint.txt
+uv run python -m examples.snake_blueprint --output snake-blueprint.txt
 ```
 
-Redirecting stdout is recommended for any large physical build so a long blueprint string is not sent
-to the terminal. Progress and synthesis diagnostics remain on stderr.
+Progress and synthesis diagnostics remain on stderr.
 
 The old strategies remain available for routing/layout experiments:
 
