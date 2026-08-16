@@ -12,6 +12,7 @@ from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
 from factorio_circuit.synthesis.physical import PhysicalSynthesizer
 from factorio_circuit.synthesis.placement import PlacementOptions, plan_physical_circuit
 from factorio_circuit.synthesis.safe_crossbar import build_safe_crossbar_layout
+from factorio_circuit.synthesis.safe_folded_crossbar import build_safe_folded_crossbar_layout
 
 
 def _placement_attempt_count(options: PlacementOptions) -> int:
@@ -63,18 +64,35 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
         physical = self._materialize_circuit(signal_allocation, net_colors)
 
         selected = self.placement_options or PlacementOptions()
-        if str(selected.strategy) == "safe-crossbar":
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
             if selected.anchors:
                 raise ValueError(
-                    "safe-crossbar does not yet support fixed placement anchors; "
+                    f"{strategy} does not support fixed placement anchors; "
                     "use the net-aware layout for anchored synthesis"
                 )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using linear constructive bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+
             report_progress(
                 self.progress,
-                "safe-layout",
-                detail="using constructive bus/feeder geometry; routing search disabled",
+                "safe-folded-layout",
+                detail="folding the linear crossbar into serpentine rows; routing search disabled",
             )
-            return build_safe_crossbar_layout(
+            return build_safe_folded_crossbar_layout(
                 self.circuit,
                 physical,
                 net_colors=net_colors,
