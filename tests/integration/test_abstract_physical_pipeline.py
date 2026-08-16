@@ -1,4 +1,4 @@
-from factorio_circuit import Circuit, compile_abstract_circuit
+from factorio_circuit import Circuit, compile_circuit
 from factorio_circuit.ir.abstract_physical import ArithmeticCombinator
 from factorio_circuit.ir.physical import SignalId, WireColor
 from factorio_circuit.simulate.compare import assert_same_stream, assert_same_values
@@ -27,7 +27,7 @@ def _three_multiplies() -> Circuit:
 
 
 def test_stateless_pipeline_reaches_final_layout_and_blueprint() -> None:
-    result = compile_abstract_circuit(_unequal_depth())
+    result = compile_circuit(_unequal_depth())
 
     assert result.abstract_physical.nets
     assert len(result.layout.signal_allocation) == len(result.abstract_physical.signals)
@@ -53,7 +53,7 @@ def test_stateless_pipeline_reaches_final_layout_and_blueprint() -> None:
 
 
 def test_scalar_marker_descriptions_show_synthesized_signal_identity() -> None:
-    result = compile_abstract_circuit(_unequal_depth(), optimize=False)
+    result = compile_circuit(_unequal_depth(), optimize=False)
 
     for port in result.physical_circuit.inputs:
         assert port.signal is not None
@@ -80,7 +80,7 @@ def test_scalar_marker_descriptions_show_synthesized_signal_identity() -> None:
 
 
 def test_each_packing_survives_abstract_physical_synthesis() -> None:
-    result = compile_abstract_circuit(_three_multiplies())
+    result = compile_circuit(_three_multiplies())
 
     packed = [
         entity
@@ -130,7 +130,7 @@ def _two_vector_extracts() -> Circuit:
 
 
 def test_vector_input_passthrough_is_runtime_open_net() -> None:
-    result = compile_abstract_circuit(_vector_passthrough(), optimize=False)
+    result = compile_circuit(_vector_passthrough(), optimize=False)
 
     assert result.abstract_physical.inputs[0].signal is None
     assert result.abstract_physical.outputs[0].signal is None
@@ -149,7 +149,7 @@ def test_vector_input_passthrough_is_runtime_open_net() -> None:
 
 
 def test_vector_signal_read_is_a_direct_fixed_lane_view() -> None:
-    result = compile_abstract_circuit(_vector_extract(), optimize=False)
+    result = compile_circuit(_vector_extract(), optimize=False)
 
     assert not any(
         isinstance(entity, ArithmeticCombinator)
@@ -178,7 +178,7 @@ def test_vector_signal_read_is_a_direct_fixed_lane_view() -> None:
 
 
 def test_two_vector_inputs_stay_distinct_at_scalar_consumer() -> None:
-    result = compile_abstract_circuit(_two_vector_extracts(), optimize=False)
+    result = compile_circuit(_two_vector_extracts(), optimize=False)
 
     dynamic_nets = [net for net in result.abstract_physical.nets if net.carries_dynamic_vector]
     assert len(dynamic_nets) == 2
@@ -217,7 +217,7 @@ def test_fixed_vector_signal_is_reserved_from_compiler_allocation() -> None:
     c.output("fixed", fixed)
     c.output("x_plus_one", x + 1)
 
-    result = compile_abstract_circuit(c, optimize=False)
+    result = compile_circuit(c, optimize=False)
 
     assert any(FIXED_A in net.fixed_signals for net in result.abstract_physical.nets)
     assert FIXED_A not in result.layout.allocated_signals.values()
@@ -234,7 +234,7 @@ def test_fresh_vector_output_keeps_logical_sample_phase() -> None:
     c.step(2)
     c.output("later", data.sample())
 
-    result = compile_abstract_circuit(c, optimize=False)
+    result = compile_circuit(c, optimize=False)
 
     assert result.physical_circuit.outputs[0].phase == 2
     assert_same_stream(
@@ -247,18 +247,6 @@ def test_fresh_vector_output_keeps_logical_sample_phase() -> None:
             {"data": {IRON: 4}},
         ],
     )
-
-
-def test_new_and_legacy_stateless_backends_match_shape_on_reference_cases() -> None:
-    from factorio_circuit.compiler_legacy import compile_legacy_circuit
-
-    for circuit in (_unequal_depth(), _three_multiplies()):
-        legacy = compile_legacy_circuit(circuit)
-        abstract = compile_abstract_circuit(circuit)
-        assert (
-            abstract.physical_circuit.combinator_count == legacy.physical_circuit.combinator_count
-        )
-        assert abstract.physical_circuit.output_phases == legacy.physical_circuit.output_phases
 
 
 def _accumulator() -> Circuit:
@@ -274,9 +262,7 @@ def _accumulator() -> Circuit:
 
 
 def test_accumulator_feedback_and_controls_stay_abstract_until_synthesis() -> None:
-    from factorio_circuit.compiler_legacy import compile_legacy_circuit
-
-    result = compile_abstract_circuit(_accumulator(), optimize=False)
+    result = compile_circuit(_accumulator(), optimize=False)
 
     memory = next(
         entity
@@ -341,9 +327,6 @@ def test_accumulator_feedback_and_controls_stay_abstract_until_synthesis() -> No
         ],
     )
 
-    legacy = compile_legacy_circuit(_accumulator(), optimize=False)
-    assert result.physical_circuit.output_phases == legacy.physical_circuit.output_phases
-
 
 FIB = SignalId("virtual", "signal-F")
 
@@ -360,9 +343,7 @@ def _freeze() -> Circuit:
 
 
 def test_freeze_feedback_and_pass_hold_controls_stay_abstract_until_synthesis() -> None:
-    from factorio_circuit.compiler_legacy import compile_legacy_circuit
-
-    result = compile_abstract_circuit(_freeze(), optimize=False)
+    result = compile_circuit(_freeze(), optimize=False)
 
     gate = next(
         entity
@@ -408,9 +389,6 @@ def test_freeze_feedback_and_pass_hold_controls_stay_abstract_until_synthesis() 
     assert result.state_timing.registers[0].period == 1
     assert_same_stream(result.semantic_ir, result.physical_circuit, stream)
 
-    legacy = compile_legacy_circuit(_freeze(), optimize=False)
-    assert result.physical_circuit.output_phases == legacy.physical_circuit.output_phases
-
 
 def _switchable_fibonacci() -> Circuit:
     c = Circuit("abstract_switchable_fibonacci")
@@ -433,9 +411,7 @@ def _switchable_fibonacci() -> Circuit:
 
 
 def test_switchable_fibonacci_runs_through_coupled_abstract_state_networks() -> None:
-    from factorio_circuit.compiler_legacy import compile_legacy_circuit
-
-    result = compile_abstract_circuit(_switchable_fibonacci(), optimize=False)
+    result = compile_circuit(_switchable_fibonacci(), optimize=False)
     stream = [
         {"on": 1},
         {"on": 1},
@@ -455,9 +431,6 @@ def test_switchable_fibonacci_runs_through_coupled_abstract_state_networks() -> 
     values = [observations[index + phase][0] for index in range(len(stream))]
     assert values == [1, 1, 2, 3, 5, 5, 5, 8, 13]
 
-    legacy = compile_legacy_circuit(_switchable_fibonacci(), optimize=False)
-    assert_same_stream(legacy.semantic_ir, legacy.physical_circuit, stream)
-
 
 def test_signal_reuse_preserves_two_disconnected_scalar_branches() -> None:
     c = Circuit("abstract_signal_reuse")
@@ -466,7 +439,7 @@ def test_signal_reuse_preserves_two_disconnected_scalar_branches() -> None:
     c.output("x", a + 1)
     c.output("y", b + 2)
 
-    result = compile_abstract_circuit(c, optimize=False)
+    result = compile_circuit(c, optimize=False)
 
     assert len(result.abstract_physical.signals) == 4
     assert result.layout.concrete_signal_count == 1

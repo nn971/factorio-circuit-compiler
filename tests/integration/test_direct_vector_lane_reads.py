@@ -1,4 +1,4 @@
-from factorio_circuit import Circuit, SignalId, compile_abstract_circuit
+from factorio_circuit import Circuit, SignalId, compile_circuit
 from factorio_circuit.ir.physical import ArithmeticCombinator, WireColor
 from factorio_circuit.simulate.compare import assert_same_stream
 from factorio_circuit.simulate.physical import simulate_stream
@@ -12,7 +12,7 @@ def test_vector_signal_output_is_a_direct_fixed_lane_view() -> None:
     data = c.signals("data")
     c.output("iron", data.signal(IRON))
 
-    result = compile_abstract_circuit(c, optimize=False)
+    result = compile_circuit(c, optimize=False)
 
     assert result.abstract_physical.combinator_count == 0
     assert result.physical_circuit.combinator_count == 0
@@ -54,7 +54,7 @@ def _switchable_fibonacci() -> Circuit:
 
 
 def test_fibonacci_subtracts_fixed_f_lanes_directly_across_red_green() -> None:
-    result = compile_abstract_circuit(_switchable_fibonacci(), optimize=False)
+    result = compile_circuit(_switchable_fibonacci(), optimize=False)
 
     assert not any(
         "extract [" in (getattr(entity, "description", None) or "")

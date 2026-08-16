@@ -1,5 +1,12 @@
 """Public symbolic frontend, including runtime-open vector expressions."""
 
+from factorio_circuit.ir.semantic import (
+    VectorBinaryOp,
+    VectorFilter,
+    VectorScalarOp,
+    VectorSelect,
+)
+
 from .clock_bridges import Circuit
 from .symbolic import CircuitBuildError, LogicalTime
 from .vector_circuit import (
@@ -13,24 +20,6 @@ from .vector_circuit import (
     VectorEvent,
 )
 from .vector_expr import SignalsExpr
-from .vector_nodes import (
-    VectorBinaryOp,
-    VectorFilter,
-    VectorScalarOp,
-    VectorSelect,
-)
-from .vector_nodes import (
-    _VectorBinaryOp as _VectorBinaryOp,
-)
-from .vector_nodes import (
-    _VectorFilter as _VectorFilter,
-)
-from .vector_nodes import (
-    _VectorScalarOp as _VectorScalarOp,
-)
-from .vector_nodes import (
-    _VectorSelect as _VectorSelect,
-)
 
 __all__ = [
     "AccumulatorReg",
@@ -40,12 +29,12 @@ __all__ = [
     "FreezeReg",
     "Input",
     "LogicalTime",
-    "SignalsExpr",
-    "SignalsInput",
     "SampleOnReference",
     "ScalarEvent",
-    "VectorEvent",
+    "SignalsExpr",
+    "SignalsInput",
     "VectorBinaryOp",
+    "VectorEvent",
     "VectorFilter",
     "VectorScalarOp",
     "VectorSelect",

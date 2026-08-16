@@ -5,7 +5,7 @@ import json
 import zlib
 
 from examples.sorting_network import build_sorting_circuit
-from factorio_circuit import Circuit, compile_abstract_circuit, compile_circuit
+from factorio_circuit import Circuit, compile_circuit
 from factorio_circuit.ir.abstract_physical import DeciderCombinator
 from factorio_circuit.simulate.compare import assert_same_values
 
@@ -21,7 +21,7 @@ def _minmax() -> Circuit:
 
 
 def test_terminal_shared_predicate_fuses_into_two_multi_output_deciders() -> None:
-    result = compile_abstract_circuit(_minmax())
+    result = compile_circuit(_minmax())
 
     deciders = [
         entity
@@ -47,7 +47,7 @@ def test_terminal_shared_predicate_fuses_into_two_multi_output_deciders() -> Non
 
 
 def test_sort8_shared_predicates_inline_without_losing_single_lane_chaining() -> None:
-    result = compile_abstract_circuit(build_sorting_circuit(3))
+    result = compile_circuit(build_sorting_circuit(3))
 
     assert result.physical_circuit.combinator_count < 100
     assert max(result.physical_circuit.output_phases) == 6
