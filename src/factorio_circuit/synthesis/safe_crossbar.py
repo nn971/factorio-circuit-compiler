@@ -26,6 +26,7 @@ from math import ceil, floor, sqrt
 from factorio_circuit.ir import abstract_physical as abstract
 from factorio_circuit.ir.physical import (
     ArithmeticCombinator,
+    Connector,
     ConstantCombinator,
     DeciderCombinator,
     PhysicalCircuit,
@@ -33,7 +34,6 @@ from factorio_circuit.ir.physical import (
     WireColor,
     WireConnection,
     WireEndpoint,
-    Connector,
 )
 from factorio_circuit.progress import ProgressCallback, report_progress
 from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
@@ -180,7 +180,7 @@ def build_safe_crossbar_layout(
                 feeder_nodes: list[int] = []
                 sign = -1 if bus_y < 0 else 1
                 y = sign * _SAFE_PITCH
-                while (y > bus_y if sign < 0 else y < bus_y):
+                while y > bus_y if sign < 0 else y < bus_y:
                     feeder_nodes.append(
                         add_relay(
                             (feeder_x, y),
