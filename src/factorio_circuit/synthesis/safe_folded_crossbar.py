@@ -1,22 +1,18 @@
-"""Fold the proven linear safe crossbar into a bounded serpentine fabric.
+"""Construct a bounded, search-free folded crossbar for physical circuit nets.
 
-This module is intentionally separate from :mod:`safe_crossbar`. The existing linear
-``safe-crossbar`` remains the simple reference/fallback. ``safe-folded-crossbar`` keeps the same
-one-dimensional entity order and interval-track assignment, then folds that order into deterministic
-serpentine rows. A physical net that crosses a fold receives a vertical stitch on a track-specific
-portal column. No placement search, routing search, retries, or backtracking are used.
+This module is intentionally independent from :mod:`safe_crossbar`.  The linear
+``safe-crossbar`` remains the canonical correctness reference and rollback path.
 
-The construction preserves the linear ordering proof:
+The folded strategy keeps the same deterministic entity order, but it does *not*
+reuse the linear layout's global bus-track assignment.  Folding extends row
+segments to fold portals, so two virtual intervals that are disjoint in the
+linear layout can overlap after folding.  To preserve correctness, this module
+colors the actual physical horizontal segment intervals independently on every
+entity row after all endpoint and portal attachment positions are known.
 
-* same-color groups may share a track only when their linear feeder intervals are disjoint;
-* folding is monotone inside each row (alternating orientation), so disjoint intervals stay disjoint;
-* a group crossing a row boundary is the only group on that track whose interval contains that
-  boundary;
-* ordinary horizontal relays use ``x = 0 (mod 6)`` while portal columns are odd x coordinates;
-* ordinary vertical relays use ``y = 0 (mod 6)`` while bus rows are odd offsets from entity rows.
-
-Public input and output marker entities are deliberately placed first in the folded order, producing a
-compact I/O front panel near the first row instead of separating outputs at the far end of the module.
+Cross-row nets use deterministic vertical fold stitches on boundary-local portal
+columns.  There is no placement search, routing search, retry loop, or
+backtracking.
 """
 
 from __future__ import annotations
@@ -76,13 +72,23 @@ class SafeFoldedPreflight:
 
 
 @dataclass(frozen=True, slots=True)
-class _BaseRoute:
+class _Route:
     group: int
     color: WireColor
     endpoints: tuple[abstract.Endpoint, ...]
-    track: int
     start_row: int
     end_row: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RowSegment:
+    group: int
+    row: int
+    color: WireColor
+    endpoint_xs: tuple[float, ...]
+    portal_xs: tuple[float, ...]
+    min_x: float
+    max_x: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,7 +96,11 @@ class _FoldedPlan:
     ordered_entities: tuple[PhysicalEntity, ...]
     positions: dict[int, tuple[float, float]]
     entity_index: dict[int, int]
-    routes: dict[int, _BaseRoute]
+    routes: dict[int, _Route]
+    segments: dict[tuple[int, int], _RowSegment]
+    segment_tracks: dict[tuple[int, int], int]
+    portal_ordinals: dict[tuple[int, int], int]
+    boundary_portal_counts: dict[int, int]
     red_tracks: int
     green_tracks: int
     row_pitch: float
@@ -119,9 +129,8 @@ def build_safe_folded_crossbar_layout(
 ) -> Layout:
     """Materialize a deterministic folded crossbar without geometric search.
 
-    The old linear ``safe-crossbar`` implementation is intentionally untouched and remains available
-    as a rollback/reference strategy. ``max_relays`` and ``max_extent`` are preflight guards: they are
-    checked before any relay objects are created.
+    ``safe-crossbar`` remains the canonical rollback/reference strategy.  This
+    builder checks relay count and footprint before allocating relay objects.
     """
 
     if safe_wire_span + 1e-9 < _MINIMUM_SAFE_SPAN:
@@ -146,7 +155,7 @@ def build_safe_folded_crossbar_layout(
         "safe-folded-layout",
         detail=(
             f"preflight: groups={stats.physical_groups}; routed={stats.routed_groups}; "
-            f"singletons={stats.singleton_groups}; tracks=red:{stats.red_tracks},"
+            f"singletons={stats.singleton_groups}; row_tracks=red:{stats.red_tracks},"
             f"green:{stats.green_tracks}; rows={stats.entity_rows}; "
             f"columns={stats.entities_per_row}; predicted_relays={stats.predicted_relays}; "
             f"extent={stats.predicted_width:.0f}x{stats.predicted_height:.0f}"
@@ -219,29 +228,28 @@ def build_safe_folded_crossbar_layout(
         "safe-folded-layout",
         completed=0,
         total=total_routes,
-        detail="constructing serpentine bus segments and fold stitches",
+        detail="constructing row-local buses and deterministic fold stitches",
     )
 
     for completed_routes, group in enumerate(sorted(plan.routes), start=1):
         route = plan.routes[group]
-        endpoints = route.endpoints
         color = route.color
         relay_connector = _relay_connector_id(color)
 
-        for left, right in zip(endpoints, endpoints[1:], strict=False):
+        for left, right in zip(route.endpoints, route.endpoints[1:], strict=False):
             physical.connections.append(
                 WireConnection(_wire_endpoint(left), _wire_endpoint(right), color)
             )
 
         endpoints_by_row: dict[int, list[abstract.Endpoint]] = defaultdict(list)
-        for endpoint in endpoints:
+        for endpoint in route.endpoints:
             endpoints_by_row[_entity_row(plan, endpoint.entity)].append(endpoint)
 
-        # Endpoint feeders and row bus segments. A middle row with no real endpoint still carries a
-        # segment between its incoming and outgoing fold portals when the net spans that row.
         for row in range(route.start_row, route.end_row + 1):
+            segment = plan.segments[(group, row)]
+            track = plan.segment_tracks[(group, row)]
             row_y = row * plan.row_pitch
-            bus_y = _bus_y(row_y, color, route.track)
+            bus_y = _bus_y(row_y, color, track)
             bus_nodes: list[tuple[float, int]] = []
 
             for endpoint in endpoints_by_row.get(row, []):
@@ -262,11 +270,10 @@ def build_safe_folded_crossbar_layout(
                     add_relay=add_relay,
                     role=f"{color.value} feeder",
                 )
-                first = feeder_nodes[0]
                 add_wire(
                     endpoint.entity,
                     _real_connector_id(physical, endpoint, color),
-                    first,
+                    feeder_nodes[0],
                     relay_connector,
                     color,
                 )
@@ -274,7 +281,8 @@ def build_safe_folded_crossbar_layout(
                     add_wire(left_id, relay_connector, right_id, relay_connector, color)
 
             if row > route.start_row:
-                portal_x = _portal_x(plan, row - 1, color, route.track)
+                boundary = row - 1
+                portal_x = _portal_x(plan, boundary, group)
                 portal_id = add_relay(
                     (portal_x, bus_y),
                     group=group,
@@ -282,7 +290,8 @@ def build_safe_folded_crossbar_layout(
                 )
                 bus_nodes.append((portal_x, portal_id))
             if row < route.end_row:
-                portal_x = _portal_x(plan, row, color, route.track)
+                boundary = row
+                portal_x = _portal_x(plan, boundary, group)
                 portal_id = add_relay(
                     (portal_x, bus_y),
                     group=group,
@@ -294,6 +303,10 @@ def build_safe_folded_crossbar_layout(
                 raise AssertionError(
                     f"folded route {group} row {row} has fewer than two bus attachment points"
                 )
+            if abs(min(x for x, _node in bus_nodes) - segment.min_x) > 1e-9:
+                raise AssertionError("folded segment minimum drifted after preflight")
+            if abs(max(x for x, _node in bus_nodes) - segment.max_x) > 1e-9:
+                raise AssertionError("folded segment maximum drifted after preflight")
             _connect_horizontal_segment(
                 bus_nodes,
                 bus_y,
@@ -304,13 +317,12 @@ def build_safe_folded_crossbar_layout(
                 add_wire=add_wire,
             )
 
-        # Stitch each crossed fold at one deterministic, track-specific portal column.
         for boundary in range(route.start_row, route.end_row):
-            portal_x = _portal_x(plan, boundary, color, route.track)
-            upper_row_y = boundary * plan.row_pitch
-            lower_row_y = (boundary + 1) * plan.row_pitch
-            upper_bus_y = _bus_y(upper_row_y, color, route.track)
-            lower_bus_y = _bus_y(lower_row_y, color, route.track)
+            portal_x = _portal_x(plan, boundary, group)
+            upper_track = plan.segment_tracks[(group, boundary)]
+            lower_track = plan.segment_tracks[(group, boundary + 1)]
+            upper_bus_y = _bus_y(boundary * plan.row_pitch, color, upper_track)
+            lower_bus_y = _bus_y((boundary + 1) * plan.row_pitch, color, lower_track)
             top_tap = add_relay(
                 (portal_x, upper_bus_y),
                 group=group,
@@ -322,10 +334,7 @@ def build_safe_folded_crossbar_layout(
                 role=f"{color.value} fold tap",
             )
             stitch_nodes: list[tuple[float, int]] = [(upper_bus_y, top_tap)]
-            first_regular = ceil(upper_bus_y / _SAFE_PITCH) * _SAFE_PITCH
-            if first_regular <= upper_bus_y + 1e-9:
-                first_regular += _SAFE_PITCH
-            y = first_regular
+            y = _first_regular_between(upper_bus_y, lower_bus_y)
             while y < lower_bus_y - 1e-9:
                 stitch_nodes.append(
                     (
@@ -411,77 +420,177 @@ def _plan_folded_crossbar(
 ) -> _FoldedPlan:
     ordered_entities = tuple(_folded_ordered_entities(physical))
     entity_index = {entity.id: index for index, entity in enumerate(ordered_entities)}
+
+    route_specs: dict[int, tuple[WireColor, tuple[abstract.Endpoint, ...]]] = {}
+    rough_intervals: dict[WireColor, list[tuple[float, float, int, int]]] = {
+        WireColor.RED: [],
+        WireColor.GREEN: [],
+    }
     virtual_x = {
         entity.id: index * _ENTITY_SPACING for index, entity in enumerate(ordered_entities)
     }
+    for group, group_color in colors_by_group.items():
+        endpoints = tuple(sorted(endpoints_by_group[group]))
+        if len(endpoints) < 2:
+            continue
+        route_specs[group] = (group_color, endpoints)
+        feeder_xs = [
+            virtual_x[endpoint.entity] + _feeder_offset(endpoint.connector)
+            for endpoint in endpoints
+        ]
+        rough_intervals[group_color].append(
+            (min(feeder_xs), max(feeder_xs), group, len(endpoints))
+        )
 
-    route_specs: dict[int, tuple[WireColor, tuple[abstract.Endpoint, ...], int]] = {}
-    track_counts: dict[WireColor, int] = {WireColor.RED: 0, WireColor.GREEN: 0}
-    for color in (WireColor.RED, WireColor.GREEN):
-        intervals: list[tuple[float, float, int, tuple[abstract.Endpoint, ...]]] = []
-        for group, group_color in colors_by_group.items():
-            if group_color != color:
-                continue
-            endpoints = tuple(sorted(endpoints_by_group[group]))
-            if len(endpoints) < 2:
-                continue
-            feeder_xs = [
-                virtual_x[endpoint.entity] + _feeder_offset(endpoint.connector)
-                for endpoint in endpoints
-            ]
-            intervals.append((min(feeder_xs), max(feeder_xs), group, endpoints))
-        assignments, track_count = _assign_interval_tracks(intervals)
-        track_counts[color] = track_count
-        for _min_x, _max_x, group, endpoints in intervals:
-            route_specs[group] = (color, endpoints, assignments[group])
-
-    red_tracks = track_counts[WireColor.RED]
-    green_tracks = track_counts[WireColor.GREEN]
-    row_pitch = _row_pitch(red_tracks, green_tracks)
+    rough_track_counts = {
+        color: _interval_track_count(rough_intervals[color])
+        for color in (WireColor.RED, WireColor.GREEN)
+    }
+    rough_row_pitch = _row_pitch(
+        rough_track_counts[WireColor.RED],
+        rough_track_counts[WireColor.GREEN],
+    )
     entities_per_row = _choose_entities_per_row(
         len(ordered_entities),
-        row_pitch,
-        red_tracks=red_tracks,
-        green_tracks=green_tracks,
+        rough_row_pitch,
+        portal_capacity=(
+            rough_track_counts[WireColor.RED] + rough_track_counts[WireColor.GREEN]
+        ),
     )
     entity_rows = max(1, ceil(len(ordered_entities) / entities_per_row))
 
-    positions: dict[int, tuple[float, float]] = {}
+    x_positions: dict[int, float] = {}
     for index, entity in enumerate(ordered_entities):
         row = index // entities_per_row
         logical_col = index % entities_per_row
         physical_col = logical_col if row % 2 == 0 else entities_per_row - 1 - logical_col
-        positions[entity.id] = (physical_col * _ENTITY_SPACING, row * row_pitch)
+        x_positions[entity.id] = physical_col * _ENTITY_SPACING
 
-    routes: dict[int, _BaseRoute] = {}
-    for group, (color, endpoints, track) in route_specs.items():
+    routes: dict[int, _Route] = {}
+    for group, (color, endpoints) in route_specs.items():
         rows = [entity_index[endpoint.entity] // entities_per_row for endpoint in endpoints]
-        routes[group] = _BaseRoute(
+        routes[group] = _Route(
             group=group,
             color=color,
             endpoints=endpoints,
-            track=track,
             start_row=min(rows),
             end_row=max(rows),
         )
 
-    predicted_relays = sum(
-        _route_relay_count(
-            route,
-            positions,
-            entity_index,
-            entities_per_row,
-            row_pitch,
-            red_tracks,
-        )
-        for route in routes.values()
+    crossing_by_boundary: dict[int, list[int]] = defaultdict(list)
+    for group, route in routes.items():
+        for boundary in range(route.start_row, route.end_row):
+            crossing_by_boundary[boundary].append(group)
+
+    portal_ordinals: dict[tuple[int, int], int] = {}
+    boundary_portal_counts: dict[int, int] = {}
+    for boundary, groups in crossing_by_boundary.items():
+        ordered_groups = sorted(groups, key=lambda group: (routes[group].color.value, group))
+        boundary_portal_counts[boundary] = len(ordered_groups)
+        for ordinal, group in enumerate(ordered_groups):
+            portal_ordinals[(group, boundary)] = ordinal
+
+    endpoints_by_group_row: dict[tuple[int, int], list[abstract.Endpoint]] = defaultdict(list)
+    for group, route in routes.items():
+        for endpoint in route.endpoints:
+            row = entity_index[endpoint.entity] // entities_per_row
+            endpoints_by_group_row[(group, row)].append(endpoint)
+
+    segments: dict[tuple[int, int], _RowSegment] = {}
+    segment_intervals: dict[
+        tuple[int, WireColor], list[tuple[float, float, tuple[int, int], int]]
+    ] = defaultdict(list)
+    for group, route in routes.items():
+        for row in range(route.start_row, route.end_row + 1):
+            endpoint_xs = tuple(
+                x_positions[endpoint.entity] + _feeder_offset(endpoint.connector)
+                for endpoint in endpoints_by_group_row.get((group, row), [])
+            )
+            portal_xs_list: list[float] = []
+            if row > route.start_row:
+                portal_xs_list.append(
+                    _portal_x_values(
+                        entities_per_row,
+                        boundary=row - 1,
+                        ordinal=portal_ordinals[(group, row - 1)],
+                    )
+                )
+            if row < route.end_row:
+                portal_xs_list.append(
+                    _portal_x_values(
+                        entities_per_row,
+                        boundary=row,
+                        ordinal=portal_ordinals[(group, row)],
+                    )
+                )
+            portal_xs = tuple(portal_xs_list)
+            attachment_xs = (*endpoint_xs, *portal_xs)
+            if len(attachment_xs) < 2:
+                raise AssertionError(
+                    f"folded route {group} row {row} has fewer than two preflight attachments"
+                )
+            segment = _RowSegment(
+                group=group,
+                row=row,
+                color=route.color,
+                endpoint_xs=endpoint_xs,
+                portal_xs=portal_xs,
+                min_x=min(attachment_xs),
+                max_x=max(attachment_xs),
+            )
+            segments[(group, row)] = segment
+            weight = len(endpoint_xs) + len(portal_xs)
+            segment_intervals[(row, route.color)].append(
+                (segment.min_x, segment.max_x, (group, row), weight)
+            )
+
+    segment_tracks: dict[tuple[int, int], int] = {}
+    row_track_counts: dict[tuple[int, WireColor], int] = {}
+    for key, intervals in segment_intervals.items():
+        assignments, track_count = _assign_interval_tracks(intervals)
+        segment_tracks.update(assignments)
+        row_track_counts[key] = track_count
+
+    red_tracks = max(
+        (count for (_row, color), count in row_track_counts.items() if color is WireColor.RED),
+        default=0,
     )
+    green_tracks = max(
+        (
+            count
+            for (_row, color), count in row_track_counts.items()
+            if color is WireColor.GREEN
+        ),
+        default=0,
+    )
+    row_pitch = _row_pitch(red_tracks, green_tracks)
+
+    positions = {
+        entity.id: (
+            x_positions[entity.id],
+            float(entity_index[entity.id] // entities_per_row) * row_pitch,
+        )
+        for entity in ordered_entities
+    }
+
+    predicted_relays = _predicted_relay_count(
+        routes,
+        segments,
+        segment_tracks,
+        positions,
+        entity_index,
+        entities_per_row,
+        row_pitch,
+        portal_ordinals,
+    )
+    max_portals = max(boundary_portal_counts.values(), default=0)
     predicted_width, predicted_height = _predicted_extent(
         entity_rows,
         entities_per_row,
         row_pitch,
         red_tracks=red_tracks,
         green_tracks=green_tracks,
+        max_portals=max_portals,
     )
     physical_groups = len(endpoints_by_group)
     routed_groups = len(routes)
@@ -490,6 +599,10 @@ def _plan_folded_crossbar(
         positions=positions,
         entity_index=entity_index,
         routes=routes,
+        segments=segments,
+        segment_tracks=segment_tracks,
+        portal_ordinals=portal_ordinals,
+        boundary_portal_counts=dict(boundary_portal_counts),
         red_tracks=red_tracks,
         green_tracks=green_tracks,
         row_pitch=row_pitch,
@@ -511,15 +624,15 @@ def _plan_folded_crossbar(
 
 
 def _assign_interval_tracks(
-    intervals: list[tuple[float, float, int, tuple[abstract.Endpoint, ...]]],
-) -> tuple[dict[int, int], int]:
-    """Minimum deterministic interval partition, then endpoint-weight track identities."""
+    intervals: list[tuple[float, float, tuple[int, int], int]],
+) -> tuple[dict[tuple[int, int], int], int]:
+    """Assign minimum interval tracks, then put attachment-heavy tracks nearest the row."""
 
     active: list[tuple[float, int]] = []
     available_tracks: list[int] = []
-    assignments: dict[int, int] = {}
+    assignments: dict[tuple[int, int], int] = {}
     next_track = 0
-    for min_x, max_x, group, _endpoints in sorted(
+    for min_x, max_x, key, _weight in sorted(
         intervals,
         key=lambda item: (item[0], item[1], item[2]),
     ):
@@ -531,18 +644,34 @@ def _assign_interval_tracks(
         else:
             track = next_track
             next_track += 1
-        assignments[group] = track
+        assignments[key] = track
         heappush(active, (max_x + _RELAY_CENTER_CLEARANCE, track))
 
-    endpoint_weight = {track: 0 for track in range(next_track)}
-    for _min_x, _max_x, group, endpoints in intervals:
-        endpoint_weight[assignments[group]] += len(endpoints)
+    track_weight = {track: 0 for track in range(next_track)}
+    for _min_x, _max_x, key, weight in intervals:
+        track_weight[assignments[key]] += weight
     old_tracks = sorted(
         range(next_track),
-        key=lambda track: (-endpoint_weight[track], track),
+        key=lambda track: (-track_weight[track], track),
     )
     remap = {old_track: new_track for new_track, old_track in enumerate(old_tracks)}
-    return {group: remap[track] for group, track in assignments.items()}, next_track
+    return {key: remap[track] for key, track in assignments.items()}, next_track
+
+
+def _interval_track_count(intervals: list[tuple[float, float, int, int]]) -> int:
+    """Return the minimum interval-track count for rough row-width selection."""
+
+    active: list[float] = []
+    maximum = 0
+    for min_x, max_x, _group, _weight in sorted(
+        intervals,
+        key=lambda item: (item[0], item[1], item[2]),
+    ):
+        while active and active[0] <= min_x + 1e-9:
+            heappop(active)
+        heappush(active, max_x + _RELAY_CENTER_CLEARANCE)
+        maximum = max(maximum, len(active))
+    return maximum
 
 
 def _folded_ordered_entities(physical: PhysicalCircuit) -> list[PhysicalEntity]:
@@ -576,31 +705,27 @@ def _track_extent(track_count: int) -> float:
     return _FIRST_BUS_OFFSET + (track_count - 1) * _TRACK_SPACING
 
 
-def _portal_outer_offset(red_tracks: int, green_tracks: int) -> float:
-    total = red_tracks + green_tracks
-    if total <= 0:
+def _portal_outer_offset(portal_count: int) -> float:
+    if portal_count <= 0:
         return 0.0
-    return _PORTAL_GAP + _PORTAL_FIRST_OFFSET + (total - 1) * _PORTAL_SPACING
+    return _PORTAL_GAP + _PORTAL_FIRST_OFFSET + (portal_count - 1) * _PORTAL_SPACING
 
 
 def _choose_entities_per_row(
     entity_count: int,
     row_pitch: float,
     *,
-    red_tracks: int,
-    green_tracks: int,
+    portal_capacity: int,
 ) -> int:
     if entity_count <= 1:
         return 1
-    portal_margin = _portal_outer_offset(red_tracks, green_tracks)
-    red_extent = _track_extent(red_tracks)
-    green_extent = _track_extent(green_tracks)
+    portal_margin = _portal_outer_offset(portal_capacity)
     best: tuple[float, float, float, int] | None = None
     for columns in range(1, entity_count + 1):
         rows = ceil(entity_count / columns)
         side_margin = portal_margin if rows > 1 else 0.0
         width = (columns - 1) * _ENTITY_SPACING + 2 * side_margin
-        height = (rows - 1) * row_pitch + red_extent + green_extent
+        height = rows * row_pitch
         score = (max(width, height), width * height, abs(width - height), columns)
         if best is None or score < best:
             best = score
@@ -615,10 +740,9 @@ def _predicted_extent(
     *,
     red_tracks: int,
     green_tracks: int,
+    max_portals: int,
 ) -> tuple[float, float]:
-    portal_margin = (
-        _portal_outer_offset(red_tracks, green_tracks) if entity_rows > 1 else 0.0
-    )
+    portal_margin = _portal_outer_offset(max_portals) if entity_rows > 1 else 0.0
     width = (entities_per_row - 1) * _ENTITY_SPACING + 2 * portal_margin
     height = (
         (entity_rows - 1) * row_pitch
@@ -637,34 +761,22 @@ def _bus_y(row_y: float, color: WireColor, track: int) -> float:
     return row_y - offset if color is WireColor.RED else row_y + offset
 
 
-def _portal_ordinal(red_tracks: int, color: WireColor, track: int) -> int:
-    return track if color is WireColor.RED else red_tracks + track
-
-
 def _portal_x_values(
     entities_per_row: int,
-    red_tracks: int,
+    *,
     boundary: int,
-    color: WireColor,
-    track: int,
+    ordinal: int,
 ) -> float:
-    ordinal = _portal_ordinal(red_tracks, color, track)
     offset = _PORTAL_GAP + _PORTAL_FIRST_OFFSET + ordinal * _PORTAL_SPACING
     right_edge = (entities_per_row - 1) * _ENTITY_SPACING
-    if boundary % 2 == 0:
-        return right_edge + offset
-    return -offset
+    return right_edge + offset if boundary % 2 == 0 else -offset
 
 
-def _portal_x(plan: _FoldedPlan, boundary: int, color: WireColor, track: int) -> float:
-    """Return the stitch column for the fold after ``boundary`` row."""
-
+def _portal_x(plan: _FoldedPlan, boundary: int, group: int) -> float:
     return _portal_x_values(
         plan.entities_per_row,
-        plan.red_tracks,
-        boundary,
-        color,
-        track,
+        boundary=boundary,
+        ordinal=plan.portal_ordinals[(group, boundary)],
     )
 
 
@@ -729,74 +841,69 @@ def _connect_horizontal_segment(
         add_wire(left_id, relay_connector, right_id, relay_connector, color)
 
 
-def _route_relay_count(
-    route: _BaseRoute,
+def _predicted_relay_count(
+    routes: dict[int, _Route],
+    segments: dict[tuple[int, int], _RowSegment],
+    segment_tracks: dict[tuple[int, int], int],
     positions: dict[int, tuple[float, float]],
     entity_index: dict[int, int],
     entities_per_row: int,
     row_pitch: float,
-    red_tracks: int,
+    portal_ordinals: dict[tuple[int, int], int],
 ) -> int:
-    """Return the exact number of relay entities emitted by one folded route."""
+    count = 0
+    endpoints_by_group_row: dict[tuple[int, int], list[abstract.Endpoint]] = defaultdict(list)
+    for group, route in routes.items():
+        for endpoint in route.endpoints:
+            row = entity_index[endpoint.entity] // entities_per_row
+            endpoints_by_group_row[(group, row)].append(endpoint)
 
-    regular_feeders = max(
-        0,
-        ceil((_FIRST_BUS_OFFSET + route.track * _TRACK_SPACING) / _SAFE_PITCH) - 1,
-    )
-    count = len(route.endpoints) * (regular_feeders + 1)
-    endpoints_by_row: dict[int, list[abstract.Endpoint]] = defaultdict(list)
-    for endpoint in route.endpoints:
-        endpoints_by_row[entity_index[endpoint.entity] // entities_per_row].append(endpoint)
+    for (group, row), segment in segments.items():
+        track = segment_tracks[(group, row)]
+        bus_y = _bus_y(row * row_pitch, segment.color, track)
+        for endpoint in endpoints_by_group_row.get((group, row), []):
+            entity_y = positions[endpoint.entity][1]
+            count += _vertical_path_relay_count(entity_y, bus_y)
+        count += len(segment.portal_xs)
+        count += _horizontal_regular_relay_count(segment.min_x, segment.max_x)
 
-    for row in range(route.start_row, route.end_row + 1):
-        attachment_xs = [
-            positions[endpoint.entity][0] + _feeder_offset(endpoint.connector)
-            for endpoint in endpoints_by_row.get(row, [])
-        ]
-        portal_count = 0
-        if row > route.start_row:
-            attachment_xs.append(
-                _portal_x_values(
-                    entities_per_row,
-                    red_tracks,
-                    row - 1,
-                    route.color,
-                    route.track,
-                )
-            )
-            portal_count += 1
-        if row < route.end_row:
-            attachment_xs.append(
-                _portal_x_values(
-                    entities_per_row,
-                    red_tracks,
-                    row,
-                    route.color,
-                    route.track,
-                )
-            )
-            portal_count += 1
-        if len(attachment_xs) < 2:
-            raise AssertionError("folded preflight produced an invalid row segment")
-        count += portal_count
-        first = ceil(min(attachment_xs) / _SAFE_PITCH)
-        last = floor(max(attachment_xs) / _SAFE_PITCH)
-        count += max(0, last - first + 1)
-
-    # The two endpoint fold taps were counted as portal attachments above. Count only ordinary
-    # six-tile stitch relays between the odd bus rows here.
-    bus_offset = _FIRST_BUS_OFFSET + route.track * _TRACK_SPACING
-    for boundary in range(route.start_row, route.end_row):
-        upper = boundary * row_pitch + (
-            -bus_offset if route.color is WireColor.RED else bus_offset
-        )
-        lower = (boundary + 1) * row_pitch + (
-            -bus_offset if route.color is WireColor.RED else bus_offset
-        )
-        first = ceil(upper / _SAFE_PITCH)
-        last = floor(lower / _SAFE_PITCH)
-        count += max(0, last - first + 1)
+    for group, route in routes.items():
+        for boundary in range(route.start_row, route.end_row):
+            if (group, boundary) not in portal_ordinals:
+                raise AssertionError("crossing route is missing a fold portal ordinal")
+            upper_track = segment_tracks[(group, boundary)]
+            lower_track = segment_tracks[(group, boundary + 1)]
+            upper_bus_y = _bus_y(boundary * row_pitch, route.color, upper_track)
+            lower_bus_y = _bus_y((boundary + 1) * row_pitch, route.color, lower_track)
+            count += _vertical_regular_relay_count(upper_bus_y, lower_bus_y)
     return count
+
+
+def _vertical_path_relay_count(entity_y: float, bus_y: float) -> int:
+    distance = abs(bus_y - entity_y)
+    regular = max(0, ceil(distance / _SAFE_PITCH) - 1)
+    return regular + 1
+
+
+def _horizontal_regular_relay_count(min_x: float, max_x: float) -> int:
+    first = ceil(min_x / _SAFE_PITCH)
+    last = floor(max_x / _SAFE_PITCH)
+    return max(0, last - first + 1)
+
+
+def _vertical_regular_relay_count(upper_y: float, lower_y: float) -> int:
+    first = ceil(upper_y / _SAFE_PITCH)
+    last = floor(lower_y / _SAFE_PITCH)
+    return max(0, last - first + 1)
+
+
+def _first_regular_between(upper_y: float, lower_y: float) -> float:
+    if lower_y <= upper_y:
+        raise AssertionError("fold stitch must run downward between distinct rows")
+    first = ceil(upper_y / _SAFE_PITCH) * _SAFE_PITCH
+    if first <= upper_y + 1e-9:
+        first += _SAFE_PITCH
+    return first
 
 
 def _feeder_offset(connector: abstract.Connector) -> float:
