@@ -5,14 +5,16 @@ physical layout: implementation combinators sit on a sparse row, RED physical ne
 buses above it, GREEN networks use buses below it, and every endpoint reaches its bus through a fixed
 vertical feeder. The default performs no placement optimization, routing search, or retry loop.
 
-Progress is printed to stderr while the final importable blueprint string remains on stdout. The old
-greedy, full net-aware, and row layouts remain explicit diagnostic/stress-test modes.
+Progress is printed to stderr. The final importable blueprint string is printed to stdout unless
+``--output`` names a file. The old greedy, full net-aware, and row layouts remain explicit diagnostic
+and stress-test modes.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from time import monotonic
 
 from examples.snake import (
@@ -104,6 +106,11 @@ def main() -> None:
         action="store_true",
         help="enable vector packing; this also computes the compiler's unpacked comparison layout",
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="write the final blueprint string to this file instead of stdout",
+    )
     placement_group = parser.add_mutually_exclusive_group()
     placement_group.add_argument(
         "--greedy-layout",
@@ -178,7 +185,11 @@ def main() -> None:
         f"{framebuffer_color.value.upper()}",
         file=sys.stderr,
     )
-    print(result.blueprint_string)
+    if args.output is None:
+        print(result.blueprint_string)
+    else:
+        args.output.write_text(result.blueprint_string + "\n", encoding="utf-8")
+        print(f"wrote blueprint to {args.output}", file=sys.stderr)
 
 
 if __name__ == "__main__":
