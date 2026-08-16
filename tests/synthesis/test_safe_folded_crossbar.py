@@ -8,12 +8,14 @@ from factorio_circuit.ir.physical import (
     InputPort,
     OutputPort,
     PhysicalCircuit,
+    WireColor,
 )
 from factorio_circuit.synthesis import open_vector
 from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
 from factorio_circuit.synthesis.safe_crossbar import safe_crossbar_options
 from factorio_circuit.synthesis.safe_folded_crossbar import (
     _folded_ordered_entities,
+    _plan_folded_crossbar,
     safe_folded_crossbar_options,
 )
 
@@ -71,6 +73,42 @@ def test_folded_safe_crossbar_is_deterministic() -> None:
     assert first.positions == second.positions
     assert first.relays == second.relays
     assert first.wires == second.wires
+
+
+def test_folded_row_track_assignment_uses_actual_portal_extended_segments() -> None:
+    physical = PhysicalCircuit("folded_segment_coloring")
+    physical.entities.extend(ConstantCombinator(entity_id) for entity_id in range(1, 121))
+
+    single = abstract.Connector.SINGLE
+    endpoints_by_group: dict[int, set[abstract.Endpoint]] = {}
+    colors_by_group: dict[int, WireColor] = {}
+    # These virtual intervals are mutually disjoint, so the linear safe crossbar can reuse a
+    # single track. After folding, neighbouring intervals can occupy the same physical entity row
+    # while one or both row segments extend to fold portals. The folded planner must color those
+    # actual row segments, rather than trusting the linear track identity.
+    for group, (left, right) in enumerate(
+        ((1, 20), (21, 40), (41, 60), (61, 80), (81, 100), (101, 120)),
+        start=1,
+    ):
+        endpoints_by_group[group] = {
+            abstract.Endpoint(left, single),
+            abstract.Endpoint(right, single),
+        }
+        colors_by_group[group] = WireColor.RED
+
+    plan = _plan_folded_crossbar(physical, endpoints_by_group, colors_by_group)
+
+    by_row_track: dict[tuple[int, WireColor, int], list[tuple[float, float, int]]] = {}
+    for key, segment in plan.segments.items():
+        track = plan.segment_tracks[key]
+        by_row_track.setdefault((segment.row, segment.color, track), []).append(
+            (segment.min_x, segment.max_x, segment.group)
+        )
+
+    for intervals in by_row_track.values():
+        intervals.sort()
+        for left, right in zip(intervals, intervals[1:], strict=False):
+            assert left[1] + 1.1 <= right[0] + 1e-9
 
 
 def test_folded_and_linear_safe_strategies_remain_independent() -> None:
