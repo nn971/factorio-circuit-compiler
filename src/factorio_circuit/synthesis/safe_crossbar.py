@@ -31,6 +31,7 @@ from factorio_circuit.ir.physical import (
     ConstantCombinator,
     DeciderCombinator,
     PhysicalCircuit,
+    PhysicalEntity,
     SignalId,
     WireColor,
     WireConnection,
@@ -38,6 +39,7 @@ from factorio_circuit.ir.physical import (
 )
 from factorio_circuit.progress import ProgressCallback, report_progress
 from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
+from factorio_circuit.synthesis.placement import PlacementOptions
 
 _SAFE_PITCH = 6.0
 _ENTITY_SPACING = 6.0
@@ -47,14 +49,12 @@ _FIRST_BUS_OFFSET = 3.0
 _MINIMUM_SAFE_SPAN = sqrt(_FEEDER_OFFSET**2 + _SAFE_PITCH**2)
 
 
-def safe_crossbar_options() -> Any:
-    """Return a PlacementOptions instance selecting the joint safe-crossbar synthesis policy.
+def safe_crossbar_options() -> PlacementOptions:
+    """Return options selecting the joint safe-crossbar synthesis policy.
 
     ``PlacementStrategy`` still names only the older optimizer-specific strategies. Keeping the cast
     here localizes that temporary typing gap until the next physical-synthesis API cleanup.
     """
-
-    from factorio_circuit.synthesis.placement import PlacementOptions
 
     return PlacementOptions(strategy=cast(Any, "safe-crossbar"), restarts=1)
 
@@ -280,7 +280,7 @@ def build_safe_crossbar_layout(
     )
 
 
-def _ordered_entities(physical: PhysicalCircuit) -> list[object]:
+def _ordered_entities(physical: PhysicalCircuit) -> list[PhysicalEntity]:
     """Keep public input/output markers at the two accessible ends of the sparse row."""
 
     input_ids = [port.marker_entity for port in physical.inputs]
