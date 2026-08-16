@@ -1,4 +1,4 @@
-"""Whole-vector lowering pipeline."""
+"""Canonical whole-vector lowering pipeline."""
 
 from typing import cast
 
@@ -32,34 +32,6 @@ _VECTOR_OUTPUTS = (
     VectorFilter,
     VectorSelect,
 )
-
-
-def lower_vectors(
-    module: CircuitModule,
-    *,
-    enable_packing: bool,
-    state_timing: StateTimingPlan,
-) -> AbstractPhysicalCircuit:
-    """Lower a canonical module; raw compatibility modules must use the compiler boundary."""
-
-    return lower_normalized_vectors(
-        module, enable_packing=enable_packing, state_timing=state_timing
-    )
-
-
-def lower_legacy_vectors(
-    module: CircuitModule,
-    *,
-    enable_packing: bool,
-    state_timing: StateTimingPlan,
-) -> AbstractPhysicalCircuit:
-    """Compatibility wrapper for callers holding a legacy semantic module."""
-
-    from .frontend_to_ir import normalize_module
-
-    return lower_normalized_vectors(
-        normalize_module(module), enable_packing=enable_packing, state_timing=state_timing
-    )
 
 
 def lower_normalized_vectors(
@@ -114,18 +86,3 @@ def lower_normalized_vectors(
     ]
     lowerer.circuit.validate()
     return lowerer.circuit
-
-
-def lower_stateless_vectors(
-    module: CircuitModule,
-    *,
-    enable_packing: bool,
-    state_timing: StateTimingPlan,
-) -> AbstractPhysicalCircuit:
-    """Compatibility wrapper for the former stateless-only entry point."""
-
-    return lower_vectors(
-        module,
-        enable_packing=enable_packing,
-        state_timing=state_timing,
-    )
