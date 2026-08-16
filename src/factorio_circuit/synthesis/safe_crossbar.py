@@ -8,13 +8,13 @@ through a unique vertical feeder column.
 Bus rows are reusable: two same-color groups share a row whenever their horizontal relay intervals,
 including collision clearance, are disjoint. Deterministic interval partitioning therefore uses the
 minimum number of tracks for the fixed entity order while preserving the no-search correctness proof.
+The reusable tracks are only two tiles apart; the six-tile pitch is reserved for relay hops along wires.
 
-The geometry uses a six-tile lattice under the compiler's default seven-tile conservative wire span.
 Implementation entities sit at ``x = 0 (mod 6)``. INPUT/SINGLE feeders use ``x = -2 (mod 6)`` and
 OUTPUT feeders use ``x = +2 (mod 6)``. Ordinary feeder relays use ``y = 0 (mod 6)`` away from the
-entity row, while bus rows use ``y = 3 (mod 6)``. Ordinary bus relays remain at ``x = 0 (mod 6)``;
-only the owning endpoint inserts a tap at its feeder column. Unrelated feeder/bus crossings therefore
-contain no relay.
+entity row, while bus rows are odd integer y coordinates starting at +/-3. Ordinary bus relays remain
+at ``x = 0 (mod 6)``; only the owning endpoint inserts a tap at its feeder column. Unrelated
+feeder/bus crossings therefore contain no relay.
 
 This policy does not call the normal placement optimizer or collision-avoiding wire router. It is a
 correctness fallback, not a compactness strategy.
@@ -49,6 +49,7 @@ _SAFE_PITCH = 6.0
 _ENTITY_SPACING = 6.0
 _FEEDER_OFFSET = 2.0
 _FIRST_BUS_OFFSET = 3.0
+_TRACK_SPACING = 2.0
 _RELAY_CENTER_CLEARANCE = 1.1
 DEFAULT_SAFE_CROSSBAR_MAX_RELAYS = 1_000_000
 # Endpoint -> first regular feeder relay is sqrt(2^2 + 6^2).
@@ -359,7 +360,7 @@ def _plan_crossbar(
                 min_x=min_x,
                 max_x=max_x,
                 track=track,
-                bus_y=sign * (_FIRST_BUS_OFFSET + track * _SAFE_PITCH),
+                bus_y=sign * (_FIRST_BUS_OFFSET + track * _TRACK_SPACING),
             )
 
     predicted_relays = sum(_route_relay_count(route) for route in routes.values())
@@ -381,7 +382,7 @@ def _plan_crossbar(
 def _assign_interval_tracks(
     intervals: list[tuple[float, float, int, tuple[abstract.Endpoint, ...]]],
 ) -> tuple[dict[int, int], int]:
-    """Assign the minimum number of deterministic tracks for fixed closed relay intervals."""
+    """Assign and endpoint-weight reusable tracks for fixed closed relay intervals."""
 
     active: list[tuple[float, int]] = []
     available_tracks: list[int] = []
@@ -403,15 +404,24 @@ def _assign_interval_tracks(
         assignments[group] = track
         heappush(active, (max_x + _RELAY_CENTER_CLEARANCE, track))
 
-    return assignments, next_track
+    # Track identities are geometrically interchangeable. Reorder whole valid tracks so the tracks
+    # carrying the most endpoint feeders sit closest to the entity row. This minimizes the weighted
+    # feeder depth for this fixed interval partition without changing any overlap relationship.
+    endpoint_weight = {track: 0 for track in range(next_track)}
+    for _min_x, _max_x, group, endpoints in intervals:
+        endpoint_weight[assignments[group]] += len(endpoints)
+    old_tracks = sorted(range(next_track), key=lambda track: (-endpoint_weight[track], track))
+    remap = {old_track: new_track for new_track, old_track in enumerate(old_tracks)}
+    return {group: remap[track] for group, track in assignments.items()}, next_track
 
 
 def _route_relay_count(route: _GroupRoute) -> int:
     """Return the exact relay count emitted for one route before allocating any objects."""
 
-    # Track zero has no regular feeder relay; track one has one at y=+/-6, etc. Every endpoint also
-    # contributes exactly one tap on its bus row.
-    feeder_and_taps = len(route.endpoints) * (route.track + 1)
+    # Vertical feeder relays stay on the six-tile lattice even though bus tracks are only two tiles
+    # apart. If the tap itself lies before/on the next six-tile point, no ordinary feeder is needed.
+    regular_feeder_relays = max(0, ceil(abs(route.bus_y) / _SAFE_PITCH) - 1)
+    feeder_and_taps = len(route.endpoints) * (regular_feeder_relays + 1)
     first_regular = ceil(route.min_x / _SAFE_PITCH)
     last_regular = floor(route.max_x / _SAFE_PITCH)
     bus_relays = max(0, last_regular - first_regular + 1)
