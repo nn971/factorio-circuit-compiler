@@ -17,8 +17,8 @@ uv run python -m factorio_circuit.devices.player_movement_detector
 The command prints one importable blueprint string.
 
 The physical geometry is the tested eight-gate prototype. The gate sensors are mutually exclusive in
-the current in-game test and expose one shared `Level[Vector]`-style circuit bus. Each direction uses
-the matching base-game compass-arrow virtual signal:
+the current in-game test and expose one `Level[Vector]`-style circuit bus. Each direction uses the
+matching base-game compass-arrow virtual signal:
 
 ```text
 up-arrow         = N
@@ -31,9 +31,9 @@ left-arrow       = W
 up-left-arrow    = NW
 ```
 
-The eight lamps from the tested prototype remain as direction indicators and are connected to the same
-green circuit network. A consumer may connect to any of those indicator lamps to read the complete
-one-hot vector.
+The eight lamps from the tested prototype remain as direction indicators. The sensor network is wired
+in parallel on both red and green circuit colors, so a compiled consumer can attach using whichever
+color its synthesized `INPUT movement` port requires. Connect only that one matching color.
 
 ## 16x16 packed-RGB lamp screen
 
@@ -46,8 +46,8 @@ uv run python -m factorio_circuit.devices.lamp_screen
 The command prints one importable blueprint string containing one empty labelled input terminal and a
 16x16 grid of lamps. Power distribution is deliberately not part of the device blueprint.
 
-The screen consumes one persistent packed framebuffer vector on a single green circuit network. Pixel
-coordinates use a top-left origin and row-major lane numbering:
+The screen consumes one persistent packed framebuffer vector. Pixel coordinates use a top-left origin
+and row-major lane numbering:
 
 ```text
 (0, 0) -----------------> x
@@ -79,9 +79,10 @@ are excluded. The remaining 175 framebuffer lanes use base-game item/recipe/enti
 Programs should normally use `pixel_signal(x, y)` rather than depend on the concrete catalogue ordering
 directly.
 
-All 256 lamps are wired into one short-hop serpentine green network. The empty constant combinator to
-the left of the top row is labelled `DISPLAY INPUT: 16x16 packed-RGB framebuffer` and is the preferred
-attachment point for compiled output.
+All 256 lamps are connected by parallel red and green short-hop serpentine networks. The empty constant
+combinator to the left of the top row is labelled `DISPLAY INPUT: 16x16 packed-RGB framebuffer`. Connect
+only the wire color used by the compiled `OUTPUT framebuffer` port; the unused parallel color remains
+empty, so RGB counts are not doubled.
 
 ## Organization rule
 
