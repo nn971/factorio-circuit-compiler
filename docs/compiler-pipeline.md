@@ -145,6 +145,24 @@ Physical synthesis resolves abstract signals/nets into a concrete `PhysicalCircu
 
 A completed `Layout` is the physical contract handed to blueprint serialization.
 
+### Progress observability
+
+Long physical synthesis is observable through the optional callback on the canonical entry point:
+
+```python
+compile_circuit(source, progress=callback)
+```
+
+The callback receives `CompileProgress` records. Coarse events identify frontend, timing, lowering,
+synthesis, placement, blueprint encoding, and completion. Bounded physical stages additionally report
+`completed`/`total` values. Routing reports one update per physical connection and the cumulative relay
+count; when a difficult connection enters the half-tile grid fallback, `routing-search` reports search
+expansions in bounded batches.
+
+Progress callbacks are observational only. They must not alter placement seeds, work budgets, or
+compiler output. This makes the same event stream suitable for terminal progress bars, CI diagnostics,
+and future deterministic optimization/fallback budgets.
+
 ## 7. Blueprint serialization
 
 Main file:

@@ -31,6 +31,7 @@ from .ir.output import (
     output_materializations,
 )
 from .ir.physical import SignalId
+from .progress import CompileProgress, ProgressCallback
 from .simulate.clocked_events import simulate_events
 from .simulate.events import (
     EventActivation,
@@ -53,6 +54,7 @@ __all__ = [
     "CircuitBuildError",
     "ClockDomainTiming",
     "CompilationResult",
+    "CompileProgress",
     "Expr",
     "EventCausalityError",
     "EventActivation",
@@ -76,6 +78,7 @@ __all__ = [
     "OutputMaterializationPolicy",
     "PlacementMetrics",
     "PlacementOptions",
+    "ProgressCallback",
     "SignalsExpr",
     "SignalsInput",
     "SampleOnObservation",
