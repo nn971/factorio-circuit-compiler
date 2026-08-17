@@ -17,12 +17,9 @@ import sys
 from pathlib import Path
 from time import monotonic
 
-from benchmarks.snake.model import (
-    DEFAULT_LOGICAL_STEPS_PER_MOVE,
-    _marker_wire_color,
-    build_snake_circuit,
-)
-from factorio_circuit import CompileProgress, compile_circuit
+from benchmarks.snake.model import DEFAULT_LOGICAL_STEPS_PER_MOVE, build_snake_circuit
+from factorio_circuit import CompilationResult, CompileProgress, compile_circuit
+from factorio_circuit.ir.physical import WireColor
 from factorio_circuit.synthesis.placement import PlacementOptions
 from factorio_circuit.synthesis.safe_crossbar import safe_crossbar_options
 from factorio_circuit.synthesis.safe_folded_crossbar import safe_folded_crossbar_options
@@ -65,6 +62,20 @@ class _TerminalProgress:
 
     def close(self) -> None:
         self._finish_inline()
+
+
+def _marker_wire_color(result: CompilationResult, marker_entity: int) -> WireColor:
+    colors = {
+        wire.color
+        for wire in result.layout.wires
+        if wire.source_entity == marker_entity or wire.target_entity == marker_entity
+    }
+    if len(colors) != 1:
+        rendered = ", ".join(sorted(color.value for color in colors)) or "none"
+        raise ValueError(
+            f"expected exactly one synthesized wire color at marker {marker_entity}; found {rendered}"
+        )
+    return next(iter(colors))
 
 
 def _placement_from_args(args: argparse.Namespace) -> PlacementOptions:

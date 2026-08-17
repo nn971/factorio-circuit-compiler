@@ -1,4 +1,4 @@
-"""First playable Snake prototype for the 16x16 lamp-screen device.
+"""Interactive 16x16 Snake workload used by the heavyweight compiler benchmark.
 
 The game is deliberately built only from existing compiler primitives:
 
@@ -9,26 +9,16 @@ The game is deliberately built only from existing compiler primitives:
 - body positions use a bounded FIFO with a maximum snake length of 16;
 - the framebuffer is a persistent 256-lane packed-RGB vector for ``devices.lamp_screen``.
 
-Generate the three blueprints separately, place them in game, and wire:
-
-    movement detector bus -> compiled INPUT movement
-    pulse compiled INPUT reset to restart
-    compiled OUTPUT framebuffer -> lamp-screen DISPLAY INPUT
-
-Use only the red or green device bus matching the color printed for each compiled port.
-The game waits at the center until the first direction gesture, so it can be wired and powered safely.
-Food placement is deterministic in this first prototype.
+Use ``python -m benchmarks.snake.generate`` for the heavyweight physical compile and blueprint runner.
+The model remains separately importable so semantic tests can exercise it without invoking layout.
 """
 
 from __future__ import annotations
 
-import argparse
 from typing import Final
 
-from factorio_circuit import Circuit, Expr, SignalId, SignalsExpr, compile_circuit
-from factorio_circuit.compiler import CompilationResult
+from factorio_circuit import Circuit, Expr, SignalId, SignalsExpr
 from factorio_circuit.devices import DIRECTION_SIGNALS, pixel_signal, rgb
-from factorio_circuit.ir.physical import WireColor
 
 SCREEN_WIDTH = 16
 SCREEN_HEIGHT = 16
@@ -160,20 +150,6 @@ def _requested_direction(movement: SignalsExpr, old_direction: Expr) -> tuple[Ex
     if not isinstance(requested, Expr):  # pragma: no cover - first select always yields an Expr
         raise AssertionError("direction selector unexpectedly remained constant")
     return requested, present
-
-
-def _marker_wire_color(result: CompilationResult, marker_entity: int) -> WireColor:
-    colors = {
-        wire.color
-        for wire in result.layout.wires
-        if wire.source_entity == marker_entity or wire.target_entity == marker_entity
-    }
-    if len(colors) != 1:
-        rendered = ", ".join(sorted(color.value for color in colors)) or "none"
-        raise ValueError(
-            f"expected exactly one synthesized wire color at marker {marker_entity}; found {rendered}"
-        )
-    return next(iter(colors))
 
 
 def build_snake_circuit(
@@ -401,53 +377,3 @@ def build_snake_circuit(
     circuit.output("direction", direction)
     circuit.output("food_cell", next_food_id)
     return circuit
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--steps-per-move",
-        type=int,
-        default=DEFAULT_LOGICAL_STEPS_PER_MOVE,
-        help=(
-            "advance Snake once per this many inferred periodic state occurrences "
-            f"(default: {DEFAULT_LOGICAL_STEPS_PER_MOVE})"
-        ),
-    )
-    parser.add_argument(
-        "--no-optimize",
-        action="store_true",
-        help="disable packing optimization during physical synthesis",
-    )
-    args = parser.parse_args()
-
-    circuit = build_snake_circuit(logical_steps_per_move=args.steps_per_move)
-    result = compile_circuit(circuit, optimize=not args.no_optimize)
-
-    movement_port = next(port for port in result.physical_circuit.inputs if port.name == "movement")
-    reset_port = next(port for port in result.physical_circuit.inputs if port.name == "reset")
-    framebuffer_port = next(
-        port for port in result.physical_circuit.outputs if port.name == "framebuffer"
-    )
-    movement_color = _marker_wire_color(result, movement_port.marker_entity)
-    reset_color = _marker_wire_color(result, reset_port.marker_entity)
-    framebuffer_color = _marker_wire_color(result, framebuffer_port.marker_entity)
-    if reset_port.signal is None:
-        raise ValueError("scalar reset port unexpectedly has no concrete signal")
-
-    print(
-        "snake: "
-        f"combinators={result.physical_circuit.combinator_count}, "
-        f"state_period={result.state_timing.uniform_period}"
-    )
-    print(
-        "wire movement detector -> INPUT movement with "
-        f"{movement_color.value.upper()}; pulse INPUT reset [{reset_port.signal.name}] with "
-        f"{reset_color.value.upper()}; OUTPUT framebuffer -> display with "
-        f"{framebuffer_color.value.upper()}"
-    )
-    print(result.blueprint_string)
-
-
-if __name__ == "__main__":
-    main()
