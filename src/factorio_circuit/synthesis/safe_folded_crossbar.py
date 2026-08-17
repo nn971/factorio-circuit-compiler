@@ -399,6 +399,7 @@ def build_safe_folded_crossbar_layout(
         net_groups=tuple(sorted(net_groups.items())),
     )
 
+
 def _group_endpoints(
     abstract_circuit: abstract.AbstractPhysicalCircuit,
     *,
