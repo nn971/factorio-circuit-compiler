@@ -23,6 +23,7 @@ changes.
 
 - `model.py` — the interactive 16x16 Snake workload.
 - `generate.py` — heavyweight compile/blueprint runner with selectable layout strategies.
+- `census.py` — pre-synthesis Abstract Physical IR census runner.
 - `baselines.json` — machine-readable, in-game-validated milestone measurements.
 - `README.md` — benchmark contract and manual acceptance procedure.
 
@@ -52,6 +53,44 @@ period, required wire colors, and the compact front-panel marker positions.
 
 Compilation time is useful diagnostic information but is machine/load dependent. Record semantic and
 physical metrics as the durable baseline; timing may be stored as an informational observation.
+
+## Abstract physical census
+
+Before changing compiler optimization, inspect exactly what target lowering emitted:
+
+```bash
+uv run python -m benchmarks.snake.census
+```
+
+This stops before signal allocation, red/green assignment, physical-net coalescing, placement, and
+routing. The report records implementation/annotation entity counts, arithmetic and decider mixes,
+phase-alignment delays, state-realization roles, state-register families, abstract lane/conflict counts,
+and physical-net endpoint-size distribution.
+
+The role classification is diagnostic rather than a correctness contract. It recognizes stable
+compiler-generated descriptions such as `phase alignment delay`, `vector phase alignment delay`, and
+the current `AccumulatorReg`/`FreezeReg` implementation descriptions. Future optimizers must not depend
+on those strings; timing/provenance metadata should be made explicit before rewrite legality uses it.
+
+Useful comparison modes are:
+
+```bash
+# Current canonical workload.
+uv run python -m benchmarks.snake.census
+
+# Isolate core gameplay/state by removing pixel-history state and framebuffer rendering.
+uv run python -m benchmarks.snake.census --no-framebuffer
+
+# Measure what the existing lowering-level packing already achieves.
+uv run python -m benchmarks.snake.census --optimize
+
+# Machine-readable output for benchmark records or diffs.
+uv run python -m benchmarks.snake.census --json
+```
+
+`--no-framebuffer` is especially useful before compiler optimization because Snake deliberately stores
+both scalar body positions and one-hot body-pixel history. Comparing the two censuses tells us how much
+of the target realization belongs to gameplay/state versus the current display strategy.
 
 ## Current validated milestone
 
