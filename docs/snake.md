@@ -4,10 +4,10 @@
 detector and 16x16 packed-RGB lamp screen. `examples/snake_blueprint.py` is the recommended first
 in-game generator.
 
-The first-playtest generator uses `safe-folded-crossbar` by default. This is an experimental,
-search-free placeability refinement of the canonical linear `safe-crossbar`. The linear strategy is
-preserved unchanged and can be selected immediately with `--linear-safe-layout` if a folded-layout
-probe exposes a geometry bug.
+The generator uses `safe-folded-crossbar` by default. This is a search-free placeability refinement of
+the canonical linear `safe-crossbar`. The current dense folded geometry has been validated with the
+full interactive Snake in game. The linear strategy remains available with `--linear-safe-layout` as
+the canonical rollback/reference path.
 
 ## Generate the three blueprints
 
@@ -54,6 +54,8 @@ safe-folded-crossbar
     bus track spacing: 1 tile on one integer coordinate phase
     first bus offset: 3 tiles
     relay hop pitch: 6 tiles
+    row-width sizing: actual physical-net cut crossings / portal cost
+    relay preflight: exact unique relay-site count
     relay preflight cap: 1,000,000
     maximum preflight dimension: 4,096 tiles
     placement search: none
@@ -61,25 +63,33 @@ safe-folded-crossbar
     retries: none
 ```
 
+The validated full Snake benchmark is:
+
+```text
+real entities       = 5,668
+physical groups     = 5,338
+row tracks          = red:62, green:38
+entity rows         = 13
+entities per row    = 437
+layout relays       = 246,476
+predicted extent    = 1,554 x 1,544 tiles
+state period        = 60 ticks
+```
+
+The pre-density baseline used 470,732 relays and a 3,004 x 2,792 tile extent, so the current geometry
+cuts relay count by about 47.6% and bounding-box area by about 71.4% while preserving fully functional
+Snake behavior.
+
 The denser failproof geometry keeps ordinary horizontal bus relays on `x = 0 (mod 6)`, endpoint
 feeders on the other integer residues, and all routing relay centers on integer blueprint coordinates.
 Packed fold portal columns skip the ordinary row-bus relay columns. Multi-row layouts use an odd
-entity-column count so both fold edges return to the six-tile x lattice. The detailed invariant, the
-failed half-tile experiment, and the original Snake compactness baseline are documented in
-`docs/safe-folded-crossbar-layout.md`.
-
-Before paying for another full Snake compile after changing folded geometry, the cheap production-style
-fold probes are:
-
-```bash
-uv run python -m factorio_circuit.probes.integer_dense_fold_geometry \
-  --output-dir probe-blueprints
-```
+entity-column count so both fold edges return to the six-tile x lattice. Row-width selection accounts
+for the actual number of physical nets crossing each candidate fold boundary. The full construction and
+compactness benchmark are documented in `docs/safe-folded-crossbar-layout.md`.
 
 A cross-row physical net may use different local track numbers on adjacent rows. A deterministic
 vertical fold stitch connects those bus heights. Track reuse is decided only after portal extensions
-are included in the physical row segment interval; this is required because the first folded draft
-incorrectly reused global linear track identities and full Snake exposed a relay-site collision.
+are included in the physical row-segment interval.
 
 The canonical linear rollback/reference path is:
 
@@ -89,11 +99,10 @@ uv run python -m examples.snake_blueprint \
   --output snake-linear.txt
 ```
 
-That path remains the already demonstrated one-row `safe-crossbar`. It is electrically constructive and
-search-free, but full Snake is extremely wide.
+That path remains the one-row `safe-crossbar`. It is electrically constructive and search-free, but
+full Snake is extremely wide.
 
-Older physical-layout paths remain available for diagnosis and the later routing-optimization
-milestone:
+Older physical-layout paths remain available for diagnosis and future routing optimization:
 
 ```bash
 uv run python -m examples.snake_blueprint --greedy-layout
@@ -128,9 +137,9 @@ head position       -> (8, 8)
 direction           -> east reference / neutral startup
 queued direction    -> neutral
 score               -> 0
-length               -> 1
+length              -> 1
 dead                -> 0
-started              -> 0
+started             -> 0
 move divider phase  -> 0
 body position FIFO  -> empty
 body pixel FIFO     -> empty
@@ -186,8 +195,8 @@ soon as the occupied cell is vacated.
 - an optional game-speed divider is implemented as state, rather than as a separately declared game
   clock;
 - both safe crossbars are correctness/placeability baselines rather than final optimized routing;
-- the first prototype is intended to validate the complete input -> state -> packed framebuffer ->
-  lamp path before adding richer gameplay or device composition helpers.
+- the first prototype validates the complete input -> state -> packed framebuffer -> lamp path before
+  richer gameplay or device-composition helpers are added.
 
 The semantic state machine can be built without the framebuffer renderer by calling
 `build_snake_circuit(render_framebuffer=False)`. Contract tests use that form for most game-state
