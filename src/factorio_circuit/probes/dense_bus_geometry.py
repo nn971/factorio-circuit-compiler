@@ -1,8 +1,8 @@
 """Generate tiny Factorio probes that isolate dense folded-bus geometry assumptions.
 
-The full Snake compilation is intentionally avoided here.  Each probe contains two independent RED
-circuit networks carried by blank constant-combinator relays.  Source A emits ``signal-A = 11`` and
-source B emits ``signal-B = 22``.  The two labelled sink constants should see exactly their matching
+The full Snake compilation is intentionally avoided here. Each probe contains two independent RED
+circuit networks carried by blank constant-combinator relays. Source A emits ``signal-A = 11`` and
+source B emits ``signal-B = 22``. The two labelled sink constants should see exactly their matching
 signal and never the other one.
 
 The four cases separate the two changes involved in the failed dense-bus experiment:
@@ -115,8 +115,22 @@ def build_dense_bus_probe_blueprint(case: ProbeCase) -> Blueprint:
     bus_b_y = -(case.first_bus_offset + case.track_spacing)
 
     entities: list[dict[str, object]] = [
-        _constant(1, 0.0, 0.0, "SOURCE A — emits signal-A = 11", signal_name="signal-A", count=11),
-        _constant(2, 6.0, 0.0, "SOURCE B — emits signal-B = 22", signal_name="signal-B", count=22),
+        _constant(
+            1,
+            0.0,
+            0.0,
+            "SOURCE A — emits signal-A = 11",
+            signal_name="signal-A",
+            count=11,
+        ),
+        _constant(
+            2,
+            6.0,
+            0.0,
+            "SOURCE B — emits signal-B = 22",
+            signal_name="signal-B",
+            count=22,
+        ),
         _constant(3, 18.0, 0.0, "SINK A — EXPECT ONLY signal-A = 11"),
         _constant(4, 24.0, 0.0, "SINK B — EXPECT ONLY signal-B = 22"),
         # Network A: source feeder x=-2, horizontal relay lattice x=0 mod 6, sink feeder x=16.
@@ -170,7 +184,8 @@ def _write_all(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for case in PROBE_CASES:
         path = output_dir / f"dense-bus-{case.slug}.txt"
-        path.write_text(generate_dense_bus_probe_blueprint_string(case) + "\n", encoding="utf-8")
+        blueprint = generate_dense_bus_probe_blueprint_string(case)
+        path.write_text(blueprint + "\n", encoding="utf-8")
         print(f"wrote {path}")
 
 
