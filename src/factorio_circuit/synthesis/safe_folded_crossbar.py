@@ -11,13 +11,13 @@ colors the actual physical horizontal segment intervals independently on every
 entity row after all endpoint and portal attachment positions are known.
 
 Cross-row nets use deterministic vertical fold stitches on boundary-local portal
-columns.  Bus tracks are packed on adjacent half-tile rows so the 1x1 relay
-constant combinators consume their actual footprint rather than a two-tile lane.
-Fold portals use adjacent integer columns while skipping the ordinary six-tile
-horizontal relay lattice.  Real implementation entities use a three-tile center
-pitch, which keeps the +/-2 feeder columns off that same relay lattice even for
-2x1 combinators.  There is no placement search, routing search, retry loop, or
-backtracking.
+columns.  Bus tracks are packed on adjacent integer rows so every 1x1 relay
+constant combinator shares one blueprint-coordinate phase while consuming its
+actual footprint rather than a two-tile lane.  Fold portals use adjacent integer
+columns while skipping the ordinary six-tile horizontal relay lattice.  Real
+implementation entities use a three-tile center pitch, which keeps the +/-2
+feeder columns off that same relay lattice even for 2x1 combinators.  There is no
+placement search, routing search, retry loop, or backtracking.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ from factorio_circuit.synthesis.placement import PlacementOptions
 _SAFE_PITCH = 6.0
 _ENTITY_SPACING = 3.0
 _FEEDER_OFFSET = 2.0
-_FIRST_BUS_OFFSET = 3.5
+_FIRST_BUS_OFFSET = 3.0
 _TRACK_SPACING = 1.0
 _RELAY_CENTER_CLEARANCE = 1.1
 _ROW_MARGIN = 12.0
@@ -374,6 +374,7 @@ def build_safe_folded_crossbar_layout(
             f"predicted {stats.predicted_relays}, emitted {len(relays)}"
         )
 
+    _validate_relay_integer_lattice(relays)
     all_positions = dict(plan.positions)
     all_positions.update({relay.entity_id: relay.position for relay in relays})
     _validate_wire_spans(wires, all_positions, maximum_span=safe_wire_span)
@@ -397,7 +398,6 @@ def build_safe_folded_crossbar_layout(
         net_colors=tuple(sorted(net_colors.items())),
         net_groups=tuple(sorted(net_groups.items())),
     )
-
 
 def _group_endpoints(
     abstract_circuit: abstract.AbstractPhysicalCircuit,
@@ -915,9 +915,12 @@ def _horizontal_regular_relay_count(min_x: float, max_x: float) -> int:
 
 
 def _vertical_regular_relay_count(upper_y: float, lower_y: float) -> int:
-    first = ceil(upper_y / _SAFE_PITCH)
-    last = floor(lower_y / _SAFE_PITCH)
-    return max(0, last - first + 1)
+    y = _first_regular_between(upper_y, lower_y)
+    count = 0
+    while y < lower_y - 1e-9:
+        count += 1
+        y += _SAFE_PITCH
+    return count
 
 
 def _first_regular_between(upper_y: float, lower_y: float) -> float:
@@ -965,6 +968,18 @@ def _real_connector_id(
 
 def _relay_connector_id(color: WireColor) -> int:
     return 1 if color is WireColor.RED else 2
+
+
+def _validate_relay_integer_lattice(relays: list[LayoutRelay]) -> None:
+    """Keep every 1x1 routing relay on one Factorio placement-coordinate phase."""
+
+    for relay in relays:
+        x, y = relay.position
+        if abs(x - round(x)) > 1e-9 or abs(y - round(y)) > 1e-9:
+            raise AssertionError(
+                "safe-folded-crossbar emitted a relay off the integer blueprint lattice: "
+                f"entity {relay.entity_id} at ({x}, {y})"
+            )
 
 
 def _validate_wire_spans(
