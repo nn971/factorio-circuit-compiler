@@ -11,8 +11,13 @@ colors the actual physical horizontal segment intervals independently on every
 entity row after all endpoint and portal attachment positions are known.
 
 Cross-row nets use deterministic vertical fold stitches on boundary-local portal
-columns.  There is no placement search, routing search, retry loop, or
-backtracking.
+columns.  Bus tracks are packed on adjacent integer rows so every 1x1 relay
+constant combinator shares one blueprint-coordinate phase while consuming its
+actual footprint rather than a two-tile lane.  Fold portals use adjacent integer
+columns while skipping the ordinary six-tile horizontal relay lattice.  Real
+implementation entities use a three-tile center pitch, which keeps the +/-2
+feeder columns off that same relay lattice even for 2x1 combinators.  There is no
+placement search, routing search, retry loop, or backtracking.
 """
 
 from __future__ import annotations
@@ -41,15 +46,14 @@ from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
 from factorio_circuit.synthesis.placement import PlacementOptions
 
 _SAFE_PITCH = 6.0
-_ENTITY_SPACING = 6.0
+_ENTITY_SPACING = 3.0
 _FEEDER_OFFSET = 2.0
 _FIRST_BUS_OFFSET = 3.0
-_TRACK_SPACING = 2.0
+_TRACK_SPACING = 1.0
 _RELAY_CENTER_CLEARANCE = 1.1
 _ROW_MARGIN = 12.0
 _PORTAL_GAP = 6.0
 _PORTAL_FIRST_OFFSET = 3.0
-_PORTAL_SPACING = 2.0
 DEFAULT_SAFE_FOLDED_MAX_RELAYS = 1_000_000
 DEFAULT_SAFE_FOLDED_MAX_EXTENT = 4096.0
 _MINIMUM_SAFE_SPAN = sqrt(_FEEDER_OFFSET**2 + _SAFE_PITCH**2)
@@ -370,6 +374,7 @@ def build_safe_folded_crossbar_layout(
             f"predicted {stats.predicted_relays}, emitted {len(relays)}"
         )
 
+    _validate_relay_integer_lattice(relays)
     all_positions = dict(plan.positions)
     all_positions.update({relay.entity_id: relay.position for relay in relays})
     _validate_wire_spans(wires, all_positions, maximum_span=safe_wire_span)
@@ -450,12 +455,15 @@ def _plan_folded_crossbar(
         rough_track_counts[WireColor.RED],
         rough_track_counts[WireColor.GREEN],
     )
+    cut_crossings = _cut_crossing_counts(
+        len(ordered_entities),
+        route_specs,
+        entity_index,
+    )
     entities_per_row = _choose_entities_per_row(
         len(ordered_entities),
         rough_row_pitch,
-        portal_capacity=(
-            rough_track_counts[WireColor.RED] + rough_track_counts[WireColor.GREEN]
-        ),
+        cut_crossings=cut_crossings,
     )
     entity_rows = max(1, ceil(len(ordered_entities) / entities_per_row))
 
@@ -708,22 +716,71 @@ def _track_extent(track_count: int) -> float:
 def _portal_outer_offset(portal_count: int) -> float:
     if portal_count <= 0:
         return 0.0
-    return _PORTAL_GAP + _PORTAL_FIRST_OFFSET + (portal_count - 1) * _PORTAL_SPACING
+    return _portal_lane_offset(portal_count - 1)
+
+
+def _portal_lane_offset(ordinal: int) -> float:
+    """Pack 1x1 portal relays one tile apart while skipping x = 0 (mod 6)."""
+
+    if ordinal < 0:
+        raise ValueError("portal ordinal must be nonnegative")
+    offset = int(_PORTAL_GAP + _PORTAL_FIRST_OFFSET)
+    seen = 0
+    while seen < ordinal:
+        offset += 1
+        if offset % int(_SAFE_PITCH) != 0:
+            seen += 1
+    return float(offset)
+
+
+def _cut_crossing_counts(
+    entity_count: int,
+    route_specs: dict[int, tuple[WireColor, tuple[abstract.Endpoint, ...]]],
+    entity_index: dict[int, int],
+) -> tuple[int, ...]:
+    """Count physical routes crossing every virtual cut between ordered entities."""
+
+    delta = [0] * (entity_count + 2)
+    for _color, endpoints in route_specs.values():
+        indices = [entity_index[endpoint.entity] for endpoint in endpoints]
+        first_cut = min(indices) + 1
+        stop_cut = max(indices) + 1
+        if first_cut < stop_cut:
+            delta[first_cut] += 1
+            delta[stop_cut] -= 1
+
+    active = 0
+    crossings: list[int] = []
+    for cut in range(entity_count + 1):
+        active += delta[cut]
+        crossings.append(active)
+    return tuple(crossings)
 
 
 def _choose_entities_per_row(
     entity_count: int,
     row_pitch: float,
     *,
-    portal_capacity: int,
+    cut_crossings: tuple[int, ...],
 ) -> int:
     if entity_count <= 1:
         return 1
-    portal_margin = _portal_outer_offset(portal_capacity)
+    if len(cut_crossings) != entity_count + 1:
+        raise ValueError("cut_crossings must contain one count for every virtual entity cut")
+
     best: tuple[float, float, float, int] | None = None
     for columns in range(1, entity_count + 1):
         rows = ceil(entity_count / columns)
-        side_margin = portal_margin if rows > 1 else 0.0
+        # Three-tile entity pitch alternates centers between x = 0 and 3 (mod 6).
+        # A multi-row fold needs its outer entity center back on x = 0 (mod 6), so
+        # require an odd number of columns. Single-row layouts have no portals.
+        if rows > 1 and columns % 2 == 0:
+            continue
+        max_portals = max(
+            (cut_crossings[cut] for cut in range(columns, entity_count, columns)),
+            default=0,
+        )
+        side_margin = _portal_outer_offset(max_portals) if rows > 1 else 0.0
         width = (columns - 1) * _ENTITY_SPACING + 2 * side_margin
         height = rows * row_pitch
         score = (max(width, height), width * height, abs(width - height), columns)
@@ -767,7 +824,7 @@ def _portal_x_values(
     boundary: int,
     ordinal: int,
 ) -> float:
-    offset = _PORTAL_GAP + _PORTAL_FIRST_OFFSET + ordinal * _PORTAL_SPACING
+    offset = _portal_lane_offset(ordinal)
     right_edge = (entities_per_row - 1) * _ENTITY_SPACING
     return right_edge + offset if boundary % 2 == 0 else -offset
 
@@ -851,31 +908,61 @@ def _predicted_relay_count(
     row_pitch: float,
     portal_ordinals: dict[tuple[int, int], int],
 ) -> int:
-    count = 0
+    """Count unique relay sites exactly, before allocating LayoutRelay objects."""
+
     endpoints_by_group_row: dict[tuple[int, int], list[abstract.Endpoint]] = defaultdict(list)
     for group, route in routes.items():
         for endpoint in route.endpoints:
             row = entity_index[endpoint.entity] // entities_per_row
             endpoints_by_group_row[(group, row)].append(endpoint)
 
-    for (group, row), segment in segments.items():
-        track = segment_tracks[(group, row)]
-        bus_y = _bus_y(row * row_pitch, segment.color, track)
-        for endpoint in endpoints_by_group_row.get((group, row), []):
-            entity_y = positions[endpoint.entity][1]
-            count += _vertical_path_relay_count(entity_y, bus_y)
-        count += len(segment.portal_xs)
-        count += _horizontal_regular_relay_count(segment.min_x, segment.max_x)
-
+    count = 0
     for group, route in routes.items():
+        sites: set[tuple[float, float]] = set()
+        for row in range(route.start_row, route.end_row + 1):
+            segment = segments[(group, row)]
+            track = segment_tracks[(group, row)]
+            bus_y = _bus_y(row * row_pitch, segment.color, track)
+
+            for endpoint in endpoints_by_group_row.get((group, row), []):
+                entity_x, entity_y = positions[endpoint.entity]
+                feeder_x = entity_x + _feeder_offset(endpoint.connector)
+                sign = -1.0 if bus_y < entity_y else 1.0
+                y = entity_y + sign * _SAFE_PITCH
+                while y > bus_y if sign < 0 else y < bus_y:
+                    sites.add((feeder_x, y))
+                    y += sign * _SAFE_PITCH
+                sites.add((feeder_x, bus_y))
+
+            for portal_x in segment.portal_xs:
+                sites.add((portal_x, bus_y))
+
+            x = ceil(segment.min_x / _SAFE_PITCH) * _SAFE_PITCH
+            last = floor(segment.max_x / _SAFE_PITCH) * _SAFE_PITCH
+            while x <= last + 1e-9:
+                sites.add((x, bus_y))
+                x += _SAFE_PITCH
+
         for boundary in range(route.start_row, route.end_row):
             if (group, boundary) not in portal_ordinals:
                 raise AssertionError("crossing route is missing a fold portal ordinal")
+            portal_x = _portal_x_values(
+                entities_per_row,
+                boundary=boundary,
+                ordinal=portal_ordinals[(group, boundary)],
+            )
             upper_track = segment_tracks[(group, boundary)]
             lower_track = segment_tracks[(group, boundary + 1)]
             upper_bus_y = _bus_y(boundary * row_pitch, route.color, upper_track)
             lower_bus_y = _bus_y((boundary + 1) * row_pitch, route.color, lower_track)
-            count += _vertical_regular_relay_count(upper_bus_y, lower_bus_y)
+            sites.add((portal_x, upper_bus_y))
+            sites.add((portal_x, lower_bus_y))
+            y = _first_regular_between(upper_bus_y, lower_bus_y)
+            while y < lower_bus_y - 1e-9:
+                sites.add((portal_x, y))
+                y += _SAFE_PITCH
+
+        count += len(sites)
     return count
 
 
@@ -892,9 +979,12 @@ def _horizontal_regular_relay_count(min_x: float, max_x: float) -> int:
 
 
 def _vertical_regular_relay_count(upper_y: float, lower_y: float) -> int:
-    first = ceil(upper_y / _SAFE_PITCH)
-    last = floor(lower_y / _SAFE_PITCH)
-    return max(0, last - first + 1)
+    y = _first_regular_between(upper_y, lower_y)
+    count = 0
+    while y < lower_y - 1e-9:
+        count += 1
+        y += _SAFE_PITCH
+    return count
 
 
 def _first_regular_between(upper_y: float, lower_y: float) -> float:
@@ -942,6 +1032,18 @@ def _real_connector_id(
 
 def _relay_connector_id(color: WireColor) -> int:
     return 1 if color is WireColor.RED else 2
+
+
+def _validate_relay_integer_lattice(relays: list[LayoutRelay]) -> None:
+    """Keep every 1x1 routing relay on one Factorio placement-coordinate phase."""
+
+    for relay in relays:
+        x, y = relay.position
+        if abs(x - round(x)) > 1e-9 or abs(y - round(y)) > 1e-9:
+            raise AssertionError(
+                "safe-folded-crossbar emitted a relay off the integer blueprint lattice: "
+                f"entity {relay.entity_id} at ({x}, {y})"
+            )
 
 
 def _validate_wire_spans(
