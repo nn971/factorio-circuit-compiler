@@ -38,6 +38,17 @@ from factorio_circuit.synthesis.placement import PlacementOptions
 
 
 @dataclass(frozen=True, slots=True)
+class AbstractPhysicalLoweringResult:
+    """Compiler snapshots available immediately before physical synthesis/layout."""
+
+    semantic_ir: CircuitModule
+    optimized_ir: CircuitModule
+    state_timing: StateTimingPlan
+    abstract_physical: AbstractPhysicalCircuit
+    clocked: bool
+
+
+@dataclass(frozen=True, slots=True)
 class CompilationResult:
     """Snapshots produced by the canonical compiler pipeline."""
 
@@ -97,22 +108,17 @@ def _synthesize(
     )
 
 
-def compile_circuit(
+def lower_to_abstract_physical(
     source: Circuit | CircuitModule,
     *,
     optimize: bool = True,
-    blueprint_safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN,
-    placement: PlacementOptions | None = None,
     progress: ProgressCallback | None = None,
-) -> CompilationResult:
-    """Compile semantic dataflow through physical synthesis to a final Layout and blueprint.
+) -> AbstractPhysicalLoweringResult:
+    """Run the canonical compiler pipeline through abstract physical lowering only.
 
-    Level modules retain the established optimizer/timing/lowering route. Event-bearing modules use
-    clock-aware timing and the physical Event lowerer; semantic Event optimization and packing
-    remain disabled until those transforms carry explicit clock proofs.
-
-    ``progress`` receives coarse compiler phases plus bounded placement/routing updates. Callbacks are
-    observational only and do not affect deterministic compilation.
+    This is the stable inspection boundary immediately before signal allocation, red/green
+    assignment, physical-net coalescing, placement, and routing. It is useful for diagnostics and
+    heavyweight benchmark census work that should not need to materialize a final layout.
     """
 
     report_progress(progress, "frontend", detail="elaborating and lowering source program")
@@ -130,15 +136,6 @@ def compile_circuit(
             optimized_semantic,
             state_timing=state_timing,
         )
-        layout = _synthesize(
-            abstract_physical,
-            safe_wire_span=blueprint_safe_wire_span,
-            placement=placement,
-            progress=progress,
-        )
-        # Clock-aware packing is deliberately postponed. Treat the implemented route as its own
-        # structural baseline rather than pretending the Level naive lowerer is comparable.
-        naive_physical = layout.circuit
     else:
         skip_scalar_optimizer = _contains_vector_output(semantic)
         report_progress(progress, "optimization", detail="normalizing semantic expressions")
@@ -160,42 +157,75 @@ def compile_circuit(
             enable_packing=optimize,
             state_timing=state_timing,
         )
-        layout = _synthesize(
-            abstract_physical,
+
+    return AbstractPhysicalLoweringResult(
+        semantic_ir=semantic,
+        optimized_ir=optimized_semantic,
+        state_timing=state_timing,
+        abstract_physical=abstract_physical,
+        clocked=clocked,
+    )
+
+
+def compile_circuit(
+    source: Circuit | CircuitModule,
+    *,
+    optimize: bool = True,
+    blueprint_safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN,
+    placement: PlacementOptions | None = None,
+    progress: ProgressCallback | None = None,
+) -> CompilationResult:
+    """Compile semantic dataflow through physical synthesis to a final Layout and blueprint.
+
+    Level modules retain the established optimizer/timing/lowering route. Event-bearing modules use
+    clock-aware timing and the physical Event lowerer; semantic Event optimization and packing
+    remain disabled until those transforms carry explicit clock proofs.
+
+    ``progress`` receives coarse compiler phases plus bounded placement/routing updates. Callbacks are
+    observational only and do not affect deterministic compilation.
+    """
+
+    lowered = lower_to_abstract_physical(source, optimize=optimize, progress=progress)
+    layout = _synthesize(
+        lowered.abstract_physical,
+        safe_wire_span=blueprint_safe_wire_span,
+        placement=placement,
+        progress=progress,
+    )
+
+    if lowered.clocked:
+        # Clock-aware packing is deliberately postponed. Treat the implemented route as its own
+        # structural baseline rather than pretending the Level naive lowerer is comparable.
+        naive_physical = layout.circuit
+    elif optimize:
+        report_progress(
+            progress,
+            "baseline",
+            detail="building unpacked comparison circuit for savings statistics",
+        )
+        naive_abstract = _lower_level(
+            lowered.optimized_ir,
+            enable_packing=False,
+            state_timing=lowered.state_timing,
+        )
+        naive_physical = _synthesize(
+            naive_abstract,
             safe_wire_span=blueprint_safe_wire_span,
             placement=placement,
             progress=progress,
-        )
-
-        if optimize:
-            report_progress(
-                progress,
-                "baseline",
-                detail="building unpacked comparison circuit for savings statistics",
-            )
-            naive_abstract = _lower_level(
-                optimized_semantic,
-                enable_packing=False,
-                state_timing=state_timing,
-            )
-            naive_physical = _synthesize(
-                naive_abstract,
-                safe_wire_span=blueprint_safe_wire_span,
-                placement=placement,
-                progress=progress,
-            ).circuit
-        else:
-            naive_physical = layout.circuit
+        ).circuit
+    else:
+        naive_physical = layout.circuit
 
     report_progress(progress, "blueprint", detail="encoding final Factorio blueprint")
     blueprint_json = layout_to_blueprint_json(layout)
     blueprint_string = encode_layout_blueprint_string(layout)
     report_progress(progress, "done", completed=1, total=1, detail="compilation complete")
     return CompilationResult(
-        semantic_ir=semantic,
-        optimized_ir=optimized_semantic,
-        state_timing=state_timing,
-        abstract_physical=abstract_physical,
+        semantic_ir=lowered.semantic_ir,
+        optimized_ir=lowered.optimized_ir,
+        state_timing=lowered.state_timing,
+        abstract_physical=lowered.abstract_physical,
         layout=layout,
         naive_physical=naive_physical,
         blueprint_json=blueprint_json,
