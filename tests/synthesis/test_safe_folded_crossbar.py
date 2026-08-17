@@ -21,6 +21,7 @@ from factorio_circuit.synthesis.safe_folded_crossbar import (
     _folded_ordered_entities,
     _plan_folded_crossbar,
     _portal_x_values,
+    _vertical_regular_relay_count,
     safe_folded_crossbar_options,
 )
 
@@ -63,6 +64,15 @@ def test_folded_safe_crossbar_crosses_rows_without_router_search(monkeypatch) ->
         dx = abs(left.position[0] - right.position[0])
         dy = abs(left.position[1] - right.position[1])
         assert dx >= 1.0 - 1e-9 or dy >= 1.0 - 1e-9
+
+    # Factorio can shift one placement-coordinate phase consistently, but mixing integer and
+    # half-integer 1x1 relay centers can make two intended relays snap onto one tile. Keep every
+    # routing relay on the same integer blueprint lattice.
+    assert all(
+        abs(coordinate - round(coordinate)) < 1e-9
+        for relay in layout.relays
+        for coordinate in relay.position
+    )
 
 
 def test_folded_safe_crossbar_is_deterministic() -> None:
@@ -113,7 +123,7 @@ def test_folded_entity_rows_use_three_tile_pitch_and_safe_feeder_residues() -> N
         assert all(abs(right - left - 3.0) < 1e-9 for left, right in zip(xs, xs[1:]))
 
 
-def test_folded_bus_tracks_pack_one_tile_apart_off_vertical_relay_lattice() -> None:
+def test_folded_bus_tracks_pack_one_tile_apart_on_integer_relay_lattice() -> None:
     red_rows = [_bus_y(0.0, WireColor.RED, track) for track in range(8)]
     green_rows = [_bus_y(0.0, WireColor.GREEN, track) for track in range(8)]
     red_gaps = [abs(right - left) for left, right in zip(red_rows, red_rows[1:])]
@@ -121,9 +131,15 @@ def test_folded_bus_tracks_pack_one_tile_apart_off_vertical_relay_lattice() -> N
 
     assert all(abs(gap - 1.0) < 1e-9 for gap in red_gaps)
     assert all(abs(gap - 1.0) < 1e-9 for gap in green_gaps)
-    # Feeders and fold stitches place their regular relays at integer multiples of six.
-    # Half-tile bus rows therefore never place a horizontal relay on the same center.
-    assert all(abs(row - round(row)) == 0.5 for row in (*red_rows, *green_rows))
+    assert all(abs(row - round(row)) < 1e-9 for row in (*red_rows, *green_rows))
+
+
+def test_fold_stitch_count_excludes_bus_taps_on_regular_lattice() -> None:
+    # With integer bus rows, a fold tap can itself land on y = 0 (mod 6). Construction
+    # reuses that tap and adds only the regular stitch relays strictly between the two taps.
+    assert _vertical_regular_relay_count(-6.0, 24.0) == 4
+    assert _vertical_regular_relay_count(-5.0, 24.0) == 4
+    assert _vertical_regular_relay_count(-6.0, 23.0) == 4
 
 
 def test_folded_portals_pack_adjacent_tiles_but_skip_row_bus_lattice() -> None:
