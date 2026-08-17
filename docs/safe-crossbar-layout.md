@@ -224,7 +224,7 @@ Snake now defaults to `safe-folded-crossbar` for placeability. To deliberately u
 one-row reference instead:
 
 ```bash
-uv run python -m examples.snake_blueprint \
+uv run python -m benchmarks.snake.generate \
   --linear-safe-layout \
   --output snake-linear.txt
 ```
