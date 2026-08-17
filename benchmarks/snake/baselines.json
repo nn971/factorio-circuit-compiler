@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "benchmark": "snake-16x16",
+  "description": "Full interactive Snake with movement input, periodic state, bounded body history, 256-lane packed-RGB framebuffer, and Factorio blueprint layout.",
+  "canonical_configuration": {
+    "render_framebuffer": true,
+    "logical_steps_per_move": 1,
+    "optimize": false,
+    "layout_strategy": "safe-folded-crossbar"
+  },
+  "timing_policy": "Compilation wall-clock time is informational and machine-dependent; semantic and physical metrics are the comparison baseline.",
+  "milestones": [
+    {
+      "id": "interactive-snake-initial",
+      "commit": "5e10020763ee2b9b5036eb82f0d82d86e3d2c673",
+      "date": "2026-08-16",
+      "in_game_validated": true,
+      "notes": "First fully playable end-to-end Snake milestone before the physical-density pass.",
+      "metrics": {
+        "implementation_combinators": 5657,
+        "physical_entities": 5668,
+        "physical_groups": 5338,
+        "routed_groups": 5338,
+        "red_row_tracks": 61,
+        "green_row_tracks": 38,
+        "entity_rows": 13,
+        "entities_per_row": 436,
+        "layout_relays": 470732,
+        "extent_tiles": [3004, 2792],
+        "state_period_ticks": 60
+      }
+    },
+    {
+      "id": "dense-safe-folded-v1",
+      "commit": "1bde1650a393d881bd04e275197ec39ed2245e10",
+      "date": "2026-08-17",
+      "in_game_validated": true,
+      "notes": "Three-tile implementation pitch, packed portals, one-tile integer-phase bus tracks, exact same-net relay-site preflight, and portal-aware row sizing. Full Snake ran flawlessly in game.",
+      "observed_compile_wall_seconds": 254.8,
+      "metrics": {
+        "implementation_combinators": 5657,
+        "physical_entities": 5668,
+        "physical_groups": 5338,
+        "routed_groups": 5338,
+        "red_row_tracks": 62,
+        "green_row_tracks": 38,
+        "entity_rows": 13,
+        "entities_per_row": 437,
+        "layout_relays": 246476,
+        "extent_tiles": [1554, 1544],
+        "state_period_ticks": 60
+      },
+      "change_from_previous": {
+        "relay_reduction_fraction": 0.4764,
+        "width_reduction_fraction": 0.4827,
+        "height_reduction_fraction": 0.4470,
+        "bounding_box_area_reduction_fraction": 0.7139
+      }
+    }
+  ]
+}

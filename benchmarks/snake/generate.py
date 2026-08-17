@@ -1,4 +1,4 @@
-"""Generate the first Snake circuit blueprint with observable, predictable synthesis.
+"""Compile and emit the heavyweight interactive Snake benchmark blueprint.
 
 The default uses ``safe-folded-crossbar``: deterministic serpentine entity rows, row-local physical
 bus tracks chosen after fold portals are known, and search-free vertical stitches. Public inputs and
@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from time import monotonic
 
-from examples.snake import (
+from benchmarks.snake.model import (
     DEFAULT_LOGICAL_STEPS_PER_MOVE,
     _marker_wire_color,
     build_snake_circuit,

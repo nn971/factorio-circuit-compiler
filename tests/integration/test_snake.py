@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, cast
-
 import pytest
 
-from examples.snake import (
+from benchmarks.snake.model import (
     ARROW_SIGNALS,
     BODY_COLOR,
     DIR_E,
@@ -15,11 +13,9 @@ from examples.snake import (
     MAX_LENGTH,
     build_snake_circuit,
 )
-from factorio_circuit import compile_circuit
 from factorio_circuit.devices import pixel_signal
 from factorio_circuit.ir.semantic import is_vector_value
 from factorio_circuit.simulate.semantic import LogicalOutput, simulate_stream
-from factorio_circuit.synthesis.placement import PlacementOptions
 
 
 def _movement(**directions: int) -> dict[object, int]:
@@ -212,25 +208,6 @@ def test_full_snake_build_contains_reset_framebuffer_and_pixel_history() -> None
     assert is_vector_value(module.output.values[0])
     assert len(module.state_registers) == 37
     assert len(set(module.state_registers)) == len(module.state_registers)
-
-
-def test_full_snake_compiles_to_a_physical_blueprint() -> None:
-    result = compile_circuit(
-        build_snake_circuit(render_framebuffer=True),
-        optimize=False,
-        placement=PlacementOptions(strategy=cast(Any, "safe-folded-crossbar"), restarts=1),
-    )
-
-    assert result.physical_circuit.combinator_count > 0
-    assert result.layout.relays
-    assert result.state_timing.uniform_period is not None
-    assert result.blueprint_string.startswith("0")
-    assert {port.name for port in result.physical_circuit.inputs} == {"movement", "reset"}
-    reset_port = next(port for port in result.physical_circuit.inputs if port.name == "reset")
-    assert reset_port.signal is not None
-    blueprint = result.blueprint_json["blueprint"]
-    assert isinstance(blueprint, dict)
-    assert blueprint["entities"]
 
 
 def test_snake_configuration_validation() -> None:

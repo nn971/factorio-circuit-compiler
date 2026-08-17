@@ -72,8 +72,18 @@ Sparse outputs materialize as `HOLD`, `ZERO`, or `VALID`. [`examples/README.md`]
 - `examples/fibonacci.py` — periodic state and inferred timing;
 - `examples/clocked_flow.py` — compact Event clocks, crossings, and materialization;
 - `examples/vector_fifo.py` / `vector_stack.py` — state composition;
-- `examples/sorting_network.py` / `walsh_hadamard.py` — physical-synthesis stress cases;
+- `examples/sorting_network.py` / `walsh_hadamard.py` — readable parameterized physical-synthesis stress cases;
 - `examples/autonomous_market_controller.py` — application-scale controller.
+
+## Benchmarks
+
+Large workloads live under [`benchmarks/`](benchmarks/README.md) rather than the pedagogical examples.
+The primary end-to-end benchmark is [`benchmarks/snake/`](benchmarks/snake/README.md): a playable 16x16
+Snake with movement input, periodic state, bounded body history, a 256-lane framebuffer, full physical
+synthesis/layout, and in-game acceptance. Its accepted physical-layout milestones are recorded in
+`benchmarks/snake/baselines.json`.
+
+The full Snake compile is intentionally opt-in and is not part of routine pytest/CI.
 
 ## Validation
 
@@ -85,4 +95,6 @@ uv run ruff format --check .
 uv run mypy src
 ```
 
-`tests/integration/test_multi_rate_event_ledger.py` is the main irregular-clock end-to-end regression. Sorting and WHT remain the structured layout/synthesis benchmarks.
+`tests/integration/test_multi_rate_event_ledger.py` is the main irregular-clock end-to-end regression.
+Sorting/WHT provide smaller structured synthesis benchmarks; Snake is the heavyweight manual
+whole-compiler/layout benchmark.

@@ -1,7 +1,10 @@
 # Clock-aware in-game examples
 
-These examples are ordered as a semantic ladder. Each executable case prints two Factorio blueprint
-strings:
+These examples are intentionally small enough to read as a semantic ladder. Heavy whole-compiler
+workloads live under `benchmarks/`; in particular the playable Snake stress test is documented in
+`benchmarks/snake/README.md`.
+
+Each executable case prints two Factorio blueprint strings:
 
 1. a small **driver** that repeats a deterministic input/Event schedule;
 2. the **compiled circuit** being tested.
