@@ -19,6 +19,7 @@ from time import monotonic
 
 from benchmarks.snake.model import DEFAULT_LOGICAL_STEPS_PER_MOVE, build_snake_circuit
 from factorio_circuit import CompilationResult, CompileProgress, compile_circuit
+from factorio_circuit.analysis import census_abstract_physical, format_abstract_physical_census
 from factorio_circuit.ir.physical import WireColor
 from factorio_circuit.synthesis.placement import PlacementOptions
 from factorio_circuit.synthesis.safe_crossbar import safe_crossbar_options
@@ -121,6 +122,11 @@ def main() -> None:
         help="enable vector packing; this also computes the compiler's unpacked comparison layout",
     )
     parser.add_argument(
+        "--census",
+        action="store_true",
+        help="print the pre-synthesis Abstract Physical IR census after compilation",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="write the final blueprint string to this file instead of stdout",
@@ -183,6 +189,12 @@ def main() -> None:
     finally:
         if terminal_progress is not None:
             terminal_progress.close()
+
+    if args.census:
+        print(
+            format_abstract_physical_census(census_abstract_physical(result.abstract_physical)),
+            file=sys.stderr,
+        )
 
     movement_port = next(port for port in result.physical_circuit.inputs if port.name == "movement")
     reset_port = next(port for port in result.physical_circuit.inputs if port.name == "reset")
