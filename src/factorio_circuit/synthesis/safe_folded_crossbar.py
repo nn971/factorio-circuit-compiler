@@ -455,12 +455,15 @@ def _plan_folded_crossbar(
         rough_track_counts[WireColor.RED],
         rough_track_counts[WireColor.GREEN],
     )
+    cut_crossings = _cut_crossing_counts(
+        len(ordered_entities),
+        route_specs,
+        entity_index,
+    )
     entities_per_row = _choose_entities_per_row(
         len(ordered_entities),
         rough_row_pitch,
-        portal_capacity=(
-            rough_track_counts[WireColor.RED] + rough_track_counts[WireColor.GREEN]
-        ),
+        cut_crossings=cut_crossings,
     )
     entity_rows = max(1, ceil(len(ordered_entities) / entities_per_row))
 
@@ -730,15 +733,41 @@ def _portal_lane_offset(ordinal: int) -> float:
     return float(offset)
 
 
+def _cut_crossing_counts(
+    entity_count: int,
+    route_specs: dict[int, tuple[WireColor, tuple[abstract.Endpoint, ...]]],
+    entity_index: dict[int, int],
+) -> tuple[int, ...]:
+    """Count physical routes crossing every virtual cut between ordered entities."""
+
+    delta = [0] * (entity_count + 2)
+    for _color, endpoints in route_specs.values():
+        indices = [entity_index[endpoint.entity] for endpoint in endpoints]
+        first_cut = min(indices) + 1
+        stop_cut = max(indices) + 1
+        if first_cut < stop_cut:
+            delta[first_cut] += 1
+            delta[stop_cut] -= 1
+
+    active = 0
+    crossings: list[int] = []
+    for cut in range(entity_count + 1):
+        active += delta[cut]
+        crossings.append(active)
+    return tuple(crossings)
+
+
 def _choose_entities_per_row(
     entity_count: int,
     row_pitch: float,
     *,
-    portal_capacity: int,
+    cut_crossings: tuple[int, ...],
 ) -> int:
     if entity_count <= 1:
         return 1
-    portal_margin = _portal_outer_offset(portal_capacity)
+    if len(cut_crossings) != entity_count + 1:
+        raise ValueError("cut_crossings must contain one count for every virtual entity cut")
+
     best: tuple[float, float, float, int] | None = None
     for columns in range(1, entity_count + 1):
         rows = ceil(entity_count / columns)
@@ -747,7 +776,11 @@ def _choose_entities_per_row(
         # require an odd number of columns. Single-row layouts have no portals.
         if rows > 1 and columns % 2 == 0:
             continue
-        side_margin = portal_margin if rows > 1 else 0.0
+        max_portals = max(
+            (cut_crossings[cut] for cut in range(columns, entity_count, columns)),
+            default=0,
+        )
+        side_margin = _portal_outer_offset(max_portals) if rows > 1 else 0.0
         width = (columns - 1) * _ENTITY_SPACING + 2 * side_margin
         height = rows * row_pitch
         score = (max(width, height), width * height, abs(width - height), columns)
@@ -875,31 +908,61 @@ def _predicted_relay_count(
     row_pitch: float,
     portal_ordinals: dict[tuple[int, int], int],
 ) -> int:
-    count = 0
+    """Count unique relay sites exactly, before allocating LayoutRelay objects."""
+
     endpoints_by_group_row: dict[tuple[int, int], list[abstract.Endpoint]] = defaultdict(list)
     for group, route in routes.items():
         for endpoint in route.endpoints:
             row = entity_index[endpoint.entity] // entities_per_row
             endpoints_by_group_row[(group, row)].append(endpoint)
 
-    for (group, row), segment in segments.items():
-        track = segment_tracks[(group, row)]
-        bus_y = _bus_y(row * row_pitch, segment.color, track)
-        for endpoint in endpoints_by_group_row.get((group, row), []):
-            entity_y = positions[endpoint.entity][1]
-            count += _vertical_path_relay_count(entity_y, bus_y)
-        count += len(segment.portal_xs)
-        count += _horizontal_regular_relay_count(segment.min_x, segment.max_x)
-
+    count = 0
     for group, route in routes.items():
+        sites: set[tuple[float, float]] = set()
+        for row in range(route.start_row, route.end_row + 1):
+            segment = segments[(group, row)]
+            track = segment_tracks[(group, row)]
+            bus_y = _bus_y(row * row_pitch, segment.color, track)
+
+            for endpoint in endpoints_by_group_row.get((group, row), []):
+                entity_x, entity_y = positions[endpoint.entity]
+                feeder_x = entity_x + _feeder_offset(endpoint.connector)
+                sign = -1.0 if bus_y < entity_y else 1.0
+                y = entity_y + sign * _SAFE_PITCH
+                while y > bus_y if sign < 0 else y < bus_y:
+                    sites.add((feeder_x, y))
+                    y += sign * _SAFE_PITCH
+                sites.add((feeder_x, bus_y))
+
+            for portal_x in segment.portal_xs:
+                sites.add((portal_x, bus_y))
+
+            x = ceil(segment.min_x / _SAFE_PITCH) * _SAFE_PITCH
+            last = floor(segment.max_x / _SAFE_PITCH) * _SAFE_PITCH
+            while x <= last + 1e-9:
+                sites.add((x, bus_y))
+                x += _SAFE_PITCH
+
         for boundary in range(route.start_row, route.end_row):
             if (group, boundary) not in portal_ordinals:
                 raise AssertionError("crossing route is missing a fold portal ordinal")
+            portal_x = _portal_x_values(
+                entities_per_row,
+                boundary=boundary,
+                ordinal=portal_ordinals[(group, boundary)],
+            )
             upper_track = segment_tracks[(group, boundary)]
             lower_track = segment_tracks[(group, boundary + 1)]
             upper_bus_y = _bus_y(boundary * row_pitch, route.color, upper_track)
             lower_bus_y = _bus_y((boundary + 1) * row_pitch, route.color, lower_track)
-            count += _vertical_regular_relay_count(upper_bus_y, lower_bus_y)
+            sites.add((portal_x, upper_bus_y))
+            sites.add((portal_x, lower_bus_y))
+            y = _first_regular_between(upper_bus_y, lower_bus_y)
+            while y < lower_bus_y - 1e-9:
+                sites.add((portal_x, y))
+                y += _SAFE_PITCH
+
+        count += len(sites)
     return count
 
 
