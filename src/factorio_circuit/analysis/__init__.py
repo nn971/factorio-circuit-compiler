@@ -17,6 +17,11 @@ from .causality import (
     state_read_occurrences,
 )
 from .latency import FACTORIO_LATENCY, TargetLatencyModel
+from .physical_census import (
+    AbstractPhysicalCensus,
+    census_abstract_physical,
+    format_abstract_physical_census,
+)
 from .state_timing import (
     ClockDomainTiming,
     EventClockTiming,
@@ -34,6 +39,7 @@ from .state_timing import (
 )
 
 __all__ = [
+    "AbstractPhysicalCensus",
     "CausalityAnalysis",
     "CausalityEdge",
     "CausalityEdgeKind",
@@ -54,10 +60,12 @@ __all__ = [
     "analyze_normalized_state_timing",
     "analyze_clocked_timing",
     "analyze_state_timing",
+    "census_abstract_physical",
     "collect_state_reads",
     "earliest_scalar_phase",
     "earliest_vector_phase",
     "event_causality_graph",
+    "format_abstract_physical_census",
     "has_nonpositive_cycle",
     "infer_commit_offset",
     "periodic_causality_graph",
