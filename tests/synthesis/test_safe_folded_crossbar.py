@@ -18,6 +18,7 @@ from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
 from factorio_circuit.synthesis.safe_crossbar import safe_crossbar_options
 from factorio_circuit.synthesis.safe_folded_crossbar import (
     _bus_y,
+    _cut_crossing_counts,
     _folded_ordered_entities,
     _plan_folded_crossbar,
     _portal_x_values,
@@ -140,6 +141,23 @@ def test_fold_stitch_count_excludes_bus_taps_on_regular_lattice() -> None:
     assert _vertical_regular_relay_count(-6.0, 24.0) == 4
     assert _vertical_regular_relay_count(-5.0, 24.0) == 4
     assert _vertical_regular_relay_count(-6.0, 23.0) == 4
+
+
+def test_cut_crossing_counts_match_route_spans() -> None:
+    single = abstract.Connector.SINGLE
+    entity_index = {entity_id: entity_id - 1 for entity_id in range(1, 7)}
+    route_specs = {
+        1: (
+            WireColor.RED,
+            (abstract.Endpoint(1, single), abstract.Endpoint(6, single)),
+        ),
+        2: (
+            WireColor.GREEN,
+            (abstract.Endpoint(2, single), abstract.Endpoint(4, single)),
+        ),
+    }
+
+    assert _cut_crossing_counts(6, route_specs, entity_index) == (0, 1, 2, 2, 1, 1, 0)
 
 
 def test_folded_portals_pack_adjacent_tiles_but_skip_row_bus_lattice() -> None:
