@@ -1,7 +1,12 @@
 """Public API for factorio-circuit-compiler."""
 
 from .analysis.state_timing import ClockDomainTiming, StateTimingError, StateTimingPlan
-from .compiler import CompilationResult, compile_circuit
+from .compiler import (
+    AbstractPhysicalLoweringResult,
+    CompilationResult,
+    compile_circuit,
+    lower_to_abstract_physical,
+)
 from .events import (
     EventCausalityError,
     EventCompilationError,
@@ -49,6 +54,7 @@ from .simulate.output_materialization import MaterializedOutputTrace, materializ
 from .synthesis.placement import PlacementMetrics, PlacementOptions, placement_metrics
 
 __all__ = [
+    "AbstractPhysicalLoweringResult",
     "AccumulatorReg",
     "Circuit",
     "CircuitBuildError",
@@ -90,6 +96,7 @@ __all__ = [
     "TimestampDomain",
     "VectorEvent",
     "compile_circuit",
+    "lower_to_abstract_physical",
     "materialize_event_trace",
     "materialize_output_trace",
     "output_materializations",
