@@ -45,6 +45,24 @@ slack directly:
 - real implementation rows use the smallest simple center lattice that still preserves failproof
   feeder separation for 2x1 arithmetic/decider/selector combinators.
 
+The first full dense compile with three-tile entities, packed portals, and one-tile bus tracks produced:
+
+```text
+real entities       = 5,668
+physical groups     = 5,338
+red row tracks      = 62
+green row tracks    = 38
+entity rows         = 13
+entities per row    = 437
+layout relays       = 247,725
+predicted extent    = 1,554 x 1,545 tiles
+```
+
+That blueprint exposed an in-game placement-phase bug in the original half-tile bus-row construction.
+Restoring the old `first offset = 3, spacing = 2` made the same compact entity/portal layout functional,
+which isolated the remaining failure to dense bus geometry rather than the three-tile entity pitch or
+packed portal columns.
+
 The benchmark should retain the following measurements after every physical-density change:
 
 - real combinator count;
@@ -123,25 +141,32 @@ first bus offset:   3 tiles
 bus track spacing:  2 tiles
 ```
 
-That left an unused tile between adjacent 1x1 relay rows. The dense policy uses:
+That leaves an unused tile between adjacent 1x1 relay rows. The dense target is:
 
 ```text
 wire relay hop pitch:  6 tiles
-first bus offset:      3.5 tiles
+first bus offset:      3 tiles
 bus track spacing:     1 tile
 ```
 
-Real entity rows remain on y coordinates divisible by six. Local bus rows are therefore half-tile
-coordinates:
+The first attempted dense construction instead used `first offset = 3.5`, placing horizontal bus/tap
+relays on half-integer y coordinates while fold-stitch and feeder relays remained on integer y
+coordinates. Small no-fold probes showed that half-tile rows and one-tile row spacing are individually
+legal, but folded probes exposed missing intermediate wire segments. Runtime inspection showed the
+surviving endpoints were within wire reach; the failure arose when intended integer and half-integer
+1x1 relay sites were mapped to Factorio's placement grid.
+
+The corrected policy keeps **every routing relay on one integer blueprint-coordinate phase**:
 
 ```text
-RED:   row_y - (3.5 + local_track)
-GREEN: row_y + (3.5 + local_track)
+RED:   row_y - (3 + local_track)
+GREEN: row_y + (3 + local_track)
 ```
 
-Regular endpoint-feeder and fold-stitch relays remain on integer y coordinates separated by six tiles,
-so a vertical relay center never coincides with a horizontal bus-relay center. Adjacent 1x1 constants
-may touch footprint boundaries; their centers remain distinct.
+Adjacent bus tracks remain one tile apart. Regular endpoint feeders and fold stitches still use the
+six-tile hop lattice. If a bus tap itself lies on `y = 0 (mod 6)`, the stitch constructor reuses that tap
+and adds regular stitch relays only strictly between its upper and lower fold taps. Preflight relay
+counting mirrors the same strictly-between rule.
 
 ### Portal columns
 
@@ -197,23 +222,49 @@ entity center of every row is again `x = 0 (mod 6)`, so the existing compact por
 valid on both fold sides. A single-row circuit may use an even column count because it has no fold
 portals.
 
-## Combined crossing invariant
+## Combined crossing and placement-phase invariant
 
-The dense constructive geometry separates relay families structurally:
+The dense constructive geometry separates relay families structurally while keeping all routing relay
+coordinates integral:
 
 ```text
 real entity centers:          x = 0 or 3 (mod 6), y = 0 (mod row_pitch)
 INPUT/SINGLE feeder columns:  x = 1 or 4 (mod 6)
 OUTPUT feeder columns:        x = 2 or 5 (mod 6)
-regular vertical relays:      y = 0 (mod 6) relative to their entity row
-horizontal bus rows:          half-tile y coordinates
+regular vertical relays:      integer x/y; six-tile y hops
+horizontal bus rows:          integer y; adjacent tracks one tile apart
 regular horizontal relays:    x = 0 (mod 6)
 portal columns:                integer x, excluding x = 0 (mod 6)
 ```
 
-This permits one-tile relay packing and three-tile implementation packing without introducing
-collision search. The existing row-local interval-coloring invariant still prevents unrelated
-horizontal segments assigned to one bus track from overlapping.
+Because feeders and portals are excluded from the ordinary row-bus x lattice, integer bus rows may
+cross the six-tile vertical y lattice without sharing relay centers between unrelated route families.
+Keeping all 1x1 routing relays on one coordinate phase also prevents Factorio placement from collapsing
+an intended integer/half-integer pair onto one tile.
+
+The existing row-local interval-coloring invariant still prevents unrelated horizontal segments
+assigned to one bus track from overlapping.
+
+## Cheap in-game probe
+
+Before recompiling full Snake, generate the final integer-lattice fold probes:
+
+```bash
+uv run python -m factorio_circuit.probes.integer_dense_fold_geometry \
+  --output-dir probe-blueprints
+```
+
+This writes:
+
+```text
+integer-dense-fold-red.txt
+integer-dense-fold-red-green.txt
+```
+
+Both use the production `3 / 1` bus geometry, packed portal residues, odd-column fold edge, endpoint
+feeders, and vertical stitches. Each labelled sink must see exactly the unique `signal-A` count written
+in its description. They are intended as the cheap manual acceptance gate before another full Snake
+compile.
 
 ## Compact I/O front panel
 
@@ -253,7 +304,8 @@ Tests cover the properties on which the constructive proof depends:
 - actual portal-extended segments sharing a `(row, color, track)` remain disjoint by the configured
   relay-center clearance;
 - adjacent bus-track relay centers may be exactly one tile apart;
-- all bus tracks are half-tile y rows, away from the regular vertical-relay lattice;
+- all bus rows and all emitted routing relays stay on the integer blueprint-coordinate lattice;
+- fold-stitch preflight counts exclude upper/lower fold taps even when a tap lies on `y = 0 (mod 6)`;
 - packed portal columns are at least one tile apart and never occupy `x = 0 (mod 6)`;
 - real entity rows use three-tile centers, and +/-2 feeder columns stay off `x = 0 (mod 6)`;
 - every multi-row folded plan uses an odd column count, keeping both row edges on the six-tile lattice;
@@ -262,9 +314,11 @@ Tests cover the properties on which the constructive proof depends:
 
 ## Next compactness targets
 
-Once this denser blueprint is confirmed in game, the next useful targets are more structural:
+Once the `3 / 1` integer-lattice probes and then full Snake are confirmed in game, the next useful
+targets are more structural:
 
-1. measure the new Snake relay count and extent against the 3,004 x 2,792 / 470,732 baseline;
+1. record the new Snake relay count and extent against both the 3,004 x 2,792 / 470,732 baseline and
+   the failed half-tile dense compile's 1,554 x 1,545 / 247,725 result;
 2. improve deterministic entity ordering using physical-net topology to shorten row segments and reduce
    fold crossings;
 3. reduce relay count by sharing trunks and introducing stronger constructive routing structures;
