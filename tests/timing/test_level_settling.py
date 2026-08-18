@@ -82,14 +82,21 @@ def _held_output_circuit() -> Circuit:
 
 
 def _fresh_input_skew_circuit() -> Circuit:
+    """Multicycle recurrence with unequal paths from one fresh external Level sample."""
+
     c = Circuit("fresh_input_path_skew")
     data = c.signals("data")
     one = c.constant_signals({VALUE: 1})
-    memory = c.accumulator("memory")
+    memory = c.freeze("memory")
 
+    old = memory.sample()
     deep = (data + one) + one
     mixed = data + deep
-    memory.add(mixed)
+    # Referencing old state makes this a genuine synchronous feedback region (P > 1), while
+    # ``data`` still reaches ``mixed`` along both a zero-depth and a two-combinator path.  The short
+    # fresh-input path must be transported exactly; unlike ``old``, it cannot borrow the whole state
+    # period as a validity window.
+    memory.set(old + mixed, when=1)
 
     c.step(1)
     c.output("value", memory.sample())
@@ -166,6 +173,8 @@ def test_derived_level_output_is_dense_and_coherent_between_activations(optimize
 def test_fresh_level_input_still_uses_exact_delay_for_path_skew() -> None:
     result = lower_to_abstract_physical(_fresh_input_skew_circuit(), optimize=False)
 
+    period = result.state_timing.uniform_period
+    assert period is not None and period > 1
     # ``data`` may change on the next physical tick. The short direct path must therefore be
     # transported to meet the deeper path; treating it like held state would change which logical
     # input occurrence is consumed.
