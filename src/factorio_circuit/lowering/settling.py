@@ -1,20 +1,20 @@
 """Validity-aware Level lowering for synchronous settling regions.
 
 The semantic Level IR is clocked by logical occurrences, while Factorio combinators evaluate every
-physical tick.  A state value held between two clock boundaries therefore does not need to be copied
+physical tick. A state value held between two clock boundaries therefore does not need to be copied
 through identity combinators merely because a consumer is scheduled later in the same interval.
 
-This module implements that fact as a local proof carried by each realized value.  A validity window
+This module implements that fact as a local proof carried by each realized value. A validity window
 ``[start, end)`` means that the physical net is guaranteed to represent the same logical token for
-every tick in that interval.  Constants have an unbounded window, state reads are valid for one full
+every tick in that interval. Constants have an unbounded window, state reads are valid for one full
 clock period, and raw external Level samples are conservatively valid only at their sampling tick.
 Combinational operations intersect the windows of their operands after normal phase selection.
 
 ``delay_to`` may therefore reuse a net directly when the requested phase is already inside its
-validity window.  If the proof is absent, or the token has expired, lowering falls back to the exact
-one-tick delay chain used previously.  This makes the optimization correctness-preserving for
+validity window. If the proof is absent, or the token has expired, lowering falls back to the exact
+one-tick delay chain used previously. This makes the optimization correctness-preserving for
 arbitrary Level circuits while eliminating phase padding inside the common synchronous feedback-cut
-case.  Intentional temporal delays such as periodic-clock startup are forced through the exact path.
+case. Intentional temporal delays such as periodic-clock startup are forced through the exact path.
 """
 
 from __future__ import annotations
@@ -54,8 +54,6 @@ class ValidityWindow:
     end: int | None
 
     def __post_init__(self) -> None:
-        if self.start < 0:
-            raise ValueError("validity-window start must be nonnegative")
         if self.end is not None and self.end <= self.start:
             raise ValueError("finite validity window must be nonempty")
 
@@ -122,7 +120,7 @@ class SettlingVectorLowerer(VectorLowerer):
         overlap = existing.intersect(window)
         if overlap is None:
             # The same physical lane/phase reached through two semantic aliases is useful only for
-            # ticks proved by both aliases.  No common tick means we must stop using persistence
+            # ticks proved by both aliases. No common tick means we must stop using persistence
             # information for this key rather than make an unsafe choice later.
             self._scalar_validity.pop(key, None)
         else:
@@ -220,10 +218,6 @@ class SettlingVectorLowerer(VectorLowerer):
         return ValidityWindow(result.phase, _end_from_span(result.phase, span))
 
     def _record_scalar_semantics(self, semantic: object, result: RealizedValue) -> None:
-        existing = self._scalar_window(result)
-        if existing is not None:
-            return
-
         if isinstance(semantic, Constant):
             window = ValidityWindow(result.phase, None)
         elif isinstance(semantic, (Input, FlowInput, InputSample, FlowInputSample)):
@@ -249,10 +243,6 @@ class SettlingVectorLowerer(VectorLowerer):
         self._remember_scalar(result, window)
 
     def _record_vector_semantics(self, semantic: object, result: RealizedVector) -> None:
-        existing = self._vector_window(result)
-        if existing is not None:
-            return
-
         if isinstance(semantic, VectorConstant):
             window = ValidityWindow(result.phase, None)
         elif isinstance(semantic, (VectorInput, FlowVectorInput, VectorInputSample, FlowVectorInputSample)):
@@ -287,8 +277,13 @@ class SettlingVectorLowerer(VectorLowerer):
         elif isinstance(semantic, (VectorFilter, VectorSelect)):
             source = self._vector_child(semantic.vector)
             source_window = self._vector_window(source) if source is not None else None
-            span = None if source_window is None else source_window.span
-            window = ValidityWindow(result.phase, _end_from_span(result.phase, span or 1))
+            if source_window is None:
+                window = self._point_window(result.phase)
+            else:
+                window = ValidityWindow(
+                    result.phase,
+                    _end_from_span(result.phase, source_window.span),
+                )
         else:
             window = self._point_window(result.phase)
         self._remember_vector(result, window)
