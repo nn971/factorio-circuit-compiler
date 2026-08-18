@@ -31,7 +31,7 @@ def _simulate(
     resets: list[int] | None = None,
     logical_steps_per_move: int = 1,
 ) -> list[dict[str, LogicalOutput]]:
-    """Run the cheap gameplay/state model without the heavyweight framebuffer history."""
+    """Run the gameplay/state model without the heavyweight framebuffer history."""
 
     module = build_snake_circuit(
         logical_steps_per_move=logical_steps_per_move,
@@ -52,6 +52,8 @@ def _simulate(
     return [dict(zip(names, row, strict=True)) for row in trace]
 
 
+@pytest.mark.slow
+@pytest.mark.acceptance
 def test_snake_waits_at_center_until_first_direction_gesture() -> None:
     rows = _simulate([{}, {}, {}])
 
@@ -60,6 +62,8 @@ def test_snake_waits_at_center_until_first_direction_gesture() -> None:
     assert all(row["dead"] == 0 for row in rows)
 
 
+@pytest.mark.slow
+@pytest.mark.acceptance
 def test_snake_first_gesture_can_choose_any_direction() -> None:
     rows = _simulate([_movement(W=1), {}])
 
@@ -68,6 +72,8 @@ def test_snake_first_gesture_can_choose_any_direction() -> None:
     assert rows[1]["head_x"] == 6
 
 
+@pytest.mark.slow
+@pytest.mark.acceptance
 def test_snake_starts_east_eats_first_food_and_grows() -> None:
     rows = _simulate([_movement(E=1), {}, {}, {}])
 
@@ -89,6 +95,8 @@ def test_snake_starts_east_eats_first_food_and_grows() -> None:
     assert rows[2]["food_cell"] == FOOD_CELL_IDS[1]
 
 
+@pytest.mark.slow
+@pytest.mark.acceptance
 def test_snake_rejects_reverse_and_uses_diagonal_as_a_turn() -> None:
     rows = _simulate(
         [
@@ -113,6 +121,8 @@ def test_snake_rejects_reverse_and_uses_diagonal_as_a_turn() -> None:
     assert rows[3]["direction"] == DIR_E
 
 
+@pytest.mark.slow
+@pytest.mark.acceptance
 def test_snake_queues_a_short_direction_gesture_until_next_move() -> None:
     rows = _simulate(
         [_movement(E=1), _movement(N=1), {}, {}],
@@ -129,6 +139,8 @@ def test_snake_queues_a_short_direction_gesture_until_next_move() -> None:
     assert rows[3]["direction"] == DIR_N
 
 
+@pytest.mark.slow
+@pytest.mark.acceptance
 def test_snake_stops_on_wall_collision() -> None:
     rows = _simulate([_movement(E=1), *({} for _ in range(8))])
 
@@ -141,6 +153,8 @@ def test_snake_stops_on_wall_collision() -> None:
     assert rows[8]["dead"] == 1
 
 
+@pytest.mark.slow
+@pytest.mark.acceptance
 def test_reset_wins_over_movement_restores_initial_state_and_rearms_game() -> None:
     movements = [
         _movement(E=1),
@@ -211,6 +225,8 @@ def test_framebuffer_decoder_and_color_composition_are_cheaply_covered() -> None
     }
 
 
+@pytest.mark.slow
+@pytest.mark.acceptance
 def test_full_snake_build_contains_reset_framebuffer_and_pixel_history() -> None:
     module = build_snake_circuit(render_framebuffer=True).build()
 
