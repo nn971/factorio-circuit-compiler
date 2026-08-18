@@ -1,13 +1,17 @@
-"""Experimental projection from eager phase-delay chains to synthetic temporal holds.
+"""Experimental projection from eager phase-delay chains to temporal reuse.
 
-This module does not rewrite the canonical AbstractPhysicalCircuit.  It analyzes the current lowering
+This module does not rewrite the canonical AbstractPhysicalCircuit. It analyzes the current lowering
 only as a baseline and asks a narrower question: how many maximal delay components carry one logical
-Level token forward through a period?  If a component's maximum delay depth is strictly smaller than
-the clock inactive interval, one synthetic capture/hold at the component root can replace all delay
-combinators in that component.
+Level token forward through time?
 
-The result is a conservative projection.  A future phase-free temporal optimizer may share one hold
-across several components or prove that no hold is needed because the root value is naturally stable.
+Two conservative reuse rules are modeled:
+
+* a component rooted in a statically invariant net needs no temporal hardware at all;
+* otherwise, if its maximum delay depth is shorter than the clock period, one synthetic capture/hold
+  at the component root can replace every one-tick delay in the component.
+
+The result remains only an upper bound on temporal-register cost. A future phase-free optimizer may
+share one hold across several components or prove wider natural stability using semantic clock facts.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from factorio_circuit.ir.abstract_physical import (
     AbstractPhysicalCircuit,
     ArithmeticCombinator,
     Connector,
-    Endpoint,
+    ConstantCombinator,
 )
 
 _SCALAR_DELAY = "phase alignment delay"
@@ -43,13 +47,14 @@ class DelayComponent:
 
 @dataclass(frozen=True, slots=True)
 class DelayReuseProjection:
-    """Conservative one-hold-per-delay-component projection."""
+    """Conservative temporal-reuse projection for the eager lowering baseline."""
 
     period: int
     scalar_delays: int
     vector_delays: int
     components: tuple[DelayComponent, ...]
-    eligible_components: tuple[DelayComponent, ...]
+    static_components: tuple[DelayComponent, ...]
+    hold_components: tuple[DelayComponent, ...]
     ineligible_components: tuple[DelayComponent, ...]
 
     @property
@@ -58,11 +63,14 @@ class DelayReuseProjection:
 
     @property
     def projected_holds(self) -> int:
-        return len(self.eligible_components)
+        return len(self.hold_components)
 
     @property
     def removable_delays(self) -> int:
-        return sum(component.delay_count for component in self.eligible_components)
+        return sum(
+            component.delay_count
+            for component in (*self.static_components, *self.hold_components)
+        )
 
     @property
     def remaining_delays(self) -> int:
@@ -84,8 +92,9 @@ class DelayReuseProjection:
             ),
             (
                 f"  delay_components={len(self.components)}; "
-                f"eligible={len(self.eligible_components)}; "
-                f"ineligible={len(self.ineligible_components)}"
+                f"naturally_static={len(self.static_components)}; "
+                f"replace_with_hold={len(self.hold_components)}; "
+                f"not_yet_covered={len(self.ineligible_components)}"
             ),
             (
                 f"  projected_temporal_holds={self.projected_holds}; "
@@ -150,17 +159,65 @@ def _delay_kind(entity: object) -> str | None:
     return None
 
 
+def _statically_invariant_nets(circuit: AbstractPhysicalCircuit) -> set[int]:
+    """Return nets whose value is provably independent of all runtime inputs/state.
+
+    This intentionally proves only a simple structural fact: ordinary combinator outputs are static
+    when every dynamic input net is static, seeded by non-annotation constant combinators. Feedback
+    state therefore does not accidentally become static because its cyclic input never receives a
+    seed. The analysis is conservative and used only to improve this experiment's bound.
+    """
+
+    entities = {entity.id: entity for entity in circuit.entities}
+    input_nets: dict[int, set[int]] = {entity_id: set() for entity_id in entities}
+    output_nets: dict[int, set[int]] = {entity_id: set() for entity_id in entities}
+    single_nets: dict[int, set[int]] = {entity_id: set() for entity_id in entities}
+    for net in circuit.nets:
+        for endpoint in net.endpoints:
+            if endpoint.connector is Connector.INPUT:
+                input_nets.setdefault(endpoint.entity, set()).add(net.id)
+            elif endpoint.connector is Connector.OUTPUT:
+                output_nets.setdefault(endpoint.entity, set()).add(net.id)
+            elif endpoint.connector is Connector.SINGLE:
+                single_nets.setdefault(endpoint.entity, set()).add(net.id)
+
+    static: set[int] = set()
+    for entity_id, entity in entities.items():
+        if (
+            isinstance(entity, ConstantCombinator)
+            and not entity.annotation_only
+            and bool(entity.signals)
+        ):
+            static.update(single_nets.get(entity_id, ()))
+
+    changed = True
+    while changed:
+        changed = False
+        for entity_id, entity in entities.items():
+            if isinstance(entity, ConstantCombinator):
+                continue
+            outputs = output_nets.get(entity_id, set())
+            if not outputs or outputs <= static:
+                continue
+            inputs = input_nets.get(entity_id, set())
+            if inputs and inputs <= static:
+                before = len(static)
+                static.update(outputs)
+                changed = changed or len(static) != before
+    return static
+
+
 def project_delay_reuse(
     circuit: AbstractPhysicalCircuit,
     *,
     period: int,
 ) -> DelayReuseProjection:
-    """Project maximal eager-delay components to one synthetic hold each.
+    """Project maximal eager-delay components to static reuse or one synthetic hold.
 
-    A component is eligible exactly when its longest one-tick delay path is shorter than ``period``.
-    This is the conservative fixed-period condition needed for a token captured once per occurrence
-    to remain available through every use represented by the component without being overwritten by
-    the next occurrence.
+    Static roots need no temporal hardware. A non-static component is hold-eligible when its longest
+    one-tick delay path is strictly shorter than ``period``. This is the conservative fixed-period
+    condition for a token captured once per occurrence to survive every use in that component before
+    the next occurrence may overwrite the hold.
     """
 
     circuit.validate()
@@ -193,7 +250,7 @@ def project_delay_reuse(
         net_producers[net.id] = producers
 
     if set(input_net) != set(delays) or set(output_net) != set(delays):
-        missing = sorted(set(delays) - set(input_net) | set(delays) - set(output_net))
+        missing = sorted((set(delays) - set(input_net)) | (set(delays) - set(output_net)))
         raise ValueError(f"phase-delay entities missing canonical connectors: {missing[:8]}")
 
     predecessor: dict[int, int | None] = {}
@@ -238,19 +295,31 @@ def project_delay_reuse(
         )
 
     if visited != set(delays):
-        # A remaining component would be a pure delay cycle, which should be impossible for the
-        # current eager forward-only lowering and cannot be replaced by a simple occurrence hold.
         unresolved = sorted(set(delays) - visited)
         raise ValueError(f"phase-delay graph contains a cycle or unreachable component: {unresolved[:8]}")
 
     ordered = tuple(sorted(components, key=lambda item: item.root_entity))
-    eligible = tuple(component for component in ordered if component.max_depth < period)
-    ineligible = tuple(component for component in ordered if component.max_depth >= period)
+    static_nets = _statically_invariant_nets(circuit)
+    static_components = tuple(
+        component for component in ordered if component.root_input_net in static_nets
+    )
+    static_roots = {component.root_entity for component in static_components}
+    hold_components = tuple(
+        component
+        for component in ordered
+        if component.root_entity not in static_roots and component.max_depth < period
+    )
+    covered_roots = static_roots | {component.root_entity for component in hold_components}
+    ineligible = tuple(
+        component for component in ordered if component.root_entity not in covered_roots
+    )
+
     return DelayReuseProjection(
         period=period,
         scalar_delays=sum(kind == "scalar" for kind in delays.values()),
         vector_delays=sum(kind == "vector" for kind in delays.values()),
         components=ordered,
-        eligible_components=eligible,
+        static_components=static_components,
+        hold_components=hold_components,
         ineligible_components=ineligible,
     )
