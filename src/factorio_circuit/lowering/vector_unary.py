@@ -25,6 +25,9 @@ def realize_vector_scalar(lowerer: Any, value: VectorScalarOp) -> RealizedVector
     scalar = lowerer._realize_operand_value(value.scalar)
     scalar_phase = scalar.phase if isinstance(scalar, RealizedValue) else 0
     phase = max(vector.phase, scalar_phase)
+    schedule = getattr(lowerer, "_operation_input_phase", None)
+    if schedule is not None:
+        phase = schedule(value, "vector_scalar", value.op, phase)
     vector = lowerer.delay_vector_to(vector, phase)
     if isinstance(scalar, RealizedValue):
         scalar = lowerer.delay_to(scalar, phase)
@@ -62,6 +65,11 @@ def realize_vector_scalar(lowerer: Any, value: VectorScalarOp) -> RealizedVector
 
 def realize_vector_filter(lowerer: Any, value: VectorFilter) -> RealizedVector:
     vector = lowerer.realize_vector(value.vector)
+    phase = vector.phase
+    schedule = getattr(lowerer, "_operation_input_phase", None)
+    if schedule is not None:
+        phase = schedule(value, "vector_filter", value.op, phase)
+    vector = lowerer.delay_vector_to(vector, phase)
     placeholder = lowerer._new_signal(VECTOR_EACH_PLACEHOLDER)
     entity = DeciderCombinator(
         id=lowerer._take_entity_id(),
@@ -84,5 +92,5 @@ def realize_vector_filter(lowerer: Any, value: VectorFilter) -> RealizedVector:
         carries_dynamic_vector=dynamic,
     )
     return RealizedVector(
-        net, vector.phase + FACTORIO_LATENCY.operation_latency("vector_filter", value.op)
+        net, phase + FACTORIO_LATENCY.operation_latency("vector_filter", value.op)
     )
