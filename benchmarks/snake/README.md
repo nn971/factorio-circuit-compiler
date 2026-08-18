@@ -1,8 +1,8 @@
 # Snake benchmark
 
 Snake is the repository's heavyweight end-to-end benchmark. It is intentionally kept out of
-`examples/`: unlike the small semantic demonstrations, the full workload expands to thousands of
-physical combinators, hundreds of thousands of routing relays, and a multi-minute compile.
+`examples/`: unlike the small semantic demonstrations, the full workload expands to a large physical
+circuit, substantial routing, and a multi-minute compile.
 
 It simultaneously stresses:
 
@@ -23,12 +23,13 @@ changes.
 
 - `model.py` — the interactive 16x16 Snake workload.
 - `generate.py` — heavyweight compile/blueprint runner with selectable layout strategies.
-- `census.py` — pre-synthesis Abstract Physical IR census runner.
+- `census.py` — pre-synthesis Abstract Physical IR census runner, including residual delay-graph analysis.
 - `baselines.json` — machine-readable, in-game-validated milestone measurements.
 - `README.md` — benchmark contract and manual acceptance procedure.
 
 The layout algorithm and its constructive invariants are documented separately in
-`docs/safe-folded-crossbar-layout.md`. Benchmark measurements belong here so later optimizer work does
+`docs/safe-folded-crossbar-layout.md`. The accepted temporal-lowering milestone is documented in
+`docs/temporal-lowering-milestone.md`. Benchmark measurements belong here so later optimizer work does
 not have to reconstruct results from chat logs or prose.
 
 ## Canonical benchmark configuration
@@ -78,6 +79,9 @@ Useful comparison modes are:
 # Current canonical workload.
 uv run python -m benchmarks.snake.census
 
+# Reconstruct residual exact-delay trunks and classify their sources/sinks.
+uv run python -m benchmarks.snake.census --deep-delays
+
 # Isolate core gameplay/state by removing pixel-history state and framebuffer rendering.
 uv run python -m benchmarks.snake.census --no-framebuffer
 
@@ -85,8 +89,13 @@ uv run python -m benchmarks.snake.census --no-framebuffer
 uv run python -m benchmarks.snake.census --optimize
 
 # Machine-readable output for benchmark records or diffs.
-uv run python -m benchmarks.snake.census --json
+uv run python -m benchmarks.snake.census --deep-delays --json
 ```
+
+`--deep-delays` reconstructs the delay-only graph from abstract nets. It reports connected-component
+sizes/depths, whether components branch or merge, and delay-weighted source/sink classes. This is the
+preferred diagnostic when deciding whether residual phase delays represent duplicated transport,
+startup machinery, external snapshots, or an unscheduled computation cone.
 
 `--no-framebuffer` is especially useful before compiler optimization because Snake deliberately stores
 both scalar body positions and one-hot body-pixel history. Comparing the two censuses tells us how much
@@ -94,31 +103,59 @@ of the target realization belongs to gameplay/state versus the current display s
 
 ## Current validated milestone
 
-The current `main` milestone is `dense-safe-folded-v1`, merged as
-`1bde1650a393d881bd04e275197ec39ed2245e10`.
+The current accepted milestone is `settling-alap-v1`. The safe-folded full Snake produced by the
+production validity-window settling + ALAP pipeline ran flawlessly in Factorio.
+
+The accepted pre-synthesis census is:
+
+```text
+implementation combinators = 1,131
+annotation entities         =    11
+abstract entities total     = 1,142
+abstract nets               = 1,006
+phase delays                =   430
+  scalar                    =   406
+  vector                    =    24
+computation                 =   453
+state implementation        =   222
+state period                = 60 ticks
+```
+
+The previous validated `dense-safe-folded-v1` milestone had:
 
 ```text
 implementation combinators = 5,657
-physical entities           = 5,668
-physical groups             = 5,338
-row tracks                  = red:62, green:38
-entity rows                 = 13
-entities per row            = 437
 layout relays               = 246,476
 extent                      = 1,554 x 1,544 tiles
 state period                = 60 ticks
 ```
 
-The accepted pre-density Snake baseline was:
+Thus the accepted temporal-lowering milestone reduced implementation combinators by about **80.0%**
+without changing the Snake algorithm or clock period. Compared with the original 4,960 phase-delay
+combinators, the final census contains 430, a reduction of about **91.3%**.
+
+The acceptance run did not record a new relay/extent snapshot, so those fields are intentionally absent
+from the new baseline rather than inferred. The authoritative append-only numeric records are in
+`baselines.json`.
+
+The residual deep census at acceptance is:
 
 ```text
-layout relays = 470,732
-extent        = 3,004 x 2,792 tiles
+total delays       = 430
+components         = 32
+linear components  = 32
+branching          = 0
+max component size = 80
+
+source-weighted delays:
+  computation      = 270
+  clock/startup    = 80
+  external input   = 80
 ```
 
-The density milestone therefore reduced routing relays by about **47.6%** and bounding-box area by
-about **71.4%**, while the full game continued to run correctly in Factorio. The authoritative numeric
-records are in `baselines.json`.
+The two external-input components are one `reset` scalar trunk and one `movement` vector trunk. The
+largest 80-tick chain is intentional startup readiness feeding output HOLD. Remaining computation-side
+padding is localized enough to defer until a later optimization pass.
 
 When a later optimization is accepted, append a new named milestone to `baselines.json`; do not mutate
 or overwrite an already validated historical entry.
@@ -201,9 +238,10 @@ uv run python -m benchmarks.snake.generate --row-layout
 ```
 
 `--annealing-layout` is an alias for the previous full `net-aware` policy: deterministic greedy
-seeding, simulated annealing, deterministic relaxation, then collision-aware heuristic routing. It is
-particularly useful now that temporal settling can remove most phase-padding combinators and make
-search-based placement practical again.
+seeding, simulated annealing, deterministic relaxation, then collision-aware heuristic routing. Even
+after ALAP reduced the benchmark to about 1.1k implementation combinators, this strategy remained too
+slow for convenient Snake iteration. Treat annealer scalability as a separate placer problem; the
+safe-folded strategy remains the canonical reliable layout.
 
 `--greedy-layout` and `--net-aware-layout` / `--annealing-layout` also accept `--corridor-width`,
 `--target-fill`, and `--layout-retries`.
