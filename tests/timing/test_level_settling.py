@@ -1,3 +1,5 @@
+import pytest
+
 from factorio_circuit import Circuit, SignalId, compile_circuit
 from factorio_circuit.compiler import lower_to_abstract_physical
 from factorio_circuit.ir.abstract_physical import ArithmeticCombinator
@@ -70,8 +72,9 @@ def test_held_state_removes_internal_vector_phase_padding() -> None:
     assert _delay_count(result.abstract_physical, "phase alignment delay") > 0
 
 
-def test_held_state_settling_matches_logical_recurrence() -> None:
-    result = compile_circuit(_stable_feedback_circuit(), optimize=False)
+@pytest.mark.parametrize("optimize", [False, True])
+def test_held_state_settling_matches_logical_recurrence(optimize: bool) -> None:
+    result = compile_circuit(_stable_feedback_circuit(), optimize=optimize)
 
     assert_same_stream(result.semantic_ir, result.physical_circuit, [{} for _ in range(8)])
 
@@ -85,8 +88,9 @@ def test_fresh_level_input_still_uses_exact_delay_for_path_skew() -> None:
     assert _delay_count(result.abstract_physical, "vector phase alignment delay") >= 2
 
 
-def test_fresh_level_input_keeps_exact_stream_semantics() -> None:
-    result = compile_circuit(_fresh_input_skew_circuit(), optimize=False)
+@pytest.mark.parametrize("optimize", [False, True])
+def test_fresh_level_input_keeps_exact_stream_semantics(optimize: bool) -> None:
+    result = compile_circuit(_fresh_input_skew_circuit(), optimize=optimize)
     stream = [
         {"data": {VALUE: 1}},
         {"data": {VALUE: 3}},
