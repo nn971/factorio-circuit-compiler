@@ -1,4 +1,4 @@
-# Level settling and phase-padding elimination
+# Level settling, ALAP scheduling, and phase-padding elimination
 
 The Level backend treats clock period as a **settling budget**, not as a path length that every value
 must physically traverse.
@@ -36,7 +36,54 @@ on the next physical tick, so unequal paths from that sample can denote differen
 occurrences unless the short path is delayed or the input is explicitly captured. Intentional
 startup delays and Event/pulse transport also carry temporal meaning and are not phase padding.
 
-## Production lowering rule
+## Backward ALAP scheduling
+
+Validity reuse alone is insufficient for an external snapshot fanout. ASAP lowering can create
+
+```text
+x -> f -> delay delay delay ...
+x -> g -> delay delay delay ...
+x -> h -> delay delay delay ...
+```
+
+because each cheap branch is computed immediately and only its distinct result is later transported
+to the state boundary. By then the branches no longer share a physical net, so a delay-prefix cache
+cannot merge their transport.
+
+`factorio_circuit.lowering.alap.AlapVectorLowerer` therefore computes an as-late-as-possible schedule
+for periodic state-transition cones. Every state value input is demanded at its inferred
+`transition_input_phase`; scalar controls are demanded one final state-control stage earlier. These
+deadlines propagate backwards through the semantic DAG by target latency. A shared node receives the
+earliest deadline of all its consumers.
+
+For a one-stage operation whose result is required at phase `T`, the preferred input phase is
+`T - 1`. Lowering never moves an operation earlier than its ordinary ASAP phase, so missing or
+inapplicable ALAP information falls back naturally to the previous schedule.
+
+Crucially, ALAP moves **computation**, not the meaning of an external snapshot. Raw scalar/vector
+Level samples retain their existing physical sample phase. If a snapshot is needed later, exact
+transport is pushed toward that shared leaf. Scalar and vector delay-prefix caches can then share the
+transport before cheap computations branch:
+
+```text
+x -> shared exact-delay trunk ->+-> f -> state boundary
+                                +-> g -> state boundary
+                                +-> h -> state boundary
+```
+
+For held state and constants even that trunk is normally free because their validity windows already
+cover the scheduled phase.
+
+The first production ALAP pass intentionally targets periodic state cones. Ordinary output-only
+expressions retain their previous schedule, and packed scalar implementations may retain their
+packing-selected phase when packing is chosen. These are optimization limitations, not semantic
+exceptions.
+
+Scalar `Select` uses the conservative generic three-stage data-path envelope while scheduling. If the
+physical lowerer later realizes the select as a shorter decider mux, its result may simply become
+available before the deadline and ordinary validity/delay rules handle the remaining slack.
+
+## Production validity rule
 
 `factorio_circuit.lowering.settling.SettlingVectorLowerer` carries a certified half-open validity
 window for realized Level values:
@@ -58,6 +105,11 @@ hardware.
 The periodic clock's startup-ready chain is explicitly forced through the exact path because it
 suppresses premature modulo-clock residues; a constant being numerically stable does not make that
 temporal guard redundant.
+
+When exact vector transport is necessary, `SharedVectorDelayLowerer` memoizes every one-tick vector
+prefix just like the scalar delay cache. Multiple consumers of the same physical vector therefore
+share one trunk. ALAP is what exposes this sharing in the common `f(x), g(x), ...` external-snapshot
+pattern by moving the fanout computations toward their consumers.
 
 ## Output observation
 
@@ -81,6 +133,8 @@ is available. The held output is then stable for the whole interval until the ne
 This keeps the distinction explicit:
 
 - internal combinational settling is free when validity proves it safe;
+- computation is placed ALAP inside periodic state cones so exact transport stays upstream and can be
+  shared;
 - external dense observation is synchronized only at the semantic output boundary.
 
 The current production Level path implements the default HOLD behavior. ZERO/VALID remain primarily
