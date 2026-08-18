@@ -19,7 +19,7 @@ from factorio_circuit.ir.semantic import (
 )
 from factorio_circuit.ir.state import AccumulatorRegister, FreezeRegister, VectorRegisterRead
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
-from factorio_circuit.lowering.settling import SettlingVectorLowerer
+from factorio_circuit.lowering.vector_delay_trunks import SharedVectorDelayLowerer
 
 _VECTOR_OUTPUTS = (
     VectorInput,
@@ -41,9 +41,9 @@ def lower_normalized_vectors(
 ) -> AbstractPhysicalCircuit:
     """Lower a module that has already crossed the canonical Level boundary.
 
-    Level values carry a lowering-time validity proof.  Values that remain the same logical token
+    Level values carry a lowering-time validity proof. Values that remain the same logical token
     across a later requested phase are reused directly; exact delay chains remain the conservative
-    fallback when persistence is not proved.
+    fallback when persistence is not proved. Exact vector-delay prefixes are shared across consumers.
     """
 
     reject_event_module(module)
@@ -60,7 +60,7 @@ def lower_normalized_vectors(
             f"unsupported register(s): {names}"
         )
 
-    lowerer = SettlingVectorLowerer(
+    lowerer = SharedVectorDelayLowerer(
         module,
         enable_packing=enable_packing,
         state_timing=state_timing,
