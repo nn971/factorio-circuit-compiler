@@ -84,9 +84,13 @@ Snake with movement input, periodic state, bounded body history, a 256-lane fram
 synthesis/layout, and in-game acceptance. Its append-only accepted milestones are recorded in
 `benchmarks/snake/baselines.json`.
 
-The full Snake compile is intentionally opt-in and is not part of routine pytest/CI.
+The full Snake framebuffer/state semantic acceptance and the full compile/layout are intentionally
+opt-in and are not part of routine pytest/CI. Routine Snake tests use the cheap gameplay model plus a
+small stateless renderer check.
 
 ## Validation
+
+Routine validation:
 
 ```bash
 uv sync --extra dev
@@ -95,6 +99,29 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
 ```
+
+Useful focused regressions include:
+
+```bash
+uv run pytest tests/integration/test_multi_rate_event_ledger.py
+uv run pytest tests/integration/test_snake.py
+```
+
+Heavyweight Snake validation is explicit:
+
+```bash
+# Full semantic framebuffer/reset acceptance; intentionally outside pytest/CI.
+uv run python -m benchmarks.snake.semantic_acceptance
+
+# Pre-synthesis census.
+uv run python -m benchmarks.snake.census --deep-delays
+
+# Full physical synthesis/layout and blueprint generation.
+uv run python -m benchmarks.snake.generate --output snake-blueprint.txt
+```
+
+If a routine run unexpectedly stalls, use `uv run pytest -vv` to see the active test and
+`uv run pytest --durations=20` to identify slow regressions.
 
 `tests/integration/test_multi_rate_event_ledger.py` is the main irregular-clock end-to-end regression.
 Sorting/WHT provide smaller structured synthesis benchmarks; Snake is the heavyweight manual
