@@ -15,13 +15,14 @@ It simultaneously stresses:
 - real Factorio blueprint serialization;
 - external device integration through the movement detector and 16x16 lamp screen.
 
-The full benchmark is **not** part of routine pytest/CI. Small semantic Snake tests remain in
-`tests/integration/test_snake.py`; use this directory when evaluating whole-compiler or physical-layout
-changes.
+The full benchmark is **not** part of routine pytest/CI. `tests/integration/test_snake.py` keeps cheap
+gameplay/state coverage with `render_framebuffer=False` plus a small stateless framebuffer-decoder
+check. Full framebuffer/state semantic simulation is an explicit benchmark acceptance task.
 
 ## Files
 
 - `model.py` — the interactive 16x16 Snake workload.
+- `semantic_acceptance.py` — opt-in full framebuffer/state semantic acceptance checks.
 - `generate.py` — heavyweight compile/blueprint runner with selectable layout strategies.
 - `census.py` — pre-synthesis Abstract Physical IR census runner, including residual delay-graph analysis.
 - `baselines.json` — machine-readable, in-game-validated milestone measurements.
@@ -31,6 +32,34 @@ The layout algorithm and its constructive invariants are documented separately i
 `docs/safe-folded-crossbar-layout.md`. The accepted temporal-lowering milestone is documented in
 `docs/temporal-lowering-milestone.md`. Benchmark measurements belong here so later optimizer work does
 not have to reconstruct results from chat logs or prose.
+
+## Validation tiers
+
+Routine regression coverage stays under pytest:
+
+```bash
+uv run pytest tests/integration/test_snake.py
+```
+
+That path intentionally does **not** semantically simulate the full 16x16 framebuffer state graph.
+When a change touches pixel-history state, reset/render interactions, or the full framebuffer
+expression, run the opt-in semantic acceptance instead:
+
+```bash
+uv run python -m benchmarks.snake.semantic_acceptance
+```
+
+For lowering/synthesis changes, use the census before paying for placement/routing:
+
+```bash
+uv run python -m benchmarks.snake.census --deep-delays
+```
+
+Only use the full blueprint build when the change needs whole-compiler/layout acceptance:
+
+```bash
+uv run python -m benchmarks.snake.generate --output snake-blueprint.txt
+```
 
 ## Canonical benchmark configuration
 
@@ -310,4 +339,6 @@ For cheap semantic tests, call:
 build_snake_circuit(render_framebuffer=False)
 ```
 
-That preserves the game-state logic while omitting pixel-history state and the expensive renderer.
+That preserves the game-state logic while omitting pixel-history state and the expensive renderer. For
+the full renderer/state interaction, use `python -m benchmarks.snake.semantic_acceptance` instead of
+putting a full-framebuffer simulation back into routine pytest.
