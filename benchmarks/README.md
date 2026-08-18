@@ -7,12 +7,22 @@ rather than teaching one small language feature.
 
 `benchmarks/snake/` is the canonical large application/layout benchmark. It exercises periodic state,
 large vector expressions, physical lowering, physical synthesis, layout, blueprint generation, and
-real in-game device integration. Its full framebuffer compile is intentionally **not** part of routine
-pytest/CI.
+real in-game device integration. Full framebuffer/state semantic simulation and the full framebuffer
+compile are intentionally **not** part of routine pytest/CI.
 
-Run it explicitly with:
+Use the cheapest validation tier that covers the change:
 
 ```bash
+# Routine gameplay/state and cheap stateless renderer coverage.
+uv run pytest tests/integration/test_snake.py
+
+# Opt-in full framebuffer/state semantic acceptance.
+uv run python -m benchmarks.snake.semantic_acceptance
+
+# Full lowering census without placement/routing.
+uv run python -m benchmarks.snake.census --deep-delays
+
+# Full physical synthesis/layout/blueprint build.
 uv run python -m benchmarks.snake.generate --output snake-blueprint.txt
 ```
 
