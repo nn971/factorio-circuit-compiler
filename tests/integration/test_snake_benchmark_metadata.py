@@ -22,11 +22,20 @@ def test_snake_benchmark_baselines_are_appendable_structured_records() -> None:
         assert isinstance(milestone["in_game_validated"], bool)
         metrics = milestone["metrics"]
         assert metrics["implementation_combinators"] > 0
-        assert metrics["physical_entities"] > 0
-        assert metrics["layout_relays"] > 0
-        width, height = metrics["extent_tiles"]
-        assert width > 0
-        assert height > 0
+        assert metrics["state_period_ticks"] > 0
+
+        # Layout snapshots are optional: some accepted compiler milestones deliberately record only
+        # the durable pre-synthesis census when a fresh relay/extent measurement was not taken.
+        if "physical_entities" in metrics:
+            assert metrics["physical_entities"] > 0
+        if "abstract_physical_entities" in metrics:
+            assert metrics["abstract_physical_entities"] > 0
+        if "layout_relays" in metrics:
+            assert metrics["layout_relays"] > 0
+        if "extent_tiles" in metrics:
+            width, height = metrics["extent_tiles"]
+            assert width > 0
+            assert height > 0
 
     assert milestones[-1]["in_game_validated"] is True
 
@@ -48,3 +57,12 @@ def test_accepted_snake_layout_history_is_not_rewritten() -> None:
     assert dense["metrics"]["layout_relays"] == 246_476
     assert dense["metrics"]["extent_tiles"] == [1554, 1544]
     assert dense["metrics"]["state_period_ticks"] == 60
+
+    settling_alap = by_id["settling-alap-v1"]
+    assert settling_alap["in_game_validated"] is True
+    assert settling_alap["metrics"]["implementation_combinators"] == 1_131
+    assert settling_alap["metrics"]["abstract_physical_entities"] == 1_142
+    assert settling_alap["metrics"]["phase_delay_combinators"] == 430
+    assert settling_alap["metrics"]["state_period_ticks"] == 60
+    assert "layout_relays" not in settling_alap["metrics"]
+    assert "extent_tiles" not in settling_alap["metrics"]
