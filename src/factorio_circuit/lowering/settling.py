@@ -30,6 +30,7 @@ from factorio_circuit.analysis.state_timing import ClockDomainTiming, StateTimin
 from factorio_circuit.ir.abstract_physical import (
     Connector,
     DeciderCombinator,
+    DeciderCondition,
     Endpoint,
     Operand,
 )
@@ -500,7 +501,7 @@ class SettlingVectorLowerer(VectorLowerer):
         self,
         domain: ClockDomainTiming,
         payload_phase: int,
-    ) -> tuple[object, object, RealizedValue, int]:
+    ) -> tuple[DeciderCondition, DeciderCondition, RealizedValue, int]:
         """Return equal/not-equal clock tests and startup-ready level at the payload input tick."""
 
         if not domain.registers:
