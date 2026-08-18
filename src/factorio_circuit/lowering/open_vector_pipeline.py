@@ -19,8 +19,7 @@ from factorio_circuit.ir.semantic import (
 )
 from factorio_circuit.ir.state import AccumulatorRegister, FreezeRegister, VectorRegisterRead
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
-
-from .open_vector import VectorLowerer
+from factorio_circuit.lowering.settling import SettlingVectorLowerer
 
 _VECTOR_OUTPUTS = (
     VectorInput,
@@ -40,7 +39,12 @@ def lower_normalized_vectors(
     enable_packing: bool,
     state_timing: StateTimingPlan,
 ) -> AbstractPhysicalCircuit:
-    """Lower a module that has already crossed the canonical Level boundary."""
+    """Lower a module that has already crossed the canonical Level boundary.
+
+    Level values carry a lowering-time validity proof.  Values that remain the same logical token
+    across a later requested phase are reused directly; exact delay chains remain the conservative
+    fallback when persistence is not proved.
+    """
 
     reject_event_module(module)
     validate_canonical_module(module)
@@ -56,7 +60,7 @@ def lower_normalized_vectors(
             f"unsupported register(s): {names}"
         )
 
-    lowerer = VectorLowerer(
+    lowerer = SettlingVectorLowerer(
         module,
         enable_packing=enable_packing,
         state_timing=state_timing,
