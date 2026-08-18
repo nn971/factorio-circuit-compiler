@@ -11,7 +11,7 @@ OTHER = SignalId("virtual", "signal-B")
 
 
 def _delay_count(circuit: object, description: str) -> int:
-    entities = getattr(circuit, "entities")
+    entities = circuit.entities
     return sum(
         isinstance(entity, ArithmeticCombinator) and entity.description == description
         for entity in entities
@@ -79,9 +79,7 @@ def test_alap_external_fanout_uses_one_shared_vector_trunk() -> None:
     # per branch.  State-derived paths need no vector padding under the settling proof.
     expected_trunk = timing.transition_input_phase - 1
     assert expected_trunk > 0
-    assert (
-        _delay_count(result.abstract_physical, "vector phase alignment delay") == expected_trunk
-    )
+    assert _delay_count(result.abstract_physical, "vector phase alignment delay") == expected_trunk
 
 
 def test_alap_lane_reads_share_vector_transport_before_projection() -> None:
@@ -93,9 +91,7 @@ def test_alap_lane_reads_share_vector_transport_before_projection() -> None:
     # this rule the two concrete lanes would grow independent scalar delay chains.
     expected_trunk = timing.transition_input_phase - 2
     assert expected_trunk > 0
-    assert (
-        _delay_count(result.abstract_physical, "vector phase alignment delay") == expected_trunk
-    )
+    assert _delay_count(result.abstract_physical, "vector phase alignment delay") == expected_trunk
 
 
 @pytest.mark.parametrize("optimize", [False, True])

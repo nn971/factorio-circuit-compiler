@@ -11,7 +11,8 @@ Two conservative reuse rules are modeled:
   at the component root can replace every one-tick delay in the component.
 
 The result remains only an upper bound on temporal-register cost. A future phase-free optimizer may
-share one hold across several components or prove wider natural stability using semantic clock facts.
+share one hold across several components or prove wider natural stability using semantic
+clock facts.
 """
 
 from __future__ import annotations
@@ -68,8 +69,7 @@ class DelayReuseProjection:
     @property
     def removable_delays(self) -> int:
         return sum(
-            component.delay_count
-            for component in (*self.static_components, *self.hold_components)
+            component.delay_count for component in (*self.static_components, *self.hold_components)
         )
 
     @property
@@ -296,7 +296,9 @@ def project_delay_reuse(
 
     if visited != set(delays):
         unresolved = sorted(set(delays) - visited)
-        raise ValueError(f"phase-delay graph contains a cycle or unreachable component: {unresolved[:8]}")
+        raise ValueError(
+            f"phase-delay graph contains a cycle or unreachable component: {unresolved[:8]}"
+        )
 
     ordered = tuple(sorted(components, key=lambda item: item.root_entity))
     static_nets = _statically_invariant_nets(circuit)

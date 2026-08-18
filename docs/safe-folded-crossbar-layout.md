@@ -7,8 +7,8 @@
 path:
 
 ```python
-safe_crossbar_options()          # strategy = "safe-crossbar"
-safe_folded_crossbar_options()   # strategy = "safe-folded-crossbar"
+safe_crossbar_options()  # strategy = "safe-crossbar"
+safe_folded_crossbar_options()  # strategy = "safe-folded-crossbar"
 ```
 
 For the heavyweight Snake benchmark the linear rollback is:

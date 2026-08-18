@@ -9,7 +9,8 @@ The game is deliberately built only from existing compiler primitives:
 - body positions use a bounded FIFO with a maximum snake length of 16;
 - the framebuffer is a persistent 256-lane packed-RGB vector for ``devices.lamp_screen``.
 
-Use ``python -m benchmarks.snake.generate`` for the heavyweight physical compile and blueprint runner.
+Use ``python -m benchmarks.snake.generate`` for the heavyweight physical compile and
+blueprint runner.
 The model remains separately importable so semantic tests can exercise it without invoking layout.
 """
 
@@ -159,9 +160,10 @@ def build_snake_circuit(
 ) -> Circuit:
     """Build the first bounded Snake prototype.
 
-    The snake waits at screen coordinate (8, 8), with initial reference direction east and length one.
-    The first direction gesture starts the game and may choose any direction. Each food increases the
-    visible/collidable length by one until the fixed maximum length of 16 is reached. A nonzero
+    The snake waits at screen coordinate (8, 8), with initial reference direction east and
+    length one. The first direction gesture starts the game and may choose any direction.
+    Each food increases the visible/collidable length by one until the fixed maximum length
+    of 16 is reached. A nonzero
     ``reset`` input restores this complete initial state and wins over movement/collision updates on
     the same logical occurrence.
 
@@ -285,8 +287,8 @@ def build_snake_circuit(
         when=move_ok | reset_active,
     )
 
-    # Accumulator clear suppresses same-occurrence adds in physical lowering, so reset wins even when
-    # movement/eating is also active.
+    # Accumulator clear suppresses same-occurrence adds in physical lowering, so reset
+    # wins even when movement/eating is also active.
     x_reg.add(_lane_value(circuit, X_SIGNAL, dx), when=move_ok)
     x_reg.clear(reset_active)
     y_reg.add(_lane_value(circuit, Y_SIGNAL, dy), when=move_ok)
@@ -334,9 +336,7 @@ def build_snake_circuit(
     score = score_reg.sample().signal(SCORE_SIGNAL)
     dead = dead_reg.sample().signal(DEAD_SIGNAL)
     started_now = started_reg.sample().signal(STARTED_SIGNAL)
-    body_positions = [
-        register.sample().signal(POSITION_SIGNAL) for register in body_position_regs
-    ]
+    body_positions = [register.sample().signal(POSITION_SIGNAL) for register in body_position_regs]
     next_food_id = _food_id(score)
 
     if render_framebuffer:
@@ -361,9 +361,7 @@ def build_snake_circuit(
         body_color = dead_now.select(DEAD_BODY_COLOR, BODY_COLOR)
         head_color = dead_now.select(DEAD_HEAD_COLOR, HEAD_COLOR)
         framebuffer = (
-            occupied_body * body_color
-            + head_one_hot * head_color
-            + food_one_hot * FOOD_COLOR
+            occupied_body * body_color + head_one_hot * head_color + food_one_hot * FOOD_COLOR
         )
         circuit.output("framebuffer", framebuffer)
 

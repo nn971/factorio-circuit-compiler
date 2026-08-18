@@ -4,7 +4,8 @@ This runner is intentionally separate from the canonical compiler.  It preserves
 startup delay and any alignment request spanning a full state period, while ordinary shorter scalar
 and vector phase-alignment requests are represented by direct reuse of the same net.
 
-The resulting blueprint is a gameplay probe, not a proven-correct compiler output.  Its purpose is to
+The resulting blueprint is a gameplay probe, not a proven-correct compiler output.
+Its purpose is to
 measure how much of the current delay hardware is unnecessary when Level values persist naturally.
 """
 
@@ -15,7 +16,7 @@ import sys
 from pathlib import Path
 from time import monotonic
 
-from benchmarks.snake.generate import _TerminalProgress, _marker_wire_color
+from benchmarks.snake.generate import _marker_wire_color, _TerminalProgress
 from benchmarks.snake.model import DEFAULT_LOGICAL_STEPS_PER_MOVE, build_snake_circuit
 from factorio_circuit.analysis import (
     analyze_normalized_state_timing,
@@ -136,8 +137,7 @@ def main() -> None:
     if framebuffer_port is not None:
         framebuffer_color = _marker_wire_color(result_view, framebuffer_port.marker_entity)
         print(
-            "OUTPUT framebuffer -> display with "
-            f"{framebuffer_color.value.upper()}",
+            f"OUTPUT framebuffer -> display with {framebuffer_color.value.upper()}",
             file=sys.stderr,
         )
     print(

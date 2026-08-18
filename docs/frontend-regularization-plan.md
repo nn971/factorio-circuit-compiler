@@ -101,7 +101,7 @@ v.filter_lt(n)
 v.filter_le(n)
 v.filter_gt(n)
 v.filter_ge(n)
-v.positive()      # filter_gt(0)
+v.positive()  # filter_gt(0)
 ```
 
 Do not overload `v == n` to mean filtering. That spelling is ambiguous between a scalar predicate, a Boolean mask, and a support-preserving filter.
@@ -111,9 +111,9 @@ Do not overload `v == n` to mean filtering. That spelling is ambiguous between a
 Keep operations whose result shape genuinely changes explicit:
 
 ```python
-v.signal(signal)   # vector -> scalar lane projection
-v.any()            # vector -> scalar predicate
-v.max()            # vector -> selected vector
+v.signal(signal)  # vector -> scalar lane projection
+v.any()  # vector -> scalar predicate
+v.max()  # vector -> selected vector
 ```
 
 Their semantics should be documented alongside the algebra above.

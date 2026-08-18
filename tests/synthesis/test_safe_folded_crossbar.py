@@ -121,14 +121,16 @@ def test_folded_entity_rows_use_three_tile_pitch_and_safe_feeder_residues() -> N
         assert abs((x + 2.0) % 6.0) > 1e-9
     for xs in rows.values():
         xs.sort()
-        assert all(abs(right - left - 3.0) < 1e-9 for left, right in zip(xs, xs[1:]))
+        assert all(abs(right - left - 3.0) < 1e-9 for left, right in zip(xs, xs[1:], strict=False))
 
 
 def test_folded_bus_tracks_pack_one_tile_apart_on_integer_relay_lattice() -> None:
     red_rows = [_bus_y(0.0, WireColor.RED, track) for track in range(8)]
     green_rows = [_bus_y(0.0, WireColor.GREEN, track) for track in range(8)]
-    red_gaps = [abs(right - left) for left, right in zip(red_rows, red_rows[1:])]
-    green_gaps = [abs(right - left) for left, right in zip(green_rows, green_rows[1:])]
+    red_gaps = [abs(right - left) for left, right in zip(red_rows, red_rows[1:], strict=False)]
+    green_gaps = [
+        abs(right - left) for left, right in zip(green_rows, green_rows[1:], strict=False)
+    ]
 
     assert all(abs(gap - 1.0) < 1e-9 for gap in red_gaps)
     assert all(abs(gap - 1.0) < 1e-9 for gap in green_gaps)
@@ -161,15 +163,9 @@ def test_cut_crossing_counts_match_route_spans() -> None:
 
 
 def test_folded_portals_pack_adjacent_tiles_but_skip_row_bus_lattice() -> None:
-    right_side = [
-        _portal_x_values(21, boundary=0, ordinal=ordinal)
-        for ordinal in range(20)
-    ]
-    left_side = [
-        _portal_x_values(21, boundary=1, ordinal=ordinal)
-        for ordinal in range(20)
-    ]
-    gaps = [right - left for left, right in zip(right_side, right_side[1:])]
+    right_side = [_portal_x_values(21, boundary=0, ordinal=ordinal) for ordinal in range(20)]
+    left_side = [_portal_x_values(21, boundary=1, ordinal=ordinal) for ordinal in range(20)]
+    gaps = [right - left for left, right in zip(right_side, right_side[1:], strict=False)]
 
     assert min(gaps) == 1.0
     assert max(gaps) == 2.0

@@ -4,7 +4,6 @@ from examples.autonomous_market_controller import build_controller
 from factorio_circuit import compile_circuit
 from factorio_circuit.ir.state import FreezeRegister
 
-
 EXPECTED_STATE_NAMES = {"mode", "selected_item", "slot0", "slot1", "slot2", "slot3"}
 EXPECTED_INPUT_NAMES = {"root_enabled", "worker_working"}
 EXPECTED_VECTOR_INPUT_NAMES = {"stock", "root_target", "reader_ingredients"}

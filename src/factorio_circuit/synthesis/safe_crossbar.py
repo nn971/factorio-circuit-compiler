@@ -7,12 +7,14 @@ through a unique vertical feeder column.
 
 Bus rows are reusable: two same-color groups share a row whenever their horizontal relay intervals,
 including collision clearance, are disjoint. Deterministic interval partitioning therefore uses the
-minimum number of tracks for the fixed entity order while preserving the no-search correctness proof.
-The reusable tracks are only two tiles apart; the six-tile pitch is reserved for relay hops along wires.
+minimum number of tracks for the fixed entity order while preserving the no-search
+correctness proof. The reusable tracks are only two tiles apart; the six-tile pitch is
+reserved for relay hops along wires.
 
 Implementation entities sit at ``x = 0 (mod 6)``. INPUT/SINGLE feeders use ``x = -2 (mod 6)`` and
 OUTPUT feeders use ``x = +2 (mod 6)``. Ordinary feeder relays use ``y = 0 (mod 6)`` away from the
-entity row, while bus rows are odd integer y coordinates starting at +/-3. Ordinary bus relays remain
+entity row, while bus rows are odd integer y coordinates starting at +/-3. Ordinary bus relays
+remain
 at ``x = 0 (mod 6)``; only the owning endpoint inserts a tap at its feeder column. Unrelated
 feeder/bus crossings therefore contain no relay.
 
@@ -114,7 +116,8 @@ def build_safe_crossbar_layout(
     or retry path: every relay coordinate follows directly from entity, endpoint, and physical-net
     order.
 
-    ``max_relays`` is a safety guard evaluated from an exact preflight count before relay objects are
+    ``max_relays`` is a safety guard evaluated from an exact preflight count before relay objects
+    are
     created. Pass ``None`` only when intentionally requesting an arbitrarily large fallback layout.
     """
 
@@ -216,7 +219,6 @@ def build_safe_crossbar_layout(
     # to Layout; the direct connections below merely encode the same electrical components.
     physical.connections.clear()
     total_routes = len(plan.routes)
-    completed_routes = 0
     report_progress(
         progress,
         "safe-layout",
@@ -225,7 +227,7 @@ def build_safe_crossbar_layout(
         detail="constructing interval-packed physical-net buses",
     )
 
-    for group in sorted(plan.routes):
+    for completed_routes, group in enumerate(sorted(plan.routes), start=1):
         route = plan.routes[group]
         endpoints = route.endpoints
         color = route.color
@@ -287,7 +289,6 @@ def build_safe_crossbar_layout(
         ):
             add_wire(left_id, relay_connector, right_id, relay_connector, color)
 
-        completed_routes += 1
         report_progress(
             progress,
             "safe-layout",

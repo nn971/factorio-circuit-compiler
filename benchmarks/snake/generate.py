@@ -2,7 +2,8 @@
 
 The default uses ``safe-folded-crossbar``: deterministic serpentine entity rows, row-local physical
 bus tracks chosen after fold portals are known, and search-free vertical stitches. Public inputs and
-outputs are clustered at the beginning of the first row. The simpler linear ``safe-crossbar`` remains
+outputs are clustered at the beginning of the first row. The simpler linear
+``safe-crossbar`` remains
 available explicitly as a canonical rollback path.
 
 Progress is printed to stderr. The final importable blueprint string is printed to stdout unless
@@ -74,7 +75,8 @@ def _marker_wire_color(result: CompilationResult, marker_entity: int) -> WireCol
     if len(colors) != 1:
         rendered = ", ".join(sorted(color.value for color in colors)) or "none"
         raise ValueError(
-            f"expected exactly one synthesized wire color at marker {marker_entity}; found {rendered}"
+            "expected exactly one synthesized wire color at marker "
+            f"{marker_entity}; found {rendered}"
         )
     return next(iter(colors))
 
@@ -221,7 +223,8 @@ def main() -> None:
     )
     print(
         "wire movement detector -> INPUT movement with "
-        f"{movement_color.value.upper()}; pulse INPUT reset [{reset_port.signal.name}] nonzero with "
+        f"{movement_color.value.upper()}; pulse INPUT reset "
+        f"[{reset_port.signal.name}] nonzero with "
         f"{reset_color.value.upper()}; OUTPUT framebuffer -> display with "
         f"{framebuffer_color.value.upper()}",
         file=sys.stderr,

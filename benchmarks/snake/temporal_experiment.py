@@ -25,9 +25,7 @@ def main() -> None:
     args = parser.parse_args()
 
     started = monotonic()
-    module = lower_frontend(
-        build_snake_circuit(render_framebuffer=not args.no_framebuffer)
-    )
+    module = lower_frontend(build_snake_circuit(render_framebuffer=not args.no_framebuffer))
     normalized_at = monotonic()
     graph = build_level_temporal_hypergraph(module)
     built_at = monotonic()
@@ -40,9 +38,7 @@ def main() -> None:
     )
     observation_kinds = Counter(item.label.split(":", 1)[0] for item in graph.observations)
     print("  observations by boundary:")
-    for label, count in sorted(
-        observation_kinds.items(), key=lambda item: (-item[1], item[0])
-    ):
+    for label, count in sorted(observation_kinds.items(), key=lambda item: (-item[1], item[0])):
         print(f"    {label}: {count}")
 
 

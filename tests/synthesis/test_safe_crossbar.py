@@ -42,7 +42,7 @@ def _mixed_color_fixture() -> abstract.AbstractPhysicalCircuit:
 
 def _tap_y_by_group(layout: object) -> dict[int, float]:
     # Keep this helper local to the tests rather than exposing layout-internal routing metadata.
-    relays = getattr(layout, "relays")
+    relays = layout.relays
     result: dict[int, float] = {}
     for relay in relays:
         if " tap " not in relay.description:
