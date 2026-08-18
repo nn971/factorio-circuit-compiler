@@ -1,6 +1,6 @@
 """Opt-in heavyweight semantic acceptance checks for the full Snake framebuffer path.
 
-This intentionally lives under ``benchmarks/`` instead of ``tests/``.  Building and semantically
+This intentionally lives under ``benchmarks/`` instead of ``tests/``. Building and semantically
 simulating the complete 16x16 framebuffer/state graph is useful before accepting Snake-specific
 changes, but it is too expensive for routine pytest/CI.
 """
@@ -23,20 +23,17 @@ def _movement(**directions: int) -> dict[object, int]:
     return {ARROW_SIGNALS[direction]: value for direction, value in directions.items()}
 
 
-def _simulate(
-    movements: list[dict[object, int]],
-    *,
-    resets: list[int] | None = None,
-) -> list[dict[str, LogicalOutput]]:
+def _simulate_acceptance_trace() -> list[dict[str, LogicalOutput]]:
+    """Cover first growth and then reset in one expensive full-framebuffer simulation."""
+
     module = build_snake_circuit(render_framebuffer=True).build()
-    reset_rows = [0] * len(movements) if resets is None else resets
-    if len(reset_rows) != len(movements):
-        raise ValueError("resets must have the same length as movements")
+    movements = [_movement(E=1), {}, {}, {}]
+    resets = [0, 0, 0, 1]
     trace = simulate_stream(
         module,
         [
             {"movement": movement, "reset": reset}
-            for movement, reset in zip(movements, reset_rows, strict=True)
+            for movement, reset in zip(movements, resets, strict=True)
         ],
     )
     names = tuple(name for name in module.output.names if name is not None)
@@ -45,11 +42,17 @@ def _simulate(
     return [dict(zip(names, row, strict=True)) for row in trace]
 
 
-def _check_reset_clears_body_framebuffer_history() -> None:
-    rows = _simulate(
-        [_movement(E=1), {}, {}, {}],
-        resets=[0, 0, 0, 1],
-    )
+def _check_framebuffer_after_first_growth(rows: list[dict[str, LogicalOutput]]) -> None:
+    frame = rows[2]["framebuffer"]
+
+    assert isinstance(frame, dict)
+    assert frame[pixel_signal(11, 8)] == HEAD_COLOR
+    assert frame[pixel_signal(10, 8)] == BODY_COLOR
+    assert FOOD_CELL_IDS[1] == 213
+    assert frame[pixel_signal(4, 13)] == FOOD_COLOR
+
+
+def _check_reset_clears_body_framebuffer_history(rows: list[dict[str, LogicalOutput]]) -> None:
     frame = rows[3]["framebuffer"]
 
     assert isinstance(frame, dict)
@@ -60,22 +63,11 @@ def _check_reset_clears_body_framebuffer_history() -> None:
     assert rows[3]["length"] == 1
 
 
-def _check_framebuffer_after_first_growth() -> None:
-    rows = _simulate([_movement(E=1), {}, {}])
-    frame = rows[2]["framebuffer"]
-
-    assert isinstance(frame, dict)
-    assert frame[pixel_signal(11, 8)] == HEAD_COLOR
-    assert frame[pixel_signal(10, 8)] == BODY_COLOR
-    assert FOOD_CELL_IDS[1] == 213
-    assert frame[pixel_signal(4, 13)] == FOOD_COLOR
-
-
 def main() -> None:
-    print("Snake framebuffer semantic acceptance: reset/history")
-    _check_reset_clears_body_framebuffer_history()
-    print("Snake framebuffer semantic acceptance: growth/rendering")
-    _check_framebuffer_after_first_growth()
+    print("Snake framebuffer semantic acceptance: running full trace")
+    rows = _simulate_acceptance_trace()
+    _check_framebuffer_after_first_growth(rows)
+    _check_reset_clears_body_framebuffer_history(rows)
     print("Snake framebuffer semantic acceptance passed")
 
 
