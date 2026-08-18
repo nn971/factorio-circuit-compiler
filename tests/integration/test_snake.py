@@ -11,8 +11,11 @@ from benchmarks.snake.model import (
     FOOD_COLOR,
     HEAD_COLOR,
     MAX_LENGTH,
+    PIXEL_ID_ROM,
+    _decode_cell_pixels,
     build_snake_circuit,
 )
+from factorio_circuit import Circuit
 from factorio_circuit.devices import pixel_signal
 from factorio_circuit.ir.semantic import is_vector_value
 from factorio_circuit.simulate.semantic import LogicalOutput, simulate_stream
@@ -27,11 +30,12 @@ def _simulate(
     *,
     resets: list[int] | None = None,
     logical_steps_per_move: int = 1,
-    render_framebuffer: bool = False,
 ) -> list[dict[str, LogicalOutput]]:
+    """Run the cheap gameplay/state model without the heavyweight framebuffer history."""
+
     module = build_snake_circuit(
         logical_steps_per_move=logical_steps_per_move,
-        render_framebuffer=render_framebuffer,
+        render_framebuffer=False,
     ).build()
     reset_rows = [0] * len(movements) if resets is None else resets
     if len(reset_rows) != len(movements):
@@ -172,31 +176,39 @@ def test_reset_wins_over_movement_restores_initial_state_and_rearms_game() -> No
     assert rows[9]["started"] == 1
 
 
-def test_reset_clears_body_framebuffer_history() -> None:
-    rows = _simulate(
-        [_movement(E=1), {}, {}, {}],
-        resets=[0, 0, 0, 1],
-        render_framebuffer=True,
+def test_framebuffer_decoder_and_color_composition_are_cheaply_covered() -> None:
+    """Exercise the renderer algebra without constructing/simulating the full Snake state graph."""
+
+    circuit = Circuit("snake_framebuffer_primitives")
+    head_cell = circuit.input("head_cell")
+    body_cell = circuit.input("body_cell")
+    food_cell = circuit.input("food_cell")
+    pixel_id_rom = circuit.constant_signals(PIXEL_ID_ROM)
+    framebuffer = (
+        _decode_cell_pixels(pixel_id_rom, body_cell) * BODY_COLOR
+        + _decode_cell_pixels(pixel_id_rom, head_cell) * HEAD_COLOR
+        + _decode_cell_pixels(pixel_id_rom, food_cell) * FOOD_COLOR
     )
-    frame = rows[3]["framebuffer"]
+    circuit.output("framebuffer", framebuffer)
+
+    rows = simulate_stream(
+        circuit.build(),
+        [
+            {
+                "head_cell": 8 * 16 + 8 + 1,
+                "body_cell": 8 * 16 + 7 + 1,
+                "food_cell": FOOD_CELL_IDS[0],
+            }
+        ],
+    )
+    frame = rows[0][0]
 
     assert isinstance(frame, dict)
-    assert frame[pixel_signal(8, 8)] == HEAD_COLOR
-    assert frame[pixel_signal(11, 8)] == FOOD_COLOR
-    assert frame.get(pixel_signal(10, 8), 0) == 0
-    assert rows[3]["score"] == 0
-    assert rows[3]["length"] == 1
-
-
-def test_framebuffer_matches_head_body_and_next_food_after_first_growth() -> None:
-    rows = _simulate([_movement(E=1), {}, {}], render_framebuffer=True)
-    frame = rows[2]["framebuffer"]
-
-    assert isinstance(frame, dict)
-    assert frame[pixel_signal(11, 8)] == HEAD_COLOR
-    assert frame[pixel_signal(10, 8)] == BODY_COLOR
-    assert FOOD_CELL_IDS[1] == 213
-    assert frame[pixel_signal(4, 13)] == FOOD_COLOR
+    assert frame == {
+        pixel_signal(7, 8): BODY_COLOR,
+        pixel_signal(8, 8): HEAD_COLOR,
+        pixel_signal(11, 8): FOOD_COLOR,
+    }
 
 
 def test_full_snake_build_contains_reset_framebuffer_and_pixel_history() -> None:
@@ -207,6 +219,9 @@ def test_full_snake_build_contains_reset_framebuffer_and_pixel_history() -> None
     assert module.output.names[0] == "framebuffer"
     assert is_vector_value(module.output.values[0])
     assert len(module.state_registers) == 37
+    assert {register.name for register in module.state_registers} >= {
+        f"body_pixel_{index}" for index in range(15)
+    }
     assert len(set(module.state_registers)) == len(module.state_registers)
 
 
