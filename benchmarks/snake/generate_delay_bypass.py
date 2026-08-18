@@ -23,6 +23,7 @@ from factorio_circuit.analysis import (
     format_abstract_physical_census,
 )
 from factorio_circuit.blueprint.layout_encode import encode_layout_blueprint_string
+from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
 from factorio_circuit.experimental.delay_bypass_lowering import lower_with_delay_bypass
 from factorio_circuit.ir.output import preserve_output_materializations
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
@@ -96,6 +97,7 @@ def main() -> None:
     try:
         layout = synthesize_vector_layout(
             abstract,
+            safe_wire_span=DEFAULT_SAFE_WIRE_SPAN,
             placement=safe_folded_crossbar_options(),
             progress=terminal_progress,
         )
@@ -114,12 +116,9 @@ def main() -> None:
         (port for port in layout.circuit.outputs if port.name == "framebuffer"),
         None,
     )
-    movement_color = _marker_wire_color(
-        type("ResultView", (), {"layout": layout})(), movement_port.marker_entity
-    )
-    reset_color = _marker_wire_color(
-        type("ResultView", (), {"layout": layout})(), reset_port.marker_entity
-    )
+    result_view = type("ResultView", (), {"layout": layout})()
+    movement_color = _marker_wire_color(result_view, movement_port.marker_entity)
+    reset_color = _marker_wire_color(result_view, reset_port.marker_entity)
 
     print(
         "experimental snake: "
@@ -135,9 +134,7 @@ def main() -> None:
             file=sys.stderr,
         )
     if framebuffer_port is not None:
-        framebuffer_color = _marker_wire_color(
-            type("ResultView", (), {"layout": layout})(), framebuffer_port.marker_entity
-        )
+        framebuffer_color = _marker_wire_color(result_view, framebuffer_port.marker_entity)
         print(
             "OUTPUT framebuffer -> display with "
             f"{framebuffer_color.value.upper()}",
