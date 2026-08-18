@@ -65,6 +65,22 @@ def _stable_feedback_circuit() -> Circuit:
     return c
 
 
+def _held_output_circuit() -> Circuit:
+    c = Circuit("settling_hold_output")
+    one = c.constant_signals({VALUE: 1})
+    memory = c.freeze("memory")
+
+    old = memory.sample()
+    deep = (old + one) + one
+    memory.set(old + deep, when=1)
+
+    c.step(1)
+    current = memory.sample()
+    frame = current + (current + one)
+    c.output("frame", frame)
+    return c
+
+
 def _fresh_input_skew_circuit() -> Circuit:
     c = Circuit("fresh_input_path_skew")
     data = c.signals("data")
@@ -112,6 +128,39 @@ def test_held_state_settling_matches_logical_recurrence(optimize: bool) -> None:
         [{} for _ in range(8)],
         optimize=optimize,
     )
+
+
+def test_derived_level_output_gets_hold_only_at_observation_boundary() -> None:
+    result = lower_to_abstract_physical(_held_output_circuit(), optimize=False)
+    descriptions = {
+        getattr(entity, "description", None) for entity in result.abstract_physical.entities
+    }
+
+    assert _delay_count(result.abstract_physical, "vector phase alignment delay") == 0
+    assert "Level HOLD: capture vector output at logical boundary" in descriptions
+    assert "Level HOLD: retain vector output between logical boundaries" in descriptions
+
+
+@pytest.mark.parametrize("optimize", [False, True])
+def test_derived_level_output_is_dense_and_coherent_between_activations(optimize: bool) -> None:
+    result = compile_circuit(_held_output_circuit(), optimize=optimize)
+    period = result.state_timing.uniform_period
+    assert period is not None and period > 1
+
+    logical_stream = [{} for _ in range(6)]
+    expected = simulate_semantic_stream(result.semantic_ir, logical_stream)
+    physical_stream = [{} for _ in range(len(logical_stream) * period)]
+    output_phase = result.physical_circuit.outputs[0].phase
+    observations = simulate_physical_stream(
+        result.physical_circuit,
+        physical_stream,
+        flush_ticks=output_phase + period,
+    )
+
+    for logical_tick, expected_row in enumerate(expected):
+        start = logical_tick * period + output_phase
+        for physical_tick in range(start, start + period):
+            assert observations[physical_tick][0] == expected_row[0]
 
 
 def test_fresh_level_input_still_uses_exact_delay_for_path_skew() -> None:
