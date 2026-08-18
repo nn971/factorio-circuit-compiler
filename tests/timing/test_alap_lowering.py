@@ -45,6 +45,30 @@ def _external_fanout_circuit() -> Circuit:
     return c
 
 
+def _external_lane_fanout_circuit() -> Circuit:
+    """Different scalar lanes of one vector snapshot should share vector transport first."""
+
+    c = Circuit("alap_external_lane_fanout")
+    data = c.signals("data")
+    one = c.constant_signals({VALUE: 1})
+    memory = c.accumulator("memory")
+
+    old = memory.sample()
+    deep = old
+    for _ in range(5):
+        deep = deep + one
+    memory.add(deep)
+
+    active_a = data.signal(VALUE) != 0
+    active_b = data.signal(OTHER) != 0
+    memory.add(one * active_a)
+    memory.add(one * active_b)
+
+    c.step(1)
+    c.output("value", memory.sample())
+    return c
+
+
 def test_alap_external_fanout_uses_one_shared_vector_trunk() -> None:
     result = lower_to_abstract_physical(_external_fanout_circuit(), optimize=False)
     timing = result.state_timing.registers[0]
@@ -54,6 +78,20 @@ def test_alap_external_fanout_uses_one_shared_vector_trunk() -> None:
     # state transition input.  Shared vector-delay prefixes therefore cost one trunk, not one chain
     # per branch.  State-derived paths need no vector padding under the settling proof.
     expected_trunk = timing.transition_input_phase - 1
+    assert expected_trunk > 0
+    assert (
+        _delay_count(result.abstract_physical, "vector phase alignment delay") == expected_trunk
+    )
+
+
+def test_alap_lane_reads_share_vector_transport_before_projection() -> None:
+    result = lower_to_abstract_physical(_external_lane_fanout_circuit(), optimize=False)
+    timing = result.state_timing.registers[0]
+
+    # Each lane comparison is one stage and each vector-scalar gate is one more stage, so the whole
+    # external vector snapshot is transported to T-2 exactly once before A/B are projected.  Without
+    # this rule the two concrete lanes would grow independent scalar delay chains.
+    expected_trunk = timing.transition_input_phase - 2
     assert expected_trunk > 0
     assert (
         _delay_count(result.abstract_physical, "vector phase alignment delay") == expected_trunk
