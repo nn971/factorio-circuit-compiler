@@ -56,6 +56,41 @@
         "height_reduction_fraction": 0.4470,
         "bounding_box_area_reduction_fraction": 0.7139
       }
+    },
+    {
+      "id": "settling-alap-v1",
+      "commit": "2d5f60829fdafd5b145e2e93b413772fd4862a73",
+      "date": "2026-08-19",
+      "in_game_validated": true,
+      "notes": "Production validity-window settling plus backward ALAP scheduling. The canonical safe-folded Snake ran flawlessly in Factorio. Layout relay/extent metrics were not recorded for this acceptance run; the durable milestone is the pre-synthesis abstract-physical census.",
+      "metrics": {
+        "implementation_combinators": 1131,
+        "abstract_physical_entities": 1142,
+        "annotation_entities": 11,
+        "abstract_nets": 1006,
+        "phase_delay_combinators": 430,
+        "phase_delay_scalar": 406,
+        "phase_delay_vector": 24,
+        "computation_combinators": 453,
+        "state_implementation_combinators": 222,
+        "state_period_ticks": 60
+      },
+      "change_from_dense_safe_folded_v1": {
+        "implementation_combinator_reduction_fraction": 0.8001,
+        "phase_delay_reduction_from_pre_temporal_fraction": 0.9133
+      },
+      "residual_delay_census": {
+        "components": 32,
+        "linear_components": 32,
+        "branching_components": 0,
+        "max_component_size": 80,
+        "max_depth": 80,
+        "delay_weighted_source_classes": {
+          "computation": 270,
+          "clock_startup": 80,
+          "external_input": 80
+        }
+      }
     }
   ]
 }
