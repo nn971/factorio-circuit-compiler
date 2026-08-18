@@ -93,13 +93,33 @@ def _fresh_input_skew_circuit() -> Circuit:
     deep = (data + one) + one
     mixed = data + deep
     # Referencing old state makes this a genuine synchronous feedback region (P > 1), while
-    # ``data`` still reaches ``mixed`` along both a zero-depth and a two-combinator path.  The short
+    # ``data`` still reaches ``mixed`` along both a zero-depth and a two-combinator path. The short
     # fresh-input path must be transported exactly; unlike ``old``, it cannot borrow the whole state
     # period as a validity window.
     memory.set(old + mixed, when=1)
 
     c.step(1)
     c.output("value", memory.sample())
+    return c
+
+
+def _shared_vector_delay_trunk_circuit() -> Circuit:
+    """Use one fresh vector at two later phases so exact-delay prefixes can be shared."""
+
+    c = Circuit("shared_vector_delay_trunk")
+    data = c.signals("data")
+    one = c.constant_signals({VALUE: 1})
+
+    depth1 = data + one
+    depth2 = depth1 + one
+    use_at_2 = data + depth2
+
+    depth3 = depth2 + one
+    depth4 = depth3 + one
+    use_at_4 = data + depth4
+
+    c.output("use_at_2", use_at_2)
+    c.output("use_at_4", use_at_4)
     return c
 
 
@@ -179,6 +199,15 @@ def test_fresh_level_input_still_uses_exact_delay_for_path_skew() -> None:
     # transported to meet the deeper path; treating it like held state would change which logical
     # input occurrence is consumed.
     assert _delay_count(result.abstract_physical, "vector phase alignment delay") >= 2
+
+
+def test_exact_vector_delays_share_one_prefix_trunk() -> None:
+    result = lower_to_abstract_physical(_shared_vector_delay_trunk_circuit(), optimize=False)
+
+    # ``data`` is fresh and therefore genuinely requires exact transport. One consumer needs it at
+    # phase 2 and another at phase 4. Independent chains would cost 2 + 4 = 6 delays; sharing the
+    # phase-1/phase-2 prefix costs exactly four.
+    assert _delay_count(result.abstract_physical, "vector phase alignment delay") == 4
 
 
 @pytest.mark.parametrize("optimize", [False, True])
