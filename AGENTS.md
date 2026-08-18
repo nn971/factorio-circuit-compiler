@@ -28,9 +28,13 @@ Prefer removing obsolete compatibility layers over adding another adapter. Keep 
 
 When changing semantics, add or update a small contract test. When changing lowering/synthesis, compare semantic/reference behavior with physical simulation where possible. Keep `tests/integration/test_multi_rate_event_ledger.py`, sorting, and WHT as broad regression/stress cases.
 
+Routine pytest must stay routine. Do not put the full 16x16 Snake framebuffer/state simulation or full Snake compile/layout into `tests/`; those are opt-in benchmark acceptance tasks under `benchmarks/snake/`. Prefer a small fixture, stateless renderer check, or `render_framebuffer=False` gameplay test for ordinary regression coverage.
+
 ## Validation
 
 Use Python >= 3.12 and `uv`.
+
+Routine validation:
 
 ```bash
 uv sync --extra dev
@@ -47,4 +51,25 @@ uv run pytest tests/frontend/test_clocked_flow_semantics.py
 uv run pytest tests/timing/test_causality.py
 uv run pytest tests/integration/test_multi_rate_event_ledger.py
 uv run pytest tests/integration/test_layout_benchmark_examples.py
+uv run pytest tests/integration/test_snake.py
+```
+
+Opt-in heavyweight Snake validation, only when the affected work justifies it:
+
+```bash
+# Full semantic framebuffer/reset acceptance; intentionally outside pytest/CI.
+uv run python -m benchmarks.snake.semantic_acceptance
+
+# Full lowering census without placement/routing.
+uv run python -m benchmarks.snake.census --deep-delays
+
+# Full physical synthesis/layout/blueprint generation; multi-minute benchmark.
+uv run python -m benchmarks.snake.generate --output snake-blueprint.txt
+```
+
+If routine pytest unexpectedly becomes slow, diagnose before adding exclusions:
+
+```bash
+uv run pytest -vv
+uv run pytest --durations=20
 ```
