@@ -21,8 +21,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from factorio_circuit.analysis.state_timing import StateTimingPlan
 from factorio_circuit.ir.semantic import (
     BinaryOp,
+    CircuitModule,
     Compare,
     Constant,
     FlowInput,
@@ -32,6 +34,7 @@ from factorio_circuit.ir.semantic import (
     Input,
     InputSample,
     Select,
+    Value,
     VectorBinaryOp,
     VectorConstant,
     VectorFilter,
@@ -40,6 +43,7 @@ from factorio_circuit.ir.semantic import (
     VectorScalarOp,
     VectorSelect,
     VectorSignal,
+    VectorValue,
 )
 from factorio_circuit.ir.state import VectorRegisterRead
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
@@ -97,8 +101,18 @@ def _end_from_span(start: int, span: int | None) -> int | None:
 class SettlingVectorLowerer(VectorLowerer):
     """Production Level lowerer that reuses already-valid values instead of padding phases."""
 
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+    def __init__(
+        self,
+        module: CircuitModule,
+        *,
+        enable_packing: bool,
+        state_timing: StateTimingPlan | None = None,
+    ) -> None:
+        super().__init__(
+            module,
+            enable_packing=enable_packing,
+            state_timing=state_timing,
+        )
         self._scalar_validity: dict[tuple[int, object, int], ValidityWindow] = {}
         self._vector_validity: dict[tuple[int, int], ValidityWindow] = {}
         self._force_exact_alignment = False
@@ -217,7 +231,7 @@ class SettlingVectorLowerer(VectorLowerer):
         span = self._combined_span(windows)
         return ValidityWindow(result.phase, _end_from_span(result.phase, span))
 
-    def _record_scalar_semantics(self, semantic: object, result: RealizedValue) -> None:
+    def _record_scalar_semantics(self, semantic: Value, result: RealizedValue) -> None:
         if isinstance(semantic, Constant):
             window = ValidityWindow(result.phase, None)
         elif isinstance(semantic, (Input, FlowInput, InputSample, FlowInputSample)):
@@ -242,7 +256,7 @@ class SettlingVectorLowerer(VectorLowerer):
             window = self._point_window(result.phase)
         self._remember_scalar(result, window)
 
-    def _record_vector_semantics(self, semantic: object, result: RealizedVector) -> None:
+    def _record_vector_semantics(self, semantic: VectorValue, result: RealizedVector) -> None:
         if isinstance(semantic, VectorConstant):
             window = ValidityWindow(result.phase, None)
         elif isinstance(semantic, (VectorInput, FlowVectorInput, VectorInputSample, FlowVectorInputSample)):
@@ -278,7 +292,10 @@ class SettlingVectorLowerer(VectorLowerer):
             source = self._vector_child(semantic.vector)
             source_window = self._vector_window(source) if source is not None else None
             if source_window is None:
-                window = self._point_window(result.phase)
+                if isinstance(semantic.vector, VectorConstant):
+                    window = ValidityWindow(result.phase, None)
+                else:
+                    window = self._point_window(result.phase)
             else:
                 window = ValidityWindow(
                     result.phase,
@@ -311,13 +328,13 @@ class SettlingVectorLowerer(VectorLowerer):
                 ValidityWindow(value.phase, value.phase + timing.period),
             )
 
-    def realize(self, value: object) -> RealizedValue:  # type: ignore[override]
-        result = super().realize(value)  # type: ignore[arg-type]
+    def realize(self, value: Value) -> RealizedValue:
+        result = super().realize(value)
         self._record_scalar_semantics(value, result)
         return result
 
-    def realize_vector(self, value: object) -> RealizedVector:  # type: ignore[override]
-        result = super().realize_vector(value)  # type: ignore[arg-type]
+    def realize_vector(self, value: VectorValue) -> RealizedVector:
+        result = super().realize_vector(value)
         self._record_vector_semantics(value, result)
         return result
 
