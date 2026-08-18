@@ -196,11 +196,17 @@ Other diagnostic layouts remain available:
 ```bash
 uv run python -m benchmarks.snake.generate --greedy-layout
 uv run python -m benchmarks.snake.generate --net-aware-layout
+uv run python -m benchmarks.snake.generate --annealing-layout
 uv run python -m benchmarks.snake.generate --row-layout
 ```
 
-`--greedy-layout` and `--net-aware-layout` also accept `--corridor-width`, `--target-fill`, and
-`--layout-retries`.
+`--annealing-layout` is an alias for the previous full `net-aware` policy: deterministic greedy
+seeding, simulated annealing, deterministic relaxation, then collision-aware heuristic routing. It is
+particularly useful now that temporal settling can remove most phase-padding combinators and make
+search-based placement practical again.
+
+`--greedy-layout` and `--net-aware-layout` / `--annealing-layout` also accept `--corridor-width`,
+`--target-fill`, and `--layout-retries`.
 
 ## Controls, startup, and reset
 
@@ -221,7 +227,7 @@ queued direction    -> neutral
 score               -> 0
 length              -> 1
 dead                -> 0
-started             -> 0
+started              -> 0
 move divider phase  -> 0
 body position FIFO  -> empty
 body pixel FIFO     -> empty
