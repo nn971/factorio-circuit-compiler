@@ -24,6 +24,9 @@ def realize_vector_binary(lowerer: Any, value: VectorBinaryOp) -> RealizedVector
     left = lowerer.realize_vector(value.left)
     right = lowerer.realize_vector(value.right)
     phase = max(left.phase, right.phase)
+    schedule = getattr(lowerer, "_operation_input_phase", None)
+    if schedule is not None:
+        phase = schedule(value, "vector_binary", value.op, phase)
     left = lowerer.delay_vector_to(left, phase)
     right = lowerer.delay_vector_to(right, phase)
     if left.net != right.net:
