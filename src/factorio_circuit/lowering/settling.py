@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from factorio_circuit.analysis.latency import FACTORIO_LATENCY
 from factorio_circuit.analysis.state_timing import StateTimingPlan
 from factorio_circuit.ir.semantic import (
     BinaryOp,
@@ -220,13 +221,19 @@ class SettlingVectorLowerer(VectorLowerer):
         self,
         result: RealizedValue,
         children: tuple[object, ...],
+        *,
+        target_phase: int | None = None,
     ) -> ValidityWindow:
         realized = tuple(
             child
             for item in children
             if (child := self._scalar_child(item)) is not None
         )
-        target = max((child.phase for child in realized), default=0)
+        target = (
+            max((child.phase for child in realized), default=0)
+            if target_phase is None
+            else target_phase
+        )
         windows = tuple(self._aligned_scalar_window(child, target) for child in realized)
         span = self._combined_span(windows)
         return ValidityWindow(result.phase, _end_from_span(result.phase, span))
@@ -245,9 +252,27 @@ class SettlingVectorLowerer(VectorLowerer):
                 window = self._point_window(result.phase)
             else:
                 window = source_window.from_phase(result.phase)
-        elif isinstance(semantic, (BinaryOp, Compare)):
-            window = self._scalar_operation_window(result, (semantic.left, semantic.right))
+        elif isinstance(semantic, BinaryOp):
+            target = result.phase - FACTORIO_LATENCY.operation_latency(
+                "scalar_binary", semantic.op
+            )
+            window = self._scalar_operation_window(
+                result,
+                (semantic.left, semantic.right),
+                target_phase=target,
+            )
+        elif isinstance(semantic, Compare):
+            target = result.phase - FACTORIO_LATENCY.operation_latency("compare", semantic.op)
+            window = self._scalar_operation_window(
+                result,
+                (semantic.left, semantic.right),
+                target_phase=target,
+            )
         elif isinstance(semantic, Select):
+            # Generic select lowering may be a one-stage mux or a three-stage arithmetic fallback.
+            # Both align semantic children at their maximum pre-select phase.  Packed direct-compare
+            # selects can skip the materialized condition; using the later semantic condition phase
+            # is conservative for validity and never enables an otherwise-unproved reuse.
             window = self._scalar_operation_window(
                 result,
                 (semantic.condition, semantic.when_true, semantic.when_false),
@@ -259,7 +284,10 @@ class SettlingVectorLowerer(VectorLowerer):
     def _record_vector_semantics(self, semantic: VectorValue, result: RealizedVector) -> None:
         if isinstance(semantic, VectorConstant):
             window = ValidityWindow(result.phase, None)
-        elif isinstance(semantic, (VectorInput, FlowVectorInput, VectorInputSample, FlowVectorInputSample)):
+        elif isinstance(
+            semantic,
+            (VectorInput, FlowVectorInput, VectorInputSample, FlowVectorInputSample),
+        ):
             window = self._point_window(result.phase)
         elif isinstance(semantic, VectorRegisterRead):
             timing = self.state_timing.for_read(semantic)
@@ -272,15 +300,18 @@ class SettlingVectorLowerer(VectorLowerer):
             left = self._vector_child(semantic.left)
             right = self._vector_child(semantic.right)
             realized = tuple(item for item in (left, right) if item is not None)
-            target = max((item.phase for item in realized), default=0)
+            target = result.phase - FACTORIO_LATENCY.operation_latency(
+                "vector_binary", semantic.op
+            )
             windows = tuple(self._aligned_vector_window(item, target) for item in realized)
             span = self._combined_span(windows)
             window = ValidityWindow(result.phase, _end_from_span(result.phase, span))
         elif isinstance(semantic, VectorScalarOp):
             vector = self._vector_child(semantic.vector)
             scalar = self._scalar_child(semantic.scalar)
-            phases = [item.phase for item in (vector, scalar) if item is not None]
-            target = max(phases, default=0)
+            target = result.phase - FACTORIO_LATENCY.operation_latency(
+                "vector_scalar", semantic.op
+            )
             windows: list[ValidityWindow] = []
             if vector is not None:
                 windows.append(self._aligned_vector_window(vector, target))
