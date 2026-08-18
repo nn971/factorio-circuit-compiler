@@ -4,7 +4,8 @@ from factorio_circuit import Circuit, SignalId, compile_circuit
 from factorio_circuit.compiler import lower_to_abstract_physical
 from factorio_circuit.ir.abstract_physical import ArithmeticCombinator
 from factorio_circuit.lowering.settling import ValidityWindow
-from factorio_circuit.simulate.compare import assert_same_stream
+from factorio_circuit.simulate.physical import simulate_stream as simulate_physical_stream
+from factorio_circuit.simulate.semantic import simulate_stream as simulate_semantic_stream
 
 VALUE = SignalId("virtual", "signal-A")
 
@@ -15,6 +16,38 @@ def _delay_count(circuit: object, description: str) -> int:
         isinstance(entity, ArithmeticCombinator) and entity.description == description
         for entity in entities
     )
+
+
+def _assert_periodic_stream(
+    source: Circuit,
+    logical_stream: list[dict[str, object]],
+    *,
+    optimize: bool,
+    between_rows: list[dict[str, object]] | None = None,
+) -> None:
+    """Compare one-clock-domain semantics at ``k*P + output.phase`` physical observations."""
+
+    result = compile_circuit(source, optimize=optimize)
+    period = result.state_timing.uniform_period
+    assert period is not None and period > 1
+
+    expected = simulate_semantic_stream(result.semantic_ir, logical_stream)
+    physical_stream: list[dict[str, object]] = []
+    noise = between_rows or [{}]
+    for index, row in enumerate(logical_stream):
+        physical_stream.append(row)
+        for offset in range(1, period):
+            physical_stream.append(noise[(index * period + offset) % len(noise)])
+
+    observations = simulate_physical_stream(
+        result.physical_circuit,
+        physical_stream,
+        flush_ticks=max(result.physical_circuit.output_phases, default=0) + period,
+    )
+    for logical_tick, expected_row in enumerate(expected):
+        for output_index, port in enumerate(result.physical_circuit.outputs):
+            physical_tick = logical_tick * period + port.phase
+            assert observations[physical_tick][output_index] == expected_row[output_index]
 
 
 def _stable_feedback_circuit() -> Circuit:
@@ -74,9 +107,11 @@ def test_held_state_removes_internal_vector_phase_padding() -> None:
 
 @pytest.mark.parametrize("optimize", [False, True])
 def test_held_state_settling_matches_logical_recurrence(optimize: bool) -> None:
-    result = compile_circuit(_stable_feedback_circuit(), optimize=optimize)
-
-    assert_same_stream(result.semantic_ir, result.physical_circuit, [{} for _ in range(8)])
+    _assert_periodic_stream(
+        _stable_feedback_circuit(),
+        [{} for _ in range(8)],
+        optimize=optimize,
+    )
 
 
 def test_fresh_level_input_still_uses_exact_delay_for_path_skew() -> None:
@@ -90,7 +125,6 @@ def test_fresh_level_input_still_uses_exact_delay_for_path_skew() -> None:
 
 @pytest.mark.parametrize("optimize", [False, True])
 def test_fresh_level_input_keeps_exact_stream_semantics(optimize: bool) -> None:
-    result = compile_circuit(_fresh_input_skew_circuit(), optimize=optimize)
     stream = [
         {"data": {VALUE: 1}},
         {"data": {VALUE: 3}},
@@ -101,5 +135,17 @@ def test_fresh_level_input_keeps_exact_stream_semantics(optimize: bool) -> None:
         {"data": {VALUE: 11}},
         {"data": {}},
     ]
+    # Intermediate physical ticks deliberately carry unrelated data. Correct lowering must consume
+    # the boundary sample, not whatever happens to be present when the longest path settles.
+    noise = [
+        {"data": {VALUE: 1000}},
+        {"data": {VALUE: -777}},
+        {"data": {VALUE: 42}},
+    ]
 
-    assert_same_stream(result.semantic_ir, result.physical_circuit, stream)
+    _assert_periodic_stream(
+        _fresh_input_skew_circuit(),
+        stream,
+        optimize=optimize,
+        between_rows=noise,
+    )
