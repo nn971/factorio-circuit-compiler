@@ -36,6 +36,7 @@ from factorio_circuit.ir.semantic import (
     CircuitModule,
     Compare,
     Select,
+    Value,
     VectorBinaryOp,
     VectorFilter,
     VectorScalarOp,
@@ -166,6 +167,29 @@ class AlapVectorLowerer(SharedVectorDelayLowerer):
             return default_phase
         requested = output_phase - FACTORIO_LATENCY.operation_latency(family, operation)
         return max(default_phase, requested)
+
+    def realize(self, value: Value) -> RealizedValue:
+        if not isinstance(value, VectorSignal):
+            return super().realize(value)
+
+        cached = self.memo.get(id(value))
+        if cached is not None:
+            return cached
+        vector = self.realize_vector(value.vector)
+        requested = self.alap_schedule.phase_for(value)
+        if requested is not None and requested > vector.phase:
+            # A lane read is a zero-latency view.  Transport the complete vector snapshot before
+            # projecting the lane so different lane consumers share one exact vector-delay trunk.
+            vector = self.delay_vector_to(vector, requested)
+        result = RealizedValue(
+            value.signal,
+            vector.net,
+            vector.phase,
+            clean_single_lane=False,
+        )
+        self.memo[id(value)] = result
+        self._record_scalar_semantics(value, result)
+        return result
 
     def _realize_binary(self, op: BinaryOp) -> RealizedValue:
         # Keep existing physical packing semantics.  Unpacked operations, including the canonical
