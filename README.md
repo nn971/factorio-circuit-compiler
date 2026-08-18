@@ -18,6 +18,7 @@ Read these first:
 
 - [`docs/data-contract.md`](docs/data-contract.md) — what a circuit means.
 - [`docs/compiler-pipeline.md`](docs/compiler-pipeline.md) — where each meaning is compiled.
+- [`docs/temporal-lowering-milestone.md`](docs/temporal-lowering-milestone.md) — settling/ALAP lowering and the validated Snake result.
 - [`AGENTS.md`](AGENTS.md) — compact contributor/agent rules.
 
 ## Minimal Level example
@@ -45,7 +46,7 @@ Canonical flows carry payload shape, temporal modality, structural clock, and lo
 
 Level inputs and registers use `.sample()` for observation. `Circuit.step()` remains a compatibility cursor for existing Level/state programs; new temporal expressions should prefer flow-local `.step()`.
 
-`AccumulatorReg` and `FreezeReg` are packed whole-vector state cells. Periodic feedback may infer a physical period greater than one game tick.
+`AccumulatorReg` and `FreezeReg` are packed whole-vector state cells. Periodic feedback may infer a physical period greater than one game tick. Production Level lowering treats that period as a settling/deadline budget: validity proofs eliminate unnecessary phase padding, and ALAP scheduling moves ordinary transition-cone computation toward its consumers rather than eagerly computing and delaying every result.
 
 ## Events and clock crossings
 
@@ -80,7 +81,7 @@ Sparse outputs materialize as `HOLD`, `ZERO`, or `VALID`. [`examples/README.md`]
 Large workloads live under [`benchmarks/`](benchmarks/README.md) rather than the pedagogical examples.
 The primary end-to-end benchmark is [`benchmarks/snake/`](benchmarks/snake/README.md): a playable 16x16
 Snake with movement input, periodic state, bounded body history, a 256-lane framebuffer, full physical
-synthesis/layout, and in-game acceptance. Its accepted physical-layout milestones are recorded in
+synthesis/layout, and in-game acceptance. Its append-only accepted milestones are recorded in
 `benchmarks/snake/baselines.json`.
 
 The full Snake compile is intentionally opt-in and is not part of routine pytest/CI.
