@@ -9,7 +9,12 @@ from time import monotonic
 
 from benchmarks.snake.model import DEFAULT_LOGICAL_STEPS_PER_MOVE, build_snake_circuit
 from factorio_circuit import CompileProgress, lower_to_abstract_physical
-from factorio_circuit.analysis import census_abstract_physical, format_abstract_physical_census
+from factorio_circuit.analysis import (
+    census_abstract_physical,
+    census_phase_delays,
+    format_abstract_physical_census,
+    format_phase_delay_census,
+)
 
 
 class _Progress:
@@ -47,6 +52,14 @@ def main() -> None:
         help="omit framebuffer state/rendering to isolate the core game-state realization",
     )
     parser.add_argument(
+        "--deep-delays",
+        action="store_true",
+        help=(
+            "reconstruct residual phase-delay trunks and report their sources, sinks, "
+            "branching, and depths"
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="emit machine-readable JSON instead of the human-readable report",
@@ -67,12 +80,25 @@ def main() -> None:
         progress=None if args.no_progress else _Progress(),
     )
     census = census_abstract_physical(lowered.abstract_physical)
+    delay_census = (
+        census_phase_delays(lowered.abstract_physical) if args.deep_delays else None
+    )
 
     if args.json:
-        print(json.dumps(census.as_dict(), indent=2, sort_keys=True))
+        payload: dict[str, object] = census.as_dict()
+        if delay_census is not None:
+            payload = {
+                "abstract_physical": payload,
+                "phase_delays": delay_census.as_dict(),
+                "state_period": lowered.state_timing.uniform_period,
+            }
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(format_abstract_physical_census(census))
         print(f"  state period: {lowered.state_timing.uniform_period}")
+        if delay_census is not None:
+            print()
+            print(format_phase_delay_census(delay_census))
 
 
 if __name__ == "__main__":
