@@ -270,7 +270,7 @@ class SettlingVectorLowerer(VectorLowerer):
             )
         elif isinstance(semantic, Select):
             # Generic select lowering may be a one-stage mux or a three-stage arithmetic fallback.
-            # Both align semantic children at their maximum pre-select phase.  Packed direct-compare
+            # Both align semantic children at their maximum pre-select phase. Packed direct-compare
             # selects can skip the materialized condition; using the later semantic condition phase
             # is conservative for validity and never enables an otherwise-unproved reuse.
             window = self._scalar_operation_window(
@@ -367,6 +367,37 @@ class SettlingVectorLowerer(VectorLowerer):
     def realize_vector(self, value: VectorValue) -> RealizedVector:
         result = super().realize_vector(value)
         self._record_vector_semantics(value, result)
+        return result
+
+    def _emit_binary_from_operands(
+        self,
+        operation: str,
+        left: RealizedValue | int,
+        right: RealizedValue | int,
+        *,
+        description: str | None = None,
+    ) -> RealizedValue:
+        target = max(
+            (item.phase for item in (left, right) if isinstance(item, RealizedValue)),
+            default=0,
+        )
+        windows: list[ValidityWindow] = []
+        if isinstance(left, RealizedValue):
+            windows.append(self._aligned_scalar_window(left, target))
+        if isinstance(right, RealizedValue):
+            windows.append(self._aligned_scalar_window(right, target))
+
+        result = super()._emit_binary_from_operands(
+            operation,
+            left,
+            right,
+            description=description,
+        )
+        span = self._combined_span(tuple(windows))
+        self._remember_scalar(
+            result,
+            ValidityWindow(result.phase, _end_from_span(result.phase, span)),
+        )
         return result
 
     def delay_to(self, value: RealizedValue, target_phase: int) -> RealizedValue:
