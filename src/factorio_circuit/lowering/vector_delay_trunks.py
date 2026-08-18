@@ -1,23 +1,35 @@
 """Shared exact-delay trunks for production Level vector lowering.
 
 Validity-aware settling removes phase padding when a logical Level token is already certified at a
-later physical phase.  When exact transport is still required, multiple consumers of the same vector
+later physical phase. When exact transport is still required, multiple consumers of the same vector
 should nevertheless share one delay prefix, just as scalar ``delay_to`` already does.
 """
 
 from __future__ import annotations
 
 from factorio_circuit.analysis.latency import FACTORIO_LATENCY
+from factorio_circuit.analysis.state_timing import StateTimingPlan
 from factorio_circuit.ir.abstract_physical import ArithmeticCombinator, Connector, Endpoint, Operand
+from factorio_circuit.ir.semantic import CircuitModule
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedVector
-from factorio_circuit.lowering.settling import SettlingVectorLowerer, ValidityWindow
+from factorio_circuit.lowering.settling import SettlingVectorLowerer
 
 
 class SharedVectorDelayLowerer(SettlingVectorLowerer):
     """Validity-aware Level lowerer with memoized exact vector-delay prefixes."""
 
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+    def __init__(
+        self,
+        module: CircuitModule,
+        *,
+        enable_packing: bool,
+        state_timing: StateTimingPlan | None = None,
+    ) -> None:
+        super().__init__(
+            module,
+            enable_packing=enable_packing,
+            state_timing=state_timing,
+        )
         self.vector_delay_cache: dict[tuple[int, int], RealizedVector] = {}
 
     def delay_vector_to(self, value: RealizedVector, target_phase: int) -> RealizedVector:
