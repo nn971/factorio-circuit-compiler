@@ -6,8 +6,8 @@ outputs are clustered at the beginning of the first row. The simpler linear ``sa
 available explicitly as a canonical rollback path.
 
 Progress is printed to stderr. The final importable blueprint string is printed to stdout unless
-``--output`` names a file. Greedy, full net-aware, row, and linear-safe layouts remain explicit
-diagnostic/reference modes.
+``--output`` names a file. Greedy, full net-aware/annealing, row, and linear-safe layouts remain
+explicit diagnostic/reference modes.
 """
 
 from __future__ import annotations
@@ -144,8 +144,13 @@ def main() -> None:
     )
     placement_group.add_argument(
         "--net-aware-layout",
+        "--annealing-layout",
+        dest="net_aware_layout",
         action="store_true",
-        help="run the full iterative net-aware placement optimizer and heuristic router",
+        help=(
+            "run the previous simulated-annealing net-aware placer, followed by deterministic "
+            "relaxation and the heuristic router"
+        ),
     )
     placement_group.add_argument(
         "--row-layout",
