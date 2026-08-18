@@ -74,6 +74,44 @@ Its purpose is to validate examples such as:
 
 Those examples are covered by `tests/experimental/test_temporal_hypergraph.py`.
 
+## Snake-scale delay-reuse projection
+
+The exact oracle is intentionally too expensive for the full Snake graph. As an intermediate
+measurement, `factorio_circuit.experimental.delay_reuse` analyzes the **current eager Abstract Physical
+IR only as a baseline**. It groups maximal scalar/vector phase-delay DAGs that carry the same logical
+Level token forward in time.
+
+The projection then applies two conservative rules:
+
+1. if the root net is structurally constant, every delay in that component can be removed directly;
+2. otherwise, if the component's longest delay path is shorter than the inferred clock period, one
+   synthetic capture/hold at the component root can replace the whole component.
+
+This is intentionally not claimed to be optimal. The phase-free hypergraph may later prove a broader
+natural validity interval, share one hold across several baseline components, or pack many values into
+one Factorio vector bank. Therefore the projection is an **upper bound on synthetic hold count** and a
+conservative lower bound on delay elimination.
+
+Run it with:
+
+```bash
+uv run python -m benchmarks.snake.delay_reuse_experiment --no-framebuffer
+uv run python -m benchmarks.snake.delay_reuse_experiment
+```
+
+The runner verifies that its eager-delay count matches the Abstract Physical census, then prints:
+
+- scalar/vector eager delay count;
+- number and depth distribution of maximal delay components;
+- components removable for free because their root is invariant;
+- components replaceable by one temporal hold;
+- components not yet covered by this simple rule;
+- projected remaining delay count;
+- a rough implementation count assuming one entity per synthetic hold.
+
+That last count is **not yet an executable Factorio circuit**. Capture-clock hardware, a real hold
+primitive, and vector-bank sharing are deliberately excluded until the temporal model is trusted.
+
 ## Intended next steps
 
 If the oracle behaves correctly, the next mathematical step is to identify the restricted scalar case
@@ -95,11 +133,12 @@ The experiment is isolated to newly added paths:
 ```text
 src/factorio_circuit/experimental/
 tests/experimental/test_temporal_hypergraph.py
+tests/experimental/test_delay_reuse.py
 benchmarks/snake/temporal_experiment.py
+benchmarks/snake/delay_reuse_experiment.py
 docs/experimental-temporal-materialization.md
 ```
 
 No canonical compiler, lowering, synthesis, or benchmark baseline file depends on them. Removing those
-paths restores the exact previous production behavior. The first experiment commit is
-`b92532adfde0400ff49a4cfc17d0c1c49d658522`; reverting the contiguous experiment commits from the
-current tip back through that commit is also sufficient.
+paths restores the exact previous production behavior. The pre-experiment branch anchor is
+`146bd0ead93057b0c8a1d0eb104c0eb58ae138e1`.
