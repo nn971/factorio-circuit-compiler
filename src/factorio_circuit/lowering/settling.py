@@ -15,6 +15,10 @@ validity window. If the proof is absent, or the token has expired, lowering fall
 one-tick delay chain used previously. This makes the optimization correctness-preserving for
 arbitrary Level circuits while eliminating phase padding inside the common synchronous feedback-cut
 case. Intentional temporal delays such as periodic-clock startup are forced through the exact path.
+
+Level outputs are treated as semantic observation boundaries. Their default HOLD contract is free
+when the realized value is already certified for a complete occurrence interval; otherwise a compact
+periodic capture/feedback cell holds the coherent output while the next occurrence settles.
 """
 
 from __future__ import annotations
@@ -22,12 +26,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from factorio_circuit.analysis.latency import FACTORIO_LATENCY
-from factorio_circuit.analysis.state_timing import StateTimingPlan
+from factorio_circuit.analysis.state_timing import ClockDomainTiming, StateTimingPlan
+from factorio_circuit.ir.abstract_physical import (
+    Connector,
+    DeciderCombinator,
+    Endpoint,
+    Operand,
+)
+from factorio_circuit.ir.output import OutputMaterializationPolicy, output_materializations
+from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.ir.semantic import (
     BinaryOp,
     CircuitModule,
     Compare,
     Constant,
+    Flow,
     FlowInput,
     FlowInputSample,
     FlowVectorInput,
@@ -49,6 +62,7 @@ from factorio_circuit.ir.semantic import (
 from factorio_circuit.ir.state import VectorRegisterRead
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
 from factorio_circuit.lowering.open_vector import VectorLowerer
+from factorio_circuit.target.factorio.signals import SIGNAL_EVERYTHING
 
 
 @dataclass(frozen=True, slots=True)
@@ -454,3 +468,252 @@ class SettlingVectorLowerer(VectorLowerer):
             return super()._startup_ready(target_phase)
         finally:
             self._force_exact_alignment = previous
+
+    def _output_domain(self, semantic: object) -> ClockDomainTiming | None:
+        flow = getattr(semantic, "flow", None)
+        if not isinstance(flow, Flow):
+            return None
+        matches = tuple(
+            domain
+            for domain in self.state_timing.domains
+            if domain.clock_id == flow.clock.clock_id
+        )
+        if len(matches) > 1:  # pragma: no cover - StateTimingPlan invariant
+            raise AssertionError("one structural clock mapped to multiple physical domains")
+        return matches[0] if matches else None
+
+    def _naturally_holds(
+        self,
+        realized: RealizedValue | RealizedVector,
+        period: int,
+    ) -> bool:
+        window = (
+            self._scalar_window(realized)
+            if isinstance(realized, RealizedValue)
+            else self._vector_window(realized)
+        )
+        if window is None or not window.contains(realized.phase):
+            return False
+        return window.end is None or window.end >= realized.phase + period
+
+    def _periodic_hold_controls(
+        self,
+        domain: ClockDomainTiming,
+        payload_phase: int,
+    ) -> tuple[object, object, RealizedValue, int]:
+        """Return equal/not-equal clock tests and startup-ready level at the payload input tick."""
+
+        if not domain.registers:
+            raise ValueError("periodic output HOLD requires a state-backed clock domain")
+        representative = domain.registers[0]
+        output_phase = payload_phase + FACTORIO_LATENCY.state_transition_latency("capture")
+        clock_equal, clock_net = self._clock_condition(
+            representative,
+            output_phase,
+            equal=True,
+        )
+        clock_not_equal, _ = self._clock_condition(
+            representative,
+            output_phase,
+            equal=False,
+        )
+        ready = self._startup_ready(output_phase)
+        return clock_equal, clock_not_equal, ready, clock_net
+
+    def _hold_scalar_output(
+        self,
+        payload: RealizedValue,
+        domain: ClockDomainTiming,
+    ) -> RealizedValue:
+        clock_equal, clock_not_equal, ready, clock_net = self._periodic_hold_controls(
+            domain,
+            payload.phase,
+        )
+        ready_true = self._boolean_condition(ready, nonzero=True)
+
+        update = DeciderCombinator(
+            id=self._take_entity_id(),
+            comparator=clock_equal.comparator,
+            left=clock_equal.left,
+            right=clock_equal.right,
+            output_signal=payload.signal,
+            output_copy_count_from_input=True,
+            copy_count_nets=(payload.net,),
+            additional_conditions=(ready_true,),
+            description="Level HOLD: capture scalar output at logical boundary",
+        )
+        self.circuit.entities.append(update)
+        update_input = Endpoint(update.id, Connector.INPUT)
+        for net in dict.fromkeys((payload.net, clock_net, ready.net)):
+            self._attach(net, update_input)
+        self._add_net_conflict(
+            payload.net,
+            clock_net,
+            "Level HOLD scalar payload and clock must use separate wire networks",
+        )
+        self._add_net_conflict(
+            payload.net,
+            ready.net,
+            "Level HOLD scalar payload and startup guard must use separate wire networks",
+        )
+
+        if isinstance(payload.signal, int):
+            signals: tuple[int, ...] = (payload.signal,)
+            fixed_signals: tuple[SignalId, ...] = ()
+        else:
+            signals = ()
+            fixed_signals = (payload.signal,)
+        memory_net = self._new_net(
+            signals,
+            Endpoint(update.id, Connector.OUTPUT),
+            label="Level HOLD scalar output memory",
+            fixed_signals=fixed_signals,
+        )
+
+        feedback = DeciderCombinator(
+            id=self._take_entity_id(),
+            comparator=ready_true.comparator,
+            left=ready_true.left,
+            right=ready_true.right,
+            output_signal=payload.signal,
+            output_copy_count_from_input=True,
+            copy_count_nets=(memory_net,),
+            additional_conditions=(clock_not_equal,),
+            description="Level HOLD: retain scalar output between logical boundaries",
+        )
+        self.circuit.entities.append(feedback)
+        feedback_input = Endpoint(feedback.id, Connector.INPUT)
+        for net in dict.fromkeys((memory_net, clock_net, ready.net)):
+            self._attach(net, feedback_input)
+        self._attach(memory_net, Endpoint(feedback.id, Connector.OUTPUT))
+        self._add_net_conflict(
+            memory_net,
+            clock_net,
+            "Level HOLD scalar memory and clock must use separate wire networks",
+        )
+        self._add_net_conflict(
+            memory_net,
+            ready.net,
+            "Level HOLD scalar memory and startup guard must use separate wire networks",
+        )
+
+        result = RealizedValue(
+            payload.signal,
+            memory_net,
+            payload.phase + FACTORIO_LATENCY.state_transition_latency("capture"),
+            payload.clean_single_lane,
+        )
+        self._remember_scalar(
+            result,
+            ValidityWindow(result.phase, result.phase + domain.period),
+        )
+        return result
+
+    def _hold_vector_output(
+        self,
+        payload: RealizedVector,
+        domain: ClockDomainTiming,
+    ) -> RealizedVector:
+        clock_equal, clock_not_equal, ready, clock_net = self._periodic_hold_controls(
+            domain,
+            payload.phase,
+        )
+        ready_true = self._boolean_condition(ready, nonzero=True)
+        source = self.net_builders[payload.net]
+
+        update = DeciderCombinator(
+            id=self._take_entity_id(),
+            comparator=clock_equal.comparator,
+            left=clock_equal.left,
+            right=clock_equal.right,
+            output_signal=SIGNAL_EVERYTHING,
+            output_copy_count_from_input=True,
+            copy_count_nets=(payload.net,),
+            additional_conditions=(ready_true,),
+            description="Level HOLD: capture vector output at logical boundary",
+        )
+        self.circuit.entities.append(update)
+        update_input = Endpoint(update.id, Connector.INPUT)
+        for net in dict.fromkeys((payload.net, clock_net, ready.net)):
+            self._attach(net, update_input)
+        self._add_net_conflict(
+            payload.net,
+            clock_net,
+            "Level HOLD vector payload and clock must use separate wire networks",
+        )
+        self._add_net_conflict(
+            payload.net,
+            ready.net,
+            "Level HOLD vector payload and startup guard must use separate wire networks",
+        )
+
+        memory_net = self._new_net(
+            source.signals,
+            Endpoint(update.id, Connector.OUTPUT),
+            label="Level HOLD vector output memory",
+            fixed_signals=source.fixed_signals,
+            carries_dynamic_vector=source.carries_dynamic_vector,
+        )
+        feedback = DeciderCombinator(
+            id=self._take_entity_id(),
+            comparator=ready_true.comparator,
+            left=ready_true.left,
+            right=ready_true.right,
+            output_signal=SIGNAL_EVERYTHING,
+            output_copy_count_from_input=True,
+            copy_count_nets=(memory_net,),
+            additional_conditions=(clock_not_equal,),
+            description="Level HOLD: retain vector output between logical boundaries",
+        )
+        self.circuit.entities.append(feedback)
+        feedback_input = Endpoint(feedback.id, Connector.INPUT)
+        for net in dict.fromkeys((memory_net, clock_net, ready.net)):
+            self._attach(net, feedback_input)
+        self._attach(memory_net, Endpoint(feedback.id, Connector.OUTPUT))
+        self._add_net_conflict(
+            memory_net,
+            clock_net,
+            "Level HOLD vector memory and clock must use separate wire networks",
+        )
+        self._add_net_conflict(
+            memory_net,
+            ready.net,
+            "Level HOLD vector memory and startup guard must use separate wire networks",
+        )
+
+        result = RealizedVector(
+            memory_net,
+            payload.phase + FACTORIO_LATENCY.state_transition_latency("capture"),
+        )
+        self._remember_vector(
+            result,
+            ValidityWindow(result.phase, result.phase + domain.period),
+        )
+        return result
+
+    def _create_output_markers(
+        self,
+        outputs: list[RealizedValue | RealizedVector],
+    ) -> None:
+        contracts = output_materializations(self.module.output)
+        materialized: list[RealizedValue | RealizedVector] = []
+        for semantic, realized, contract in zip(
+            self.module.output.values,
+            outputs,
+            contracts,
+            strict=True,
+        ):
+            domain = self._output_domain(semantic)
+            if (
+                contract.policy is OutputMaterializationPolicy.HOLD
+                and domain is not None
+                and domain.period > 1
+                and not self._naturally_holds(realized, domain.period)
+            ):
+                realized = (
+                    self._hold_scalar_output(realized, domain)
+                    if isinstance(realized, RealizedValue)
+                    else self._hold_vector_output(realized, domain)
+                )
+            materialized.append(realized)
+        super()._create_output_markers(materialized)
