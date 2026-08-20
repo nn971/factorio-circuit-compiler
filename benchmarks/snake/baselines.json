@@ -117,7 +117,7 @@
       "commit": "92150920939080259de8be747e893b184404478f",
       "date": "2026-08-20",
       "in_game_validated": false,
-      "notes": "First end-to-end CP-SAT phase placement, multi-lane scalar buses, signal allocation, safe-folded layout, and playable blueprint at period 65. Rejected during gameplay: independent free resampling of LIVE sources allowed different consumers to observe different movement/random-selector values within one logical occurrence. Observed symptoms were incorrect bumps while turning, eaten food remaining visible, delayed initial food, and uneven-looking frames. Superseded by coherent live-source observation modeling.",
+      "notes": "First end-to-end CP-SAT phase placement, multi-lane scalar buses, signal allocation, safe-folded layout, and playable blueprint at period 65. Rejected during gameplay: independent free resampling of LIVE sources allowed different consumers to observe different movement/random-selector values within one logical occurrence. Observed symptoms were incorrect bumps while turning, eaten food remaining visible, delayed initial food, and uneven-looking frames.",
       "metrics": {
         "implementation_combinators": 454,
         "abstract_physical_entities": 465,
@@ -142,6 +142,25 @@
       "change_from_random_food_alap_v1": {
         "implementation_combinator_reduction_fraction": 0.3496,
         "phase_delay_reduction_fraction": 0.6081
+      }
+    },
+    {
+      "id": "temporal-delay-bus-coherent-live-v1",
+      "commit": "e8af68b69b2e6d04157ca50681762ebf95de6413",
+      "date": "2026-08-20",
+      "in_game_validated": false,
+      "notes": "Second end-to-end candidate added one coherent observation phase per LIVE source and charged its transport. CP-SAT proved the modeled objective 83 optimal, but Factorio gameplay still failed: Snake started without player input and food did not become visible until death. This shows that source coherence alone is insufficient without an explicit physical sampling/provider-availability contract. The next validation candidate therefore freezes the already validated ALAP computation placement and changes only scalar delay-bus sharing.",
+      "metrics": {
+        "implementation_combinators": 466,
+        "physical_entities": 477,
+        "max_abstract_lanes_per_net_observed": 27,
+        "solver_objective_delays": 83,
+        "solver_best_bound_observed": 83,
+        "layout_relays": 15097,
+        "layout_rows": 5,
+        "layout_columns": 97,
+        "extent_tiles": [454, 408],
+        "state_period_ticks": 65
       }
     }
   ]
