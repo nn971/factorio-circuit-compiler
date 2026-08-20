@@ -10,6 +10,11 @@ atomically reserve their complete requester-chest demand before later candidates
 No new batch starts until all accepted jobs have completed and all external completion latches have
 cleared. This avoids treating robot flight or assembler-local inventory as fresh globally available
 stock.
+
+Assembler recipes remain latched between transactions. One-shot execution is enforced by starving the
+machine of ingredients: ``*_input_enable`` gates a stack-size-1 input inserter, whose local condition
+must also require the machine's Read-working signal to be zero. Keeping the recipe selected preserves
+partial productivity progress when the next transaction uses the same recipe.
 """
 
 from __future__ import annotations
@@ -71,6 +76,12 @@ def build_manual_controller(
     latch can reset. ``dispatch`` is edge-armed: hold it high until the batch is accepted, then
     return it to zero before requesting another batch.
     """
+
+    if not workers:
+        raise ValueError("manual mall controller requires at least one worker")
+    worker_names = [worker.name for worker in workers]
+    if len(worker_names) != len(set(worker_names)):
+        raise ValueError("manual mall worker names must be unique")
 
     circuit = Circuit("autonomous_mall_manual_controller")
     stock = circuit.signals("stock")
@@ -161,11 +172,9 @@ def build_manual_controller(
 
         requester_demand = old_requests[state.spec.name].gate(starting)
         circuit.output(f"{state.spec.name}_requester_demand", requester_demand)
+        circuit.output(f"{state.spec.name}_input_enable", starting)
         if state.held_recipe is not None:
-            circuit.output(
-                f"{state.spec.name}_recipe",
-                old_recipes[state.spec.name].gate(starting),
-            )
+            circuit.output(f"{state.spec.name}_recipe", old_recipes[state.spec.name])
         circuit.output(f"{state.spec.name}_accepted", accept)
         circuit.output(f"{state.spec.name}_busy", starting | waiting)
         circuit.output(f"{state.spec.name}_waiting_finished", waiting)
