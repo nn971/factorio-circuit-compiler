@@ -78,6 +78,37 @@ def _assert_wire_reach(blueprint: dict[str, object], maximum: float = 9.0) -> No
         assert distance <= maximum + 1e-9
 
 
+def _dock(entities: list[dict[str, object]], label: str) -> dict[str, object]:
+    matches = [
+        entity
+        for entity in entities
+        if entity.get("player_description") == f"DOCK {label}"
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+@pytest.mark.slow
+@pytest.mark.acceptance
+def test_complete_head_has_obvious_dl_control(complete_book) -> None:
+    head = _entry(complete_book, 5)
+    entities = _entities(head)
+    control = _dock(entities, "CONTROL D/L — EDIT HERE")
+
+    behavior = control["control_behavior"]
+    assert isinstance(behavior, dict)
+    sections = behavior["sections"]
+    assert isinstance(sections, dict)
+    section_list = sections["sections"]
+    assert isinstance(section_list, list) and len(section_list) == 1
+    filters = section_list[0]["filters"]
+    assert isinstance(filters, list)
+    assert [(item["name"], item["count"]) for item in filters] == [
+        ("signal-D", 0),
+        ("signal-L", 0),
+    ]
+
+
 @pytest.mark.slow
 @pytest.mark.acceptance
 def test_complete_worker_roles_and_machine_controls(complete_book) -> None:
@@ -119,7 +150,8 @@ def test_complete_worker_roles_and_machine_controls(complete_book) -> None:
         behavior = machine["control_behavior"]
         assert isinstance(behavior, dict)
         assert behavior["set_recipe"] is True
-        assert behavior["read_contents"] is True
+        assert behavior["read_contents"] is False
+        assert behavior["read_ingredients"] is True
         assert behavior["read_working"] is True
         assert behavior["read_recipe_finished"] is True
         assert behavior["input_networks"] == {"red": False, "green": True}
@@ -128,25 +160,50 @@ def test_complete_worker_roles_and_machine_controls(complete_book) -> None:
     recycler_behavior = r_machine["control_behavior"]
     assert isinstance(recycler_behavior, dict)
     assert "set_recipe" not in recycler_behavior
-    assert recycler_behavior["read_contents"] is True
+    assert recycler_behavior["read_contents"] is False
+    assert "read_ingredients" not in recycler_behavior
     assert recycler_behavior["read_working"] is True
     assert recycler_behavior["read_recipe_finished"] is True
 
 
 @pytest.mark.slow
 @pytest.mark.acceptance
-def test_assembler_and_recycler_use_different_item_flow_geometry(complete_book) -> None:
+def test_assembler_has_one_user_recipe_input_and_auto_ingredients(complete_book) -> None:
+    productivity = _entry(complete_book, 1)
+    entities = _entities(productivity)
+
+    recipe = _dock(entities, "RECIPE COMMAND — EDIT HERE")
+    ingredients = _dock(entities, "AUTO ingredients — DO NOT EDIT")
+    recipe_id = int(recipe["entity_number"])
+    ingredients_id = int(ingredients["entity_number"])
+
+    wires = productivity["wires"]
+    assert isinstance(wires, list)
+    assert any(recipe_id in (int(wire[0]), int(wire[2])) for wire in wires)
+    assert any(ingredients_id in (int(wire[0]), int(wire[2])) for wire in wires)
+
+    descriptions = {str(entity.get("player_description", "")) for entity in entities}
+    assert "MALL DEVICE auto ingredients copy" in descriptions
+    assert "MALL DEVICE strip working from ingredients" in descriptions
+    assert "MALL DEVICE strip finished from ingredients" in descriptions
+    assert "MALL DEVICE clean ingredient bus" in descriptions
+    assert "MALL DEVICE recipe-command relay" in descriptions
+
+
+@pytest.mark.slow
+@pytest.mark.acceptance
+def test_assembler_and_recycler_use_correct_item_flow_geometry(complete_book) -> None:
     productivity = _entry(complete_book, 1)
     recycler = _entry(complete_book, 3)
 
     p_entities = _entities(productivity)
-    p_machine = _one(p_entities, "assembling-machine-3")
     p_feeder = _described(p_entities, "MALL DEVICE feeder")[0]
     p_output = _described(p_entities, "MALL DEVICE output inserter")[0]
     assert p_feeder["name"] == "bulk-inserter"
     assert p_output["name"] == "bulk-inserter"
-    assert p_feeder["direction"] == 4
-    assert p_output["direction"] == 4
+    # Inserter direction is pickup-facing: west pickup -> east drop.
+    assert p_feeder["direction"] == 12
+    assert p_output["direction"] == 12
 
     r_entities = _entities(recycler)
     r_machine = _one(r_entities, "recycler")
@@ -159,25 +216,20 @@ def test_assembler_and_recycler_use_different_item_flow_geometry(complete_book) 
     my = float(r_machine["position"]["y"])
     assert (mx, my) == (17.0, 59.0)
     assert r_machine["direction"] == 0
-    assert r_feeder["name"] == "bulk-inserter"
     assert r_feeder["position"] == {"x": 16.5, "y": 61.5}
-    assert r_feeder["direction"] == 0
+    # South pickup -> north drop into the recycler.
+    assert r_feeder["direction"] == 8
     assert r_requester["position"] == {"x": 16.5, "y": 62.5}
-    # Recycler prototype vector_to_place_result is (-0.35, -2.3); this is its north output tile.
     assert r_provider["position"] == {"x": 16.5, "y": 56.5}
 
 
 @pytest.mark.slow
 @pytest.mark.acceptance
-def test_complete_worker_has_feeder_and_completion_latch(complete_book) -> None:
+def test_complete_worker_has_one_craft_feeder_and_completion_latch(complete_book) -> None:
     productivity = _entry(complete_book, 1)
     entities = _entities(productivity)
 
-    feeder = next(
-        entity
-        for entity in entities
-        if str(entity.get("player_description", "")).startswith("MALL DEVICE feeder")
-    )
+    feeder = _described(entities, "MALL DEVICE feeder")[0]
     assert feeder["name"] == "bulk-inserter"
     assert feeder["override_stack_size"] == 1
     behavior = feeder["control_behavior"]
@@ -189,8 +241,6 @@ def test_complete_worker_has_feeder_and_completion_latch(complete_book) -> None:
     assert condition["first_signal"] == {"type": "virtual", "name": "signal-E"}
 
     descriptions = {str(entity.get("player_description", "")) for entity in entities}
-    assert "MALL DEVICE negate machine contents" in descriptions
-    assert "MALL DEVICE positive missing ingredients -> inserter filters" in descriptions
     assert "MALL DEVICE input-enable AND not-working" in descriptions
     assert "MALL DEVICE completion SET" in descriptions
     assert "MALL DEVICE completion HOLD until acknowledgement" in descriptions
@@ -203,7 +253,7 @@ def test_complete_worker_has_feeder_and_completion_latch(complete_book) -> None:
 
 @pytest.mark.slow
 @pytest.mark.acceptance
-def test_complete_row_has_five_devices_and_shared_seam_docks(complete_book) -> None:
+def test_complete_row_has_five_devices_and_configuration_docks(complete_book) -> None:
     assembled = _entry(complete_book, 0)
     entities = _entities(assembled)
     names = Counter(entity["name"] for entity in entities)
@@ -216,6 +266,12 @@ def test_complete_row_has_five_devices_and_shared_seam_docks(complete_book) -> N
     assert names["stack-inserter"] == 0
     assert names["logistic-chest-requester"] == 0
     assert names["logistic-chest-passive-provider"] == 0
+
+    descriptions = [str(entity.get("player_description", "")) for entity in entities]
+    assert descriptions.count("DOCK CONTROL D/L — EDIT HERE") == 1
+    assert descriptions.count("DOCK RECIPE COMMAND — EDIT HERE") == 4
+    assert descriptions.count("DOCK AUTO ingredients — DO NOT EDIT") == 4
+    assert descriptions.count("DOCK RECYCLE ITEM — EDIT HERE") == 1
 
     recycler = _one(entities, "recycler")
     assert recycler["direction"] == 0
@@ -235,3 +291,5 @@ def test_complete_row_has_five_devices_and_shared_seam_docks(complete_book) -> N
             and float(entity["position"]["y"]) in {10.0, 14.0}
         ]
         assert len(seam_docks) == 2
+
+    _assert_wire_reach(assembled)
