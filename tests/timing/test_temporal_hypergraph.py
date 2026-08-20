@@ -2,6 +2,7 @@ import pytest
 
 from factorio_circuit import Circuit, SamplingPolicy, SignalId
 from factorio_circuit.analysis import (
+    FACTORIO_LATENCY,
     TemporalArc,
     TemporalComputation,
     TemporalHypergraph,
@@ -11,8 +12,9 @@ from factorio_circuit.analysis import (
     build_temporal_hypergraph,
     optimize_temporal_hypergraph,
 )
+from factorio_circuit.analysis.temporal_builder import _TimingExactTemporalHypergraphBuilder
 from factorio_circuit.compiler import lower_to_abstract_physical
-from factorio_circuit.ir.semantic import BinaryOp, Constant, PayloadShape
+from factorio_circuit.ir.semantic import BinaryOp, Compare, Constant, PayloadShape, Select
 
 VALUE = SignalId("virtual", "signal-A")
 
@@ -23,7 +25,7 @@ def _shared_scalar_fanout() -> Circuit:
     one = c.constant_signals({VALUE: 1})
     memory = c.accumulator("memory")
 
-    # Put the state domain on a genuine multicycle critical recurrence.  At the minimum feasible
+    # Put the state domain on a genuine multicycle critical recurrence. At the minimum feasible
     # period this can pin every computation to one phase; the important property for this fixture is
     # the shared scalar lifetime, not artificial scheduling slack.
     deep = memory.sample()
@@ -33,7 +35,7 @@ def _shared_scalar_fanout() -> Circuit:
 
     # ``shared`` is needed both directly at the state boundary and through a deeper scalar chain.
     # Even when the minimum-period schedule pins all computation phases, one physical realization of
-    # ``shared`` must survive until its direct late consumer.  The temporal hypergraph should expose
+    # ``shared`` must survive until its direct late consumer. The temporal hypergraph should expose
     # that lifetime instead of hiding it inside emitted phase-delay combinators.
     shared = enabled != 0
     late = shared
@@ -67,6 +69,30 @@ def test_temporal_hypergraph_exposes_shared_scalar_transport() -> None:
     assert asap.bus_eligible_scalar_serial > 0
     assert alap.bus_eligible_scalar_serial > 0
     assert all(item.end_phase > item.start_phase for item in alap.intervals)
+
+
+def test_temporal_select_uses_distinct_condition_and_data_latencies() -> None:
+    condition = Compare("==", Constant(1), Constant(1))
+    when_true = Constant(7)
+    when_false = Constant(9)
+    select = Select(condition, when_true, when_false)
+
+    children = _TimingExactTemporalHypergraphBuilder._children(select)
+
+    assert children == (
+        (
+            condition,
+            FACTORIO_LATENCY.operation_latency("select_condition", select.name),
+        ),
+        (
+            when_true,
+            FACTORIO_LATENCY.operation_latency("select_data", select.name),
+        ),
+        (
+            when_false,
+            FACTORIO_LATENCY.operation_latency("select_data", select.name),
+        ),
+    )
 
 
 def test_temporal_hypergraph_represents_real_phase_mobility_when_slack_exists() -> None:
