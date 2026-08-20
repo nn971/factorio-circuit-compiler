@@ -273,14 +273,13 @@ def _add_wire(
 
 
 def _add_auto_ingredient_reader(
-    blueprint: dict[str, object],
     entities: list[dict[str, object]],
     wires: set[tuple[int, int, int, int]],
     machine: dict[str, object],
     *,
     next_id: int,
 ) -> int:
-    """Feed current recipe ingredients into the worker reservation input without W/F status lanes."""
+    """Feed current recipe ingredients into reservation without leaking W/F status lanes."""
 
     auto_dock = _nearest_device_entity(entities, machine, "DOCK AUTO ingredients — DO NOT EDIT")
     raw_relay = _nearest_device_entity(entities, machine, "machine status relay")
@@ -289,41 +288,23 @@ def _add_auto_ingredient_reader(
     recipe_command = _nearest_device_entity(entities, machine, "DOCK RECIPE COMMAND — EDIT HERE")
     recipe_bridge = _nearest_device_entity(entities, machine, "recipe red->green isolation")
 
-    # The complete cell selects its recipe before dispatch. This makes Read ingredients available
-    # continuously, so reservation can be decided before the transaction is launched.
-    _add_wire(
-        wires,
-        int(recipe_command["entity_number"]),
-        1,
-        int(recipe_bridge["entity_number"]),
-        1,
-    )
-
-    # Request exactly one recipe worth of ingredients. The requester output is already gated by the
-    # worker START state, so no machine-content subtraction is needed for a one-craft transaction.
-    _add_wire(
-        wires,
-        int(request_relay["entity_number"]),
-        1,
-        int(feeder["entity_number"]),
-        1,
-    )
-
     mx, _my = _position(machine)
     origin_x = round((mx - 17.5) / TILE_WIDTH) * TILE_WIDTH
 
-    copy_each = next_id
-    cancel_working = next_id + 1
-    cancel_finished = next_id + 2
-    merge = next_id + 3
-    relay_a = next_id + 4
-    relay_b = next_id + 5
-    relay_c = next_id + 6
-    relay_d = next_id + 7
-    next_id += 8
+    recipe_relay = next_id
+    copy_each = next_id + 1
+    cancel_working = next_id + 2
+    cancel_finished = next_id + 3
+    merge = next_id + 4
+    relay_a = next_id + 5
+    relay_b = next_id + 6
+    relay_c = next_id + 7
+    relay_d = next_id + 8
+    next_id += 9
 
     entities.extend(
         [
+            _relay(recipe_relay, origin_x + 13.0, 51.0, "MALL DEVICE recipe-command relay"),
             _red_arithmetic(
                 copy_each,
                 origin_x + 29.0,
@@ -359,6 +340,22 @@ def _add_auto_ingredient_reader(
         ]
     )
 
+    # Recipe command is live before dispatch, so the assembler can expose Read ingredients in time
+    # for reservation. A relay keeps both circuit-wire hops within conservative combinator reach.
+    _add_wire(wires, int(recipe_command["entity_number"]), 1, recipe_relay, 1)
+    _add_wire(wires, recipe_relay, 1, int(recipe_bridge["entity_number"]), 1)
+
+    # Request exactly one recipe worth of ingredients. requester_demand is START-gated already.
+    _add_wire(
+        wires,
+        int(request_relay["entity_number"]),
+        1,
+        int(feeder["entity_number"]),
+        1,
+    )
+
+    # Read ingredients shares the machine output with W/F. Copy the vector and cancel those two
+    # known virtual lanes before feeding the job_request reservation input.
     source = int(raw_relay["entity_number"])
     _add_wire(wires, source, 1, copy_each, 1)
     _add_wire(wires, source, 1, cancel_working, 1)
@@ -375,7 +372,7 @@ def _add_auto_ingredient_reader(
 
 
 def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
-    """Apply Factorio prototype names, correct item flow, and automatic assembler ingredients."""
+    """Apply real prototypes, correct item flow, and automatic assembler ingredients."""
 
     raw_entities = blueprint.get("entities", [])
     if not isinstance(raw_entities, list):
@@ -397,8 +394,7 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
     }
     next_id = max((int(entity["entity_number"]) for entity in entities), default=0) + 1
 
-    # Inserter direction is the pickup-facing direction. For left->right transfer, pickup is west
-    # (12), not east. Assembling-machine-3 itself has no orientation field.
+    # Inserter direction is the pickup-facing direction. Left->right transfer picks up from west.
     assemblers = [entity for entity in entities if entity.get("name") == "assembling-machine-3"]
     for machine in assemblers:
         feeder = _nearest_device_entity(entities, machine, "MALL DEVICE feeder")
@@ -415,15 +411,14 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
         behavior["read_ingredients"] = True
 
         next_id = _add_auto_ingredient_reader(
-            blueprint,
             entities,
             wires,
             machine,
             next_id=next_id,
         )
 
-    # Recycler is 2x4 and north-facing. Its feeder sits south of the machine, so pickup is south
-    # (direction 8) and drop is north. The recycler ejects directly into its north output chest.
+    # Recycler is 2x4 and north-facing. Its feeder picks up from the south and drops north. The
+    # recycler itself ejects directly into the provider chest on its north output side.
     recycler_output_inserters: set[int] = set()
     for machine in [entity for entity in entities if entity.get("name") == "recycler"]:
         old_x, _old_y = _position(machine)
