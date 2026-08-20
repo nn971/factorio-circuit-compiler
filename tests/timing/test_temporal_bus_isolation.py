@@ -132,6 +132,13 @@ def test_shared_bus_is_electrically_isolated_at_ingress_and_egress() -> None:
     assert len(ingress_nets) == len({lane.start_phase + 1 for lane in lanes})
     assert sum(len(net.signals) for net in ingress_nets) == len(lanes)
 
+    # Aggregate ingress is bus-private too. It may feed only a shared bus stage; a one-tick semantic
+    # consumer must keep its scalar delay private rather than reading this multi-lane aggregate net.
+    for net in ingress_nets:
+        for endpoint in net.endpoints:
+            if endpoint.connector is Connector.INPUT:
+                assert endpoint.entity in bus_stage_ids
+
     # Shared trunk nets may feed only another shared bus stage or a signal-specific scalar egress
     # copy. They must never terminate directly at an ordinary semantic consumer, because one global
     # trunk wire color cannot satisfy arbitrary downstream red/green relationships.
