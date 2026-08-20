@@ -23,16 +23,18 @@ def _shared_scalar_fanout() -> Circuit:
     one = c.constant_signals({VALUE: 1})
     memory = c.accumulator("memory")
 
-    # Give the state domain a real multicycle recurrence so scalar controls have room to move.
+    # Put the state domain on a genuine multicycle critical recurrence.  At the minimum feasible
+    # period this can pin every computation to one phase; the important property for this fixture is
+    # the shared scalar lifetime, not artificial scheduling slack.
     deep = memory.sample()
     for _ in range(5):
         deep = deep + one
     memory.add(deep)
 
     # ``shared`` is needed both directly at the state boundary and through a deeper scalar chain.
-    # A one-realization ALAP schedule must compute it early enough for ``late`` and then preserve it
-    # for the direct use. The temporal hypergraph should expose that lifetime instead of hiding it
-    # inside emitted phase-delay combinators.
+    # Even when the minimum-period schedule pins all computation phases, one physical realization of
+    # ``shared`` must survive until its direct late consumer.  The temporal hypergraph should expose
+    # that lifetime instead of hiding it inside emitted phase-delay combinators.
     shared = enabled != 0
     late = shared
     for _ in range(3):
@@ -59,13 +61,50 @@ def test_temporal_hypergraph_exposes_shared_scalar_transport() -> None:
 
     assert graph.period > 1
     assert graph.computations
-    assert any(item.mobility > 0 for item in graph.computations)
 
     asap = graph.transport_cost(graph.asap_placement())
     alap = graph.transport_cost(graph.alap_placement())
     assert asap.bus_eligible_scalar_serial > 0
     assert alap.bus_eligible_scalar_serial > 0
     assert all(item.end_phase > item.start_phase for item in alap.intervals)
+
+
+def test_temporal_hypergraph_represents_real_phase_mobility_when_slack_exists() -> None:
+    source = TemporalSource(
+        id=1,
+        label="source",
+        shape=PayloadShape.SCALAR,
+        mode=TemporalSourceMode.LIVE,
+        start_phase=0,
+        end_phase_exclusive=8,
+        semantic=object(),
+    )
+    semantic = BinaryOp("+", Constant(1), Constant(1), name="movable")
+    computation = TemporalComputation(
+        id=2,
+        label="movable",
+        shape=PayloadShape.SCALAR,
+        earliest_phase=1,
+        latest_phase=5,
+        semantic=semantic,
+    )
+    sink = TemporalSink(3, "sink", PayloadShape.SCALAR, 6)
+    graph = TemporalHypergraph(
+        period=8,
+        sources=(source,),
+        computations=(computation,),
+        sinks=(sink,),
+        arcs=(
+            TemporalArc(source.id, computation.id, 1, PayloadShape.SCALAR),
+            TemporalArc(computation.id, sink.id, 0, PayloadShape.SCALAR),
+        ),
+    )
+
+    assert computation.mobility == 4
+    assert graph.asap_placement().phase_for(computation) == 1
+    assert graph.alap_placement().phase_for(computation) == 5
+    graph.validate_placement(graph.asap_placement())
+    graph.validate_placement(graph.alap_placement())
 
 
 def _fixed_bus_graph(
