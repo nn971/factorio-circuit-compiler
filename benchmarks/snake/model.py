@@ -6,11 +6,11 @@ The game is deliberately built only from existing compiler primitives:
 - a scalar reset Level restores the complete game state atomically;
 - periodic state uses the compiler-inferred recurrence clock, with an optional logical divider;
 - head coordinates, movement/queued directions, score, death state, and body history are registers;
-- body positions use a bounded FIFO with a maximum snake length of 16;
+- body occupancy is represented by two packed 256-lane vectors: per-pixel TTL plus a 0/1 mask;
 - the framebuffer is a persistent 256-lane packed-RGB vector for ``devices.lamp_screen``.
 
-Use ``python -m benchmarks.snake.generate`` for the heavyweight physical compile and
-blueprint runner.
+Use ``python -m benchmarks.snake.generate`` for the heavyweight physical compile and blueprint
+runner.
 The model remains separately importable so semantic tests can exercise it without invoking layout.
 """
 
@@ -26,8 +26,8 @@ SCREEN_HEIGHT = 16
 CELL_COUNT = SCREEN_WIDTH * SCREEN_HEIGHT
 ORIGIN_X = 8
 ORIGIN_Y = 8
-BODY_CAPACITY = 15
-MAX_LENGTH = BODY_CAPACITY + 1
+BODY_CAPACITY = CELL_COUNT - 1
+MAX_LENGTH = CELL_COUNT
 DEFAULT_LOGICAL_STEPS_PER_MOVE = 1
 
 DIR_E = 0
@@ -43,7 +43,6 @@ PHASE_SIGNAL = SignalId("virtual", "signal-P")
 SCORE_SIGNAL = SignalId("virtual", "signal-Q")
 DEAD_SIGNAL = SignalId("virtual", "signal-skull")
 STARTED_SIGNAL = SignalId("virtual", "signal-check")
-POSITION_SIGNAL = SignalId("virtual", "signal-dot")
 
 ARROW_SIGNALS = {
     direction: SignalId("virtual", signal_name)
@@ -153,22 +152,43 @@ def _requested_direction(movement: SignalsExpr, old_direction: Expr) -> tuple[Ex
     return requested, present
 
 
+def _capped_body_count(score: Expr) -> Expr:
+    """Return the body-pixel count, capped only by the physical board capacity."""
+
+    return (score < BODY_CAPACITY).select(score, BODY_CAPACITY)
+
+
+def _contains_pixel(body_mask: SignalsExpr, pixel: SignalsExpr) -> Expr:
+    """Test whether a one-hot ``pixel`` is present in a 0/1 body mask.
+
+    Adding two to the queried lane makes it dominate every ordinary body lane. ``max()`` therefore
+    selects exactly that lane; a count above two means the body mask also contributed one there.
+    """
+
+    return (body_mask + pixel * 2).max().filter_gt(2).any()
+
+
 def build_snake_circuit(
     *,
     logical_steps_per_move: int = DEFAULT_LOGICAL_STEPS_PER_MOVE,
     render_framebuffer: bool = True,
 ) -> Circuit:
-    """Build the first bounded Snake prototype.
+    """Build the board-bounded Snake prototype with packed time-to-live body state.
 
-    The snake waits at screen coordinate (8, 8), with initial reference direction east and
-    length one. The first direction gesture starts the game and may choose any direction.
-    Each food increases the visible/collidable length by one until the fixed maximum length
-    of 16 is reached. A nonzero
-    ``reset`` input restores this complete initial state and wins over movement/collision updates on
-    the same logical occurrence.
+    The snake waits at screen coordinate (8, 8), with initial reference direction east and length
+    one. The first direction gesture starts the game and may choose any direction. Each food
+    increases the visible/collidable length by one until all 256 board cells are occupied.
+    A nonzero ``reset`` input restores this complete initial state and wins over movement/collision
+    updates on the same logical occurrence.
 
-    ``render_framebuffer=False`` keeps the same game state machine but omits the pixel-history state
-    and renderer; it exists so contract tests can exercise game semantics cheaply.
+    Body history uses one TTL vector and one 0/1 occupancy mask across the 256 framebuffer signals.
+    TTL value one denotes the tail. On an ordinary move every positive TTL is decremented and the
+    old head is inserted with the current body length; on growth the tail is retained and the old
+    head is inserted with the new body length. This replaces the previous scalar-position and pixel
+    FIFOs.
+
+    ``render_framebuffer=False`` keeps the same game state machine but omits framebuffer
+    composition; semantic gameplay tests still exercise the packed body state and collision logic.
     """
 
     if (
@@ -194,14 +214,12 @@ def build_snake_circuit(
     score_reg = circuit.accumulator("score")
     dead_reg = circuit.freeze("dead")
     started_reg = circuit.freeze("started")
+    body_ttl_reg = circuit.freeze("body_ttl")
+    body_mask_reg = circuit.freeze("body_mask")
 
-    body_position_regs = [circuit.freeze(f"body_pos_{index}") for index in range(BODY_CAPACITY)]
-    body_pixel_regs = (
-        [circuit.freeze(f"body_pixel_{index}") for index in range(BODY_CAPACITY)]
-        if render_framebuffer
-        else []
-    )
-    pixel_id_rom = circuit.constant_signals(PIXEL_ID_ROM) if render_framebuffer else None
+    # The packed body state uses framebuffer pixel signals even when display rendering is disabled,
+    # so the scalar -> one-hot decoder is part of gameplay rather than a renderer-only helper.
+    pixel_id_rom = circuit.constant_signals(PIXEL_ID_ROM)
 
     old_x = x_reg.sample().signal(X_SIGNAL)
     old_y = y_reg.sample().signal(Y_SIGNAL)
@@ -210,10 +228,8 @@ def build_snake_circuit(
     old_score = score_reg.sample().signal(SCORE_SIGNAL)
     old_dead = dead_reg.sample().signal(DEAD_SIGNAL)
     old_started = started_reg.sample().signal(STARTED_SIGNAL)
-    old_body_positions = [
-        register.sample().signal(POSITION_SIGNAL) for register in body_position_regs
-    ]
-    old_body_pixels = [register.sample() for register in body_pixel_regs]
+    old_body_ttl = body_ttl_reg.sample()
+    old_body_mask = body_mask_reg.sample()
 
     requested_direction, request_present = _requested_direction(movement, old_direction)
     alive = old_dead == 0
@@ -242,6 +258,7 @@ def build_snake_circuit(
     next_x = old_x + dx
     next_y = old_y + dy
     next_cell_id = (next_y + ORIGIN_Y) * SCREEN_WIDTH + (next_x + ORIGIN_X) + 1
+    next_head_one_hot = _decode_cell_pixels(pixel_id_rom, next_cell_id)
 
     wall_collision = (
         (next_x < -ORIGIN_X)
@@ -253,18 +270,16 @@ def build_snake_circuit(
     would_eat = attempt_move * wall_collision.logical_not() * (next_cell_id == current_food_id)
     growing = would_eat * (old_score < BODY_CAPACITY)
 
-    self_hits: list[Expr] = []
-    for index, position in enumerate(old_body_positions):
-        active = old_score > index
-        if index + 1 < BODY_CAPACITY:
-            is_tail = old_score == index + 1
-        else:
-            is_tail = old_score >= BODY_CAPACITY
-        # The tail vacates on an ordinary move, so moving into its old cell is legal. It remains
-        # occupied only while the snake is still below max length and this move eats food.
-        checked = active * (growing | is_tail.logical_not())
-        self_hits.append(checked * (position == next_cell_id))
-    self_collision = _or_all(self_hits)
+    # TTL one is the current tail. An ordinary move drops that lane while growth retains it.
+    aged_body_ttl = (old_body_ttl - 1).positive()
+    tail_mask = old_body_ttl.filter_eq(1)
+    not_growing = growing.logical_not()
+    collision_body_ttl = old_body_ttl.gate(growing) + aged_body_ttl.gate(not_growing)
+    collision_body_mask = old_body_mask.gate(growing) + (
+        old_body_mask - tail_mask
+    ).gate(not_growing)
+
+    self_collision = _contains_pixel(collision_body_mask, next_head_one_hot)
 
     collision = attempt_move * (wall_collision | self_collision)
     move_ok = attempt_move * collision.logical_not()
@@ -287,8 +302,8 @@ def build_snake_circuit(
         when=move_ok | reset_active,
     )
 
-    # Accumulator clear suppresses same-occurrence adds in physical lowering, so reset
-    # wins even when movement/eating is also active.
+    # Accumulator clear suppresses same-occurrence adds in physical lowering, so reset wins even
+    # when movement/eating is also active.
     x_reg.add(_lane_value(circuit, X_SIGNAL, dx), when=move_ok)
     x_reg.clear(reset_active)
     y_reg.add(_lane_value(circuit, Y_SIGNAL, dy), when=move_ok)
@@ -301,30 +316,21 @@ def build_snake_circuit(
     )
 
     old_head_cell_id = (old_y + ORIGIN_Y) * SCREEN_WIDTH + (old_x + ORIGIN_X) + 1
-    body_position_regs[0].set(
-        _lane_value(circuit, POSITION_SIGNAL, old_head_cell_id).gate(reset_inactive),
+    old_head_one_hot = _decode_cell_pixels(pixel_id_rom, old_head_cell_id)
+    body_count = _capped_body_count(old_score)
+    inserted_ttl = growing.select(body_count + 1, body_count)
+    inserted_head = old_head_one_hot.gate(inserted_ttl != 0)
+    next_body_ttl = collision_body_ttl + old_head_one_hot * inserted_ttl
+    next_body_mask = collision_body_mask + inserted_head
+
+    body_ttl_reg.set(
+        next_body_ttl.gate(reset_inactive),
         when=move_ok | reset_active,
     )
-    for index in range(1, BODY_CAPACITY):
-        body_position_regs[index].set(
-            _lane_value(circuit, POSITION_SIGNAL, old_body_positions[index - 1]).gate(
-                reset_inactive
-            ),
-            when=move_ok | reset_active,
-        )
-
-    if render_framebuffer:
-        assert pixel_id_rom is not None
-        old_head_pixels = _decode_cell_pixels(pixel_id_rom, old_head_cell_id)
-        body_pixel_regs[0].set(
-            old_head_pixels.gate(reset_inactive),
-            when=move_ok | reset_active,
-        )
-        for index in range(1, BODY_CAPACITY):
-            body_pixel_regs[index].set(
-                old_body_pixels[index - 1].gate(reset_inactive),
-                when=move_ok | reset_active,
-            )
+    body_mask_reg.set(
+        next_body_mask.gate(reset_inactive),
+        when=move_ok | reset_active,
+    )
 
     # Observe the atomic post-transition state. This compatibility cursor is still the established
     # way to expose "after this game step" values for periodic state programs.
@@ -336,32 +342,27 @@ def build_snake_circuit(
     score = score_reg.sample().signal(SCORE_SIGNAL)
     dead = dead_reg.sample().signal(DEAD_SIGNAL)
     started_now = started_reg.sample().signal(STARTED_SIGNAL)
-    body_positions = [register.sample().signal(POSITION_SIGNAL) for register in body_position_regs]
+    body_mask = body_mask_reg.sample()
     next_food_id = _food_id(score)
 
     if render_framebuffer:
-        assert pixel_id_rom is not None
-        body_pixels = [register.sample() for register in body_pixel_regs]
         head_cell_id = (head_y + ORIGIN_Y) * SCREEN_WIDTH + (head_x + ORIGIN_X) + 1
         head_one_hot = _decode_cell_pixels(pixel_id_rom, head_cell_id)
+        food_one_hot = _decode_cell_pixels(pixel_id_rom, next_food_id)
 
-        occupied_body = circuit.constant_signals({})
-        for index, pixels in enumerate(body_pixels):
-            occupied_body = occupied_body + pixels.gate(score > index)
-
-        food_occupied_checks = [head_cell_id == next_food_id]
-        food_occupied_checks.extend(
-            (score > index) * (position == next_food_id)
-            for index, position in enumerate(body_positions)
-        )
-        food_visible = _or_all(food_occupied_checks).logical_not()
-        food_one_hot = _decode_cell_pixels(pixel_id_rom, next_food_id).gate(food_visible)
+        # Food generated by the deterministic fixture can temporarily land under the snake. Probe
+        # the packed occupancy vector directly instead of walking a scalar body-position FIFO.
+        food_on_body = _contains_pixel(body_mask, food_one_hot)
+        food_on_head = (head_one_hot + food_one_hot * 2).max().filter_gt(2).any()
+        food_visible = (food_on_body | food_on_head).logical_not()
 
         dead_now = dead != 0
         body_color = dead_now.select(DEAD_BODY_COLOR, BODY_COLOR)
         head_color = dead_now.select(DEAD_HEAD_COLOR, HEAD_COLOR)
         framebuffer = (
-            occupied_body * body_color + head_one_hot * head_color + food_one_hot * FOOD_COLOR
+            body_mask * body_color
+            + head_one_hot * head_color
+            + food_one_hot.gate(food_visible) * FOOD_COLOR
         )
         circuit.output("framebuffer", framebuffer)
 
