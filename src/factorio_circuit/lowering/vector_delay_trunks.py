@@ -1,8 +1,9 @@
 """Shared exact-delay trunks for production Level vector lowering.
 
-Validity-aware settling removes phase padding when a logical Level token is already certified at a
-later physical phase. When exact transport is still required, multiple consumers of the same vector
-should nevertheless share one delay prefix, just as scalar ``delay_to`` already does.
+Validity-aware Level alignment removes phase padding when a logical Level token is already certified
+at a later physical phase. When exact transport is still required, multiple consumers of the same
+vector should nevertheless share one delay prefix, just as scalar exact transport reuses its private
+prefix cache.
 """
 
 from __future__ import annotations
@@ -12,11 +13,11 @@ from factorio_circuit.analysis.state_timing import StateTimingPlan
 from factorio_circuit.ir.abstract_physical import ArithmeticCombinator, Connector, Endpoint, Operand
 from factorio_circuit.ir.semantic import CircuitModule
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedVector
-from factorio_circuit.lowering.settling import SettlingVectorLowerer
+from factorio_circuit.lowering.level_alignment import LevelAlignmentLowerer
 
 
-class SharedVectorDelayLowerer(SettlingVectorLowerer):
-    """Validity-aware Level lowerer with memoized exact vector-delay prefixes."""
+class SharedVectorDelayLowerer(LevelAlignmentLowerer):
+    """Level lowerer with memoized prefixes for exact vector transport."""
 
     def __init__(
         self,
@@ -32,18 +33,19 @@ class SharedVectorDelayLowerer(SettlingVectorLowerer):
         )
         self.vector_delay_cache: dict[tuple[int, int], RealizedVector] = {}
 
-    def delay_vector_to(self, value: RealizedVector, target_phase: int) -> RealizedVector:
+    def exact_delay_vector_to(
+        self,
+        value: RealizedVector,
+        target_phase: int,
+    ) -> RealizedVector:
+        """Transport one exact vector token while sharing every already-built prefix."""
+
         if value.phase > target_phase:
             raise ValueError("cannot delay vector backwards in time")
         if value.phase == target_phase:
             return value
 
         window = self._vector_window(value)
-        if not self._force_exact_alignment and window is not None and window.contains(target_phase):
-            result = RealizedVector(value.net, target_phase)
-            self._remember_vector(result, window.from_phase(target_phase))
-            return result
-
         result = self._exact_vector_delay_to(value, target_phase)
         if window is not None:
             self._remember_vector(
@@ -57,7 +59,7 @@ class SharedVectorDelayLowerer(SettlingVectorLowerer):
         value: RealizedVector,
         target_phase: int,
     ) -> RealizedVector:
-        """Transport one vector exactly, sharing every already-built one-tick prefix."""
+        """Emit exact vector transport, sharing only prefixes of the same physical token."""
 
         current = value
         latency = FACTORIO_LATENCY.operation_latency("vector_binary", "delay")
