@@ -211,16 +211,11 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
         return result
 
     def _private_exact_tick(self, value: RealizedValue, target_phase: int) -> RealizedValue:
-        """Transport one scalar tick without exposing any shared bus-private net to a consumer."""
+        """Transport one scalar tick without consulting settling, observation, or bus policy."""
 
         if target_phase != value.phase + 1:
             raise ValueError("private exact bus tick must advance by exactly one phase")
-        previous = self._force_exact_alignment
-        self._force_exact_alignment = True
-        try:
-            return super().delay_to(value, target_phase)
-        finally:
-            self._force_exact_alignment = previous
+        return self.exact_delay_to(value, target_phase)
 
     def _delay_on_bus(
         self,
