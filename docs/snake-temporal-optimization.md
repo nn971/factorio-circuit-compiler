@@ -31,10 +31,18 @@ The model distinguishes three source behaviors inside one periodic reaction:
 - `STABLE`: constants and held state reads. Computations derived entirely from stable sources follow
   those held values continuously and do not require scalar identity transport inside the modeled
   occurrence.
-- `LIVE`: phase-zero external Level inputs/oracles under `SamplingPolicy.ALAP`. They may be observed
-  directly at a later consumer phase without a delay chain.
+- `LIVE`: phase-zero external Level inputs/oracles under `SamplingPolicy.ALAP`. Ordinary ALAP
+  lowering permits a later consumer to observe such a source directly. The temporal optimizer adds
+  a stronger coherence rule: all direct uses in one logical occurrence share one observation tick,
+  chosen as late as possible (the earliest direct-consumer input). Uses after that tick transport
+  the exact captured token instead of independently resampling the external wire.
 - `EXACT`: explicit/nonzero logical samples and beginning-of-step observations. They denote a
   particular physical tick and must be transported when used later.
+
+The coherent-LIVE rule is necessary for multi-use external values. Without it, separate direction
+comparisons can see different movement-detector states in one logical occurrence, and the random-food
+provider can validate one selector result while gating a later, different result. The first physical
+temporal Snake exposed exactly this failure in Factorio.
 
 A computation whose ancestry contains a LIVE or EXACT source is phase-specific under the current
 one-realization model. Those scalar results are the first delay-bus candidates.
@@ -58,10 +66,10 @@ max(e_i) - min(s_i)
 ```
 
 with a finite lane capacity. This is deliberately more conservative than pretending arbitrary lanes
-can disappear from an `Each` pipeline for free. The default capacity is the size of the compiler's
-stable virtual-signal allocation pool (currently 51 lanes). A compatibility hook can forbid pairs
-from sharing a bus; deriving those incompatibilities automatically from physical-lane interference
-is a follow-up step.
+can disappear from an `Each` pipeline for free. The default compiler scratch palette currently has
+65 base-game virtual signals, deliberately disjoint from the framebuffer's fixed virtual pixel ABI.
+A compatibility hook can forbid pairs from sharing a bus; deriving those incompatibilities
+automatically from physical-lane interference is a follow-up step.
 
 The experimental lowerer realizes a solved bus directly in abstract physical IR. Independent scalar
 producer nets may join one bus stage, later stages carry all active lanes with one `Each` arithmetic
@@ -90,7 +98,7 @@ The solved diagnostic closes the current loop:
 ```text
 semantic state cone
     -> temporal hypergraph
-    -> exact phase + scalar-bus search
+    -> exact phase + coherent live-source + scalar-bus search
     -> planned abstract-physical lowering
     -> realized entity/delay census
 ```
@@ -98,11 +106,11 @@ semantic state cone
 A CP-SAT status of `OPTIMAL` means optimal only for the explicitly modeled fixed-period state-cone
 problem, not yet for the complete compiled Snake.
 
-## Staged fixed-period success
+## First physical candidate: rejected by gameplay
 
-On 2026-08-20 a 30-second, 8-worker solve successfully completed the entire
-semantic -> CP-SAT -> temporal-plan abstract-lowering path at the unchanged period 65. The realized
-abstract physical census was:
+On 2026-08-20 the first 30-second, 8-worker solve completed the entire
+semantic -> CP-SAT -> temporal-plan -> signal-allocation -> safe-folded-layout path at period 65. A
+representative realized abstract physical census was:
 
 ```text
 baseline ALAP                     temporal plan
@@ -112,18 +120,26 @@ phase delays       421            165
   scalar bus         0             54
   vector             18             17
 state impl           60             60
-max lanes/net         1             32
+max lanes/net         1          25-36 (solver-dependent)
 ```
 
-The solver candidate had objective 71 and best bound 64: 54 scalar bus stages plus 17 vector delays,
-using three scalar buses. The realized circuit therefore reduced implementation combinators by 244
-(35.0%) and phase-delay combinators by 256 (60.8%) without increasing the state period.
+The solver candidate had objective 71 and a best bound in the mid-60s, using three scalar buses. The
+physical circuit therefore demonstrated the intended packing effect: 244 fewer implementation
+combinators (35.0%) and 256 fewer phase-delay combinators (60.8%) without increasing the state
+period. Signal allocation and layout also succeeded; one generated layout had 16,181 relays and a
+458x436-tile extent.
 
-This is deliberately recorded as `temporal-delay-bus-prevalidation-v1`, not yet as an accepted
-in-game milestone. The next acceptance gate is concrete signal allocation, safe-folded layout,
-blueprint import, and full Factorio gameplay validation.
+However, Factorio gameplay rejected this candidate. The snake could bump incorrectly while turning,
+eaten food could remain visible, the first food could appear late, and frames looked uneven. The
+root semantic flaw was that LIVE sources were priced and lowered as independently resampleable at
+every consumer phase. That is not coherent for one logical occurrence, particularly for the movement
+vector and the nondeterministic Random Input selector.
 
-Generate that candidate blueprint with the dedicated experimental runner:
+The solver and temporal lowerer now model one coherent observation tick for each LIVE source. The
+next generated candidate must pass gameplay again before any temporal result becomes an accepted
+milestone. The 698-combinator random-food ALAP build remains the correctness baseline.
+
+Generate the current candidate blueprint with the dedicated experimental runner:
 
 ```bash
 uv run --with 'ortools>=9.14,<10' \
@@ -134,8 +150,9 @@ uv run --with 'ortools>=9.14,<10' \
   --output snake-temporal-blueprint.txt
 ```
 
-The ordinary `benchmarks.snake.generate` command intentionally remains on the accepted ALAP path
-until this candidate passes the in-game acceptance checklist.
+The optimization report now prints the coherent observation phase and latest direct use for each
+LIVE source. The ordinary `benchmarks.snake.generate` command intentionally remains on the accepted
+ALAP path until a temporal candidate passes the in-game acceptance checklist.
 
 ## Deliberate first-milestone boundaries
 
@@ -148,7 +165,8 @@ The first search keeps these decisions fixed or outside the objective:
 - whole-vector delay buses are not modeled;
 - output-only computation cones and output materialization are not yet global-search sinks;
 - periodic-clock startup transport is not part of the hypergraph objective;
-- provider timing beyond ordinary Level source behavior is not yet optimized;
+- LIVE provider/input observations are coherent, but their provider-internal implementation choices
+  are not optimized;
 - physical lane incompatibility is currently an explicit solver input rather than derived
   automatically.
 
