@@ -43,6 +43,7 @@ from .state_timing import (
     earliest_vector_phase,
     validate_event_throughput,
 )
+from .temporal_builder import build_temporal_hypergraph
 from .temporal_hypergraph import (
     TemporalArc,
     TemporalComputation,
@@ -54,7 +55,6 @@ from .temporal_hypergraph import (
     TemporalSourceMode,
     TemporalTransportCost,
     TransportInterval,
-    build_temporal_hypergraph,
     format_temporal_hypergraph,
 )
 from .temporal_optimize import (
