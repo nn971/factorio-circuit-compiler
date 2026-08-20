@@ -13,6 +13,7 @@ from factorio_circuit.ir.oracle import (
     provider_input_port_name,
 )
 from factorio_circuit.ir.semantic import CircuitModule, OutputValue, ReturnValue
+from factorio_circuit.sampling import SamplingPolicy
 
 from .clock_bridges import Circuit as _Circuit
 from .vector_circuit import Expr, Input, SignalsInput
@@ -132,9 +133,10 @@ class Circuit(_Circuit):
         placement: PlacementOptions | None = None,
         physical_anchors: Mapping[str, Position] | None = None,
         oracle_providers: Mapping[str, OracleProvider] | None = None,
+        sampling_policy: SamplingPolicy = SamplingPolicy.BEGINNING_OF_STEP,
         progress: ProgressCallback | None = None,
     ) -> CompilationResult:
-        """Compile this circuit with explicit physical providers for every oracle."""
+        """Compile this circuit with explicit oracle providers and external sampling policy."""
 
         from factorio_circuit.compiler import compile_circuit
 
@@ -149,6 +151,7 @@ class Circuit(_Circuit):
             placement=placement,
             physical_anchors=physical_anchors,
             oracle_providers=oracle_providers,
+            sampling_policy=sampling_policy,
             progress=progress,
         )
         if provider_input_count == 0:

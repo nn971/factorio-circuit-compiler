@@ -40,6 +40,7 @@ from factorio_circuit.oracles import (
     validate_oracle_provider_bindings,
 )
 from factorio_circuit.progress import ProgressCallback, report_progress
+from factorio_circuit.sampling import SamplingPolicy
 from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
 from factorio_circuit.synthesis.placement import PlacementOptions, Position
@@ -93,11 +94,13 @@ def _lower_level(
     *,
     enable_packing: bool,
     state_timing: StateTimingPlan,
+    sampling_policy: SamplingPolicy,
 ) -> AbstractPhysicalCircuit:
     return lower_normalized_vectors(
         module,
         enable_packing=enable_packing,
         state_timing=state_timing,
+        sampling_policy=sampling_policy,
     )
 
 
@@ -124,6 +127,7 @@ def lower_to_abstract_physical(
     optimize: bool = True,
     progress: ProgressCallback | None = None,
     oracle_providers: Mapping[str, OracleProvider] | None = None,
+    sampling_policy: SamplingPolicy = SamplingPolicy.BEGINNING_OF_STEP,
 ) -> AbstractPhysicalLoweringResult:
     """Run the canonical compiler pipeline through abstract physical lowering only.
 
@@ -135,7 +139,14 @@ def lower_to_abstract_physical(
     abstract physical graph before this function returns, so their entities and unresolved symbolic
     placement requirements participate in the same joint synthesis/layout pass as ordinary
     compiler-generated combinators.
+
+    ``sampling_policy`` controls when phase-zero external Level inputs and oracles are physically
+    observed inside one logical occurrence. The compatibility default snapshots them at the
+    beginning; ``SamplingPolicy.ALAP`` may observe the live net later to avoid transport delays.
     """
+
+    if not isinstance(sampling_policy, SamplingPolicy):
+        raise TypeError("sampling_policy must be a SamplingPolicy")
 
     report_progress(progress, "frontend", detail="elaborating and lowering source program")
     source_output = _source_output(source)
@@ -144,6 +155,8 @@ def lower_to_abstract_physical(
     clocked = contains_event_semantics(semantic)
 
     if clocked:
+        if sampling_policy is not SamplingPolicy.BEGINNING_OF_STEP:
+            raise ValueError("ALAP external sampling is currently supported for Level modules only")
         if oracle_sources(semantic):
             raise OracleBindingError(
                 "physical oracle providers are currently supported for Level modules only"
@@ -171,12 +184,16 @@ def lower_to_abstract_physical(
         report_progress(
             progress,
             "physical-lowering",
-            detail="lowering Level/state semantics to abstract physical IR",
+            detail=(
+                "lowering Level/state semantics to abstract physical IR "
+                f"with sampling={sampling_policy.value}"
+            ),
         )
         abstract_physical = _lower_level(
             optimized_semantic,
             enable_packing=optimize,
             state_timing=state_timing,
+            sampling_policy=sampling_policy,
         )
         materialize_oracle_providers(optimized_semantic, abstract_physical, providers)
 
@@ -198,6 +215,7 @@ def compile_circuit(
     physical_anchors: Mapping[str, Position] | None = None,
     progress: ProgressCallback | None = None,
     oracle_providers: Mapping[str, OracleProvider] | None = None,
+    sampling_policy: SamplingPolicy = SamplingPolicy.BEGINNING_OF_STEP,
 ) -> CompilationResult:
     """Compile semantic dataflow through physical synthesis to a final Layout and blueprint.
 
@@ -211,6 +229,11 @@ def compile_circuit(
     may leave those sites unresolved, but final placement requires a coordinate for every anchored
     entity.
 
+    ``sampling_policy`` is a target-side observation policy. ``BEGINNING_OF_STEP`` preserves the
+    historical snapshot behavior. ``ALAP`` lets every phase-zero external Level input/oracle remain
+    live until its physical consumer, eliminating identity-delay transport when no explicit logical
+    reindexing requires an older sample.
+
     ``progress`` receives coarse compiler phases plus bounded placement/routing updates.
     Callbacks are observational only and do not affect deterministic compilation.
     """
@@ -220,6 +243,7 @@ def compile_circuit(
         optimize=optimize,
         progress=progress,
         oracle_providers=oracle_providers,
+        sampling_policy=sampling_policy,
     )
     layout = _synthesize(
         lowered.abstract_physical,
@@ -243,6 +267,7 @@ def compile_circuit(
             lowered.optimized_ir,
             enable_packing=False,
             state_timing=lowered.state_timing,
+            sampling_policy=sampling_policy,
         )
         materialize_oracle_providers(
             lowered.optimized_ir,

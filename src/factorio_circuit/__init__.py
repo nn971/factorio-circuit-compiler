@@ -51,6 +51,7 @@ from .oracles import (
     VectorConstantOracleProvider,
 )
 from .progress import CompileProgress, ProgressCallback
+from .sampling import SamplingPolicy
 from .simulate.clocked_events import simulate_events
 from .simulate.events import (
     EventActivation,
@@ -109,6 +110,7 @@ __all__ = [
     "PlacementOptions",
     "ProgressCallback",
     "RandomSignalOracleProvider",
+    "SamplingPolicy",
     "ScalarConstantOracleProvider",
     "SignalsExpr",
     "SignalsInput",
