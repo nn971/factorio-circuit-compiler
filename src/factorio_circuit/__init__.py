@@ -46,6 +46,7 @@ from .oracles import (
     OraclePhysicalContext,
     OraclePortDisposition,
     OracleProvider,
+    RandomSignalOracleProvider,
     ScalarConstantOracleProvider,
     VectorConstantOracleProvider,
 )
@@ -107,6 +108,7 @@ __all__ = [
     "PlacementMetrics",
     "PlacementOptions",
     "ProgressCallback",
+    "RandomSignalOracleProvider",
     "ScalarConstantOracleProvider",
     "SignalsExpr",
     "SignalsInput",

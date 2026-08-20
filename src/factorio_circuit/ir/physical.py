@@ -88,6 +88,42 @@ class DeciderCombinator:
     description: str | None = None
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class SelectorCombinator(ArithmeticCombinator):
+    """Concrete selector entity with ordinary combinator geometry/connectors.
+
+    Inheriting the geometric shell keeps existing placement/routing code reusable. The selector is
+    still a distinct runtime type and is never serialized or interpreted as arithmetic.
+    """
+
+    select_max: bool
+    index: int
+    random_update_interval: int
+
+    def __init__(
+        self,
+        id: int,
+        operation: str,
+        *,
+        select_max: bool = True,
+        index: int = 0,
+        random_update_interval: int = 1,
+        description: str | None = None,
+    ) -> None:
+        if operation not in {"select", "random"}:
+            raise ValueError(f"unsupported selector operation {operation!r}")
+        object.__setattr__(self, "id", id)
+        object.__setattr__(self, "operation", operation)
+        object.__setattr__(self, "left", Operand(each=True))
+        object.__setattr__(self, "right", Operand(constant=index))
+        object.__setattr__(self, "output_each", True)
+        object.__setattr__(self, "output_signal", None)
+        object.__setattr__(self, "description", description)
+        object.__setattr__(self, "select_max", select_max)
+        object.__setattr__(self, "index", index)
+        object.__setattr__(self, "random_update_interval", random_update_interval)
+
+
 @dataclass(frozen=True, slots=True)
 class ConstantCombinator:
     id: int
@@ -96,7 +132,7 @@ class ConstantCombinator:
     annotation_only: bool = False
 
 
-PhysicalEntity = ArithmeticCombinator | DeciderCombinator | ConstantCombinator
+PhysicalEntity = ArithmeticCombinator | DeciderCombinator | SelectorCombinator | ConstantCombinator
 
 
 @dataclass(frozen=True, slots=True)

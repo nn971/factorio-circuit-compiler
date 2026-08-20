@@ -117,7 +117,43 @@ provider can therefore anchor only its world-facing sensor while leaving helper 
 the net-aware placer to optimize around the fixed site. This is the intended model for assemblers,
 roboports, train stops, and larger generated devices.
 
-The initial provider context exposes the oracle output net. Providers that consume deterministic
-semantic expressions (for example random selection from a computed free-pixel mask) will extend the
-same interface with named provider-input nets; nondeterministic behavior itself remains outside the
-deterministic semantic evaluator.
+## Deterministic provider inputs
+
+Some physical providers are not autonomous sources: they consume deterministic circuit values and
+return an observation that is opaque to semantics. Random selection from a computed candidate set is
+the first example. Declare the oracle normally, then bind a named provider input:
+
+```python
+choice = c.oracle_signals("choice")
+free_pixels = ...
+
+c.bind_oracle_input(choice, "candidates", free_pixels)
+```
+
+`bind_oracle_input(...)` is a physical-compilation boundary, not a semantic dataflow edge. A normal
+`c.build()` still exposes only the actual semantic outputs. During `c.compile()`, the compiler lowers
+the deterministic expression through its ordinary pipeline, gives the resulting physical net to the
+provider, and removes the temporary marker before final signal allocation/layout.
+
+A provider retrieves and consumes the net through `OraclePhysicalContext.consume_input(...)`. This
+allows one provider to have several named deterministic inputs without baking those inputs into the
+meaning of `Oracle` itself.
+
+The built-in `RandomSignalOracleProvider` consumes a whole-vector `candidates` input and inserts a
+freely placeable selector combinator configured for Random Input mode:
+
+```python
+result = c.compile(
+    oracle_providers={
+        "choice": RandomSignalOracleProvider(
+            input_name="candidates",
+            update_interval=1,
+        ),
+    },
+)
+```
+
+The selector remains entirely target-side. Reference simulation supplies `choice` through the oracle
+trace and never evaluates randomness. The deterministic program may additionally validate or latch
+the proposal before using it; Snake does this so stale selector output can delay food respawn but can
+never place food on an occupied cell.

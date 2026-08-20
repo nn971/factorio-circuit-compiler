@@ -51,12 +51,7 @@ class PhysicalAnchor:
 
 @dataclass(frozen=True, slots=True)
 class EntityPlacementConstraint:
-    """Placement requirement for one abstract physical entity.
-
-    Unconstrained compiler entities simply omit this record. Providers may emit an explicit
-    ``FREE`` record for clarity, while ``ANCHORED`` entities carry a symbolic site name that is
-    resolved by deployment configuration before final placement.
-    """
+    """Placement requirement for one abstract physical entity."""
 
     entity: int
     mode: EntityPlacementMode = EntityPlacementMode.FREE
@@ -76,12 +71,7 @@ class EntityPlacementConstraint:
 
 @dataclass(frozen=True, slots=True, order=True)
 class AbstractSignal:
-    """A late-allocated signal-lane variable.
-
-    ``id`` is IR identity, rather than a Factorio signal name. Physical synthesis may
-    map compatible abstract signals to the same concrete Factorio identity when their
-    electrical lifetimes permit it.
-    """
+    """A late-allocated signal-lane variable."""
 
     id: int
     label: str | None = None
@@ -99,17 +89,7 @@ class Endpoint:
 
 @dataclass(frozen=True, slots=True)
 class AbstractNet:
-    """One logical electrical-connectivity requirement.
-
-    ``signals`` records compiler-allocated abstract lanes known to coexist on this net.
-    ``fixed_signals`` records user/target-selected concrete lanes such as item signals.
-    ``carries_dynamic_vector`` means the net may additionally carry arbitrary runtime
-    lanes, as whole-vector external inputs do.
-
-    Signal identities and electrical connectivity remain independent resources: one
-    net may carry many lanes, and one lane identity may appear on several disconnected
-    nets.
-    """
+    """One logical electrical-connectivity requirement."""
 
     id: int
     signals: tuple[int, ...]
@@ -235,6 +215,33 @@ class DeciderCombinator:
 
 
 @dataclass(frozen=True, slots=True)
+class SelectorCombinator:
+    """Exact target selector combinator for modes supported by this compiler."""
+
+    id: int
+    operation: str
+    input_nets: tuple[int, ...]
+    select_max: bool = True
+    index: int = 0
+    random_update_interval: int = 1
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.operation not in {"select", "random"}:
+            raise ValueError(f"unsupported selector operation {self.operation!r}")
+        if not self.input_nets:
+            raise ValueError("selector combinator requires at least one input net")
+        if isinstance(self.index, bool) or not isinstance(self.index, int) or self.index < 0:
+            raise ValueError("selector index must be a non-negative integer")
+        if (
+            isinstance(self.random_update_interval, bool)
+            or not isinstance(self.random_update_interval, int)
+            or not 1 <= self.random_update_interval <= 0xFFFFFFFF
+        ):
+            raise ValueError("selector random_update_interval must be in [1, 2^32-1]")
+
+
+@dataclass(frozen=True, slots=True)
 class ConstantCombinator:
     id: int
     signals: tuple[tuple[SignalRef, int], ...] = ()
@@ -242,7 +249,9 @@ class ConstantCombinator:
     annotation_only: bool = False
 
 
-AbstractEntity = ArithmeticCombinator | DeciderCombinator | ConstantCombinator
+AbstractEntity = (
+    ArithmeticCombinator | DeciderCombinator | SelectorCombinator | ConstantCombinator
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +376,8 @@ class AbstractPhysicalCircuit:
                 if entity.else_output_signal is not None:
                     self._validate_signal_ref(entity.else_output_signal, signal_ids)
                     self._validate_net_refs(entity.else_copy_count_nets, net_ids)
+            elif isinstance(entity, SelectorCombinator):
+                self._validate_net_refs(entity.input_nets, net_ids)
             else:
                 for signal_ref, _count in entity.signals:
                     self._validate_signal_ref(signal_ref, signal_ids)
@@ -412,7 +423,7 @@ class AbstractPhysicalCircuit:
     def _validate_signal_ref(signal: SignalRef, signal_ids: set[int]) -> None:
         if isinstance(signal, int):
             _require(signal_ids, signal, "signal")
-        elif not isinstance(signal, SignalId):  # pragma: no cover - defensive runtime check
+        elif not isinstance(signal, SignalId):
             raise TypeError(signal)
 
     @staticmethod

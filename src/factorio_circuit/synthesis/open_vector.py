@@ -6,7 +6,12 @@ from typing import Any
 
 from factorio_circuit.blueprint.routing import route_wires, routed_positions
 from factorio_circuit.ir import abstract_physical as abstract
-from factorio_circuit.ir.physical import DeciderCombinator, SignalId, WireColor
+from factorio_circuit.ir.physical import (
+    DeciderCombinator,
+    SelectorCombinator,
+    SignalId,
+    WireColor,
+)
 from factorio_circuit.lowering.vector_unary import VECTOR_EACH_PLACEHOLDER
 from factorio_circuit.progress import ProgressCallback, report_progress
 from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
@@ -21,20 +26,13 @@ def _placement_attempt_count(options: PlacementOptions) -> int:
     """Return deterministic synthesis attempts for the requested placement policy."""
 
     # Row placement is invariant under target-fill/corridor retry parameters. Greedy net-aware
-    # placement (iterations=0), however, *does* change when the candidate grid is made
-    # sparser, so it
+    # placement (iterations=0), however, changes when the candidate grid is made sparser, so it
     # should retain deterministic retries instead of being forced to a single attempt.
     return 1 if options.strategy == "row" else options.restarts
 
 
 def _placement_attempt_options(options: PlacementOptions, restart: int) -> PlacementOptions:
-    """Make later deterministic attempts progressively easier to route.
-
-    Lower target fill supplies more unused grid slots. When routing corridors are enabled, widen
-    them by the inverse factor as well. This deliberately spends area after a routing failure
-    rather
-    than repeating nearly the same hostile geometry.
-    """
+    """Make later deterministic attempts progressively easier to route."""
 
     scale = options.retry_fill_scale**restart
     corridor_width = options.corridor_width
@@ -218,6 +216,16 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
         net_colors: dict[int, WireColor],
         annotation_descriptions: dict[int, str],
     ) -> Any:
+        if isinstance(entity, abstract.SelectorCombinator):
+            return SelectorCombinator(
+                id=entity.id,
+                operation=entity.operation,
+                select_max=entity.select_max,
+                index=entity.index,
+                random_update_interval=entity.random_update_interval,
+                description=entity.description,
+            )
+
         result = super(VectorPhysicalSynthesizer, self)._materialize_entity(
             entity,
             signals,

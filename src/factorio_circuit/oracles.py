@@ -23,8 +23,16 @@ from factorio_circuit.ir.abstract_physical import (
     EntityPlacementMode,
     InputPort,
     PhysicalAnchor,
+    SelectorCombinator,
+    SignalRef,
 )
-from factorio_circuit.ir.oracle import OracleSource, VectorOracleInput, oracle_sources
+from factorio_circuit.ir.oracle import (
+    OracleSource,
+    VectorOracleInput,
+    is_provider_input_port_name,
+    oracle_sources,
+    provider_input_port_name,
+)
 from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.ir.semantic import CircuitModule
 
@@ -60,13 +68,23 @@ ProviderPlacement = FreePlacement | AnchoredPlacement
 FREE_PLACEMENT = FreePlacement()
 
 
+@dataclass(frozen=True, slots=True)
+class OracleProviderInput:
+    """One deterministic physical net exposed as an input to an oracle provider."""
+
+    name: str
+    net_id: int
+    signal: SignalRef | None
+    phase: int
+
+
 @dataclass(slots=True)
 class OraclePhysicalContext:
     """Mutable, target-level context exposed to an oracle provider.
 
-    Providers operate on an already-lowered :class:`AbstractPhysicalCircuit`, but before
-    physical synthesis. Entity ids, oracle-net edits, and placement constraints performed here
-    therefore participate in the ordinary joint synthesis/layout pass.
+    Providers operate on an already-lowered :class:`AbstractPhysicalCircuit`, but before physical
+    synthesis. Entity ids, oracle-net edits, provider-input taps, and placement constraints therefore
+    participate in the ordinary joint synthesis/layout pass.
     """
 
     circuit: AbstractPhysicalCircuit
@@ -74,6 +92,7 @@ class OraclePhysicalContext:
     port: InputPort
     net_id: int
     _next_entity_id: int
+    _consumed_provider_inputs: set[str]
 
     @property
     def is_vector(self) -> bool:
@@ -100,12 +119,7 @@ class OraclePhysicalContext:
         *,
         placement: ProviderPlacement = FREE_PLACEMENT,
     ) -> None:
-        """Add one provider entity plus its physical placement contract.
-
-        Ordinary compiler entities remain implicitly free. Provider entities record their
-        intended freedom explicitly so target devices can be anchored without teaching the
-        deterministic semantic layer anything about coordinates.
-        """
+        """Add one provider entity plus its physical placement contract."""
 
         if not isinstance(placement, (FreePlacement, AnchoredPlacement)):
             raise OracleBindingError(
@@ -130,6 +144,34 @@ class OraclePhysicalContext:
             return
         self._replace_net(replace(net, endpoints=(*net.endpoints, endpoint)))
 
+    def provider_input(self, name: str) -> OracleProviderInput:
+        """Resolve one named deterministic provider-input tap without consuming it yet."""
+
+        port_name = provider_input_port_name(self.source.name, name)
+        matches = [port for port in self.circuit.outputs if port.name == port_name]
+        if len(matches) != 1:
+            raise OracleBindingError(
+                f"oracle {self.source.name!r} provider input {name!r} was not lowered exactly once; "
+                "compile provider-input circuits through Circuit.compile()"
+            )
+        port = matches[0]
+        matching_nets = [net for net in self.circuit.nets if port.endpoint in net.endpoints]
+        if len(matching_nets) != 1:
+            raise OracleBindingError(
+                f"oracle {self.source.name!r} provider input {name!r} must belong to exactly one net"
+            )
+        return OracleProviderInput(name, matching_nets[0].id, port.signal, port.phase)
+
+    def consume_input(self, name: str, endpoint: Endpoint) -> OracleProviderInput:
+        """Attach ``endpoint`` to a deterministic provider-input net and consume its hidden port."""
+
+        provider_input = self.provider_input(name)
+        net = self.circuit.net_by_id(provider_input.net_id)
+        if endpoint not in net.endpoints:
+            self._replace_net(replace(net, endpoints=(*net.endpoints, endpoint)))
+        self._consumed_provider_inputs.add(provider_input_port_name(self.source.name, name))
+        return provider_input
+
     def add_fixed_signals(self, *signals: SignalId) -> None:
         """Declare concrete signal lanes additionally carried by a vector provider."""
 
@@ -152,24 +194,14 @@ class OracleProvider(Protocol):
     """Target provider that realizes one semantic oracle at the physical boundary."""
 
     def materialize(self, context: OraclePhysicalContext) -> OraclePortDisposition:
-        """Attach provider entities/wiring and describe boundary-port ownership.
-
-        The provider must present a value that is stable at the oracle's semantic observation
-        boundary. Providers whose target implementation has intra-step latency must buffer or
-        otherwise satisfy that boundary contract themselves.
-        """
+        """Attach provider entities/wiring and describe boundary-port ownership."""
 
         ...
 
 
 @dataclass(frozen=True, slots=True)
 class ExternalOracleProvider:
-    """Intentionally leave an oracle as a manually wired physical input boundary.
-
-    This is useful for world observations such as stock or temperature before a dedicated
-    compiler-owned device provider exists. The semantic source remains an Oracle, rather than
-    being silently downgraded to an ordinary external input.
-    """
+    """Intentionally leave an oracle as a manually wired physical input boundary."""
 
     def materialize(self, context: OraclePhysicalContext) -> OraclePortDisposition:
         del context
@@ -244,6 +276,54 @@ class VectorConstantOracleProvider:
         return OraclePortDisposition.CONSUMED
 
 
+@dataclass(frozen=True, slots=True)
+class RandomSignalOracleProvider:
+    """Realize a vector oracle with a selector combinator in Random Input mode."""
+
+    input_name: str = "candidates"
+    update_interval: int = 1
+    placement: ProviderPlacement = FREE_PLACEMENT
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.input_name, str) or not self.input_name:
+            raise ValueError("random selector provider input name must be non-empty")
+        if (
+            isinstance(self.update_interval, bool)
+            or not isinstance(self.update_interval, int)
+            or not 1 <= self.update_interval <= 0xFFFFFFFF
+        ):
+            raise ValueError("random selector update_interval must be in [1, 2^32-1]")
+        if not isinstance(self.placement, (FreePlacement, AnchoredPlacement)):
+            raise TypeError("random selector oracle placement is invalid")
+
+    def materialize(self, context: OraclePhysicalContext) -> OraclePortDisposition:
+        if not context.is_vector or context.signal is not None:
+            raise OracleBindingError(
+                f"random selector provider requires a vector oracle, got {context.source.name!r}"
+            )
+        entity_id = context.new_entity_id()
+        provider_input = context.consume_input(
+            self.input_name,
+            Endpoint(entity_id, Connector.INPUT),
+        )
+        if provider_input.signal is not None:
+            raise OracleBindingError(
+                "random selector candidates must be a whole-vector provider input"
+            )
+        entity = SelectorCombinator(
+            id=entity_id,
+            operation="random",
+            input_nets=(provider_input.net_id,),
+            random_update_interval=self.update_interval,
+            description=(
+                f"ORACLE {context.source.name}: random signal every {self.update_interval} tick(s)"
+            ),
+        )
+        context.add_entity(entity, placement=self.placement)
+        context.attach(Endpoint(entity.id, Connector.OUTPUT))
+        return OraclePortDisposition.CONSUMED
+
+
 def validate_oracle_provider_bindings(
     module: CircuitModule,
     providers: Mapping[str, OracleProvider] | None,
@@ -273,6 +353,29 @@ def validate_oracle_provider_bindings(
     return bindings
 
 
+def _remove_annotation_marker(circuit: AbstractPhysicalCircuit, entity_id: int) -> None:
+    entity = circuit.entity_by_id(entity_id)
+    if not isinstance(entity, ConstantCombinator) or not entity.annotation_only:
+        raise OracleBindingError(
+            f"internal oracle boundary entity {entity_id} is not an annotation marker"
+        )
+    circuit.entities = [candidate for candidate in circuit.entities if candidate.id != entity_id]
+    circuit.placement_constraints = [
+        constraint
+        for constraint in circuit.placement_constraints
+        if constraint.entity != entity_id
+    ]
+    circuit.nets = [
+        replace(
+            net,
+            endpoints=tuple(
+                endpoint for endpoint in net.endpoints if endpoint.entity != entity_id
+            ),
+        )
+        for net in circuit.nets
+    ]
+
+
 def materialize_oracle_providers(
     module: CircuitModule,
     circuit: AbstractPhysicalCircuit,
@@ -286,7 +389,8 @@ def materialize_oracle_providers(
 
     ports = {port.name: port for port in circuit.inputs}
     next_entity_id = max((entity.id for entity in circuit.entities), default=0) + 1
-    consumed: set[str] = set()
+    consumed_oracle_ports: list[InputPort] = []
+    consumed_provider_inputs: set[str] = set()
 
     for source in oracle_sources(module):
         try:
@@ -306,6 +410,7 @@ def materialize_oracle_providers(
             port=port,
             net_id=matching_nets[0].id,
             _next_entity_id=next_entity_id,
+            _consumed_provider_inputs=consumed_provider_inputs,
         )
         disposition = bindings[source.name].materialize(context)
         next_entity_id = context._next_entity_id
@@ -314,8 +419,30 @@ def materialize_oracle_providers(
                 f"provider for oracle {source.name!r} returned an invalid port disposition"
             )
         if disposition is OraclePortDisposition.CONSUMED:
-            consumed.add(source.name)
+            consumed_oracle_ports.append(port)
 
-    if consumed:
-        circuit.inputs = [port for port in circuit.inputs if port.name not in consumed]
+    hidden_ports = [
+        port for port in circuit.outputs if is_provider_input_port_name(port.name)
+    ]
+    unconsumed = sorted(
+        port.name for port in hidden_ports if port.name not in consumed_provider_inputs
+    )
+    if unconsumed:
+        raise OracleBindingError(
+            "oracle provider input tap(s) were not consumed by their provider: "
+            + ", ".join(repr(name) for name in unconsumed)
+        )
+
+    if consumed_oracle_ports:
+        consumed_names = {port.name for port in consumed_oracle_ports}
+        circuit.inputs = [port for port in circuit.inputs if port.name not in consumed_names]
+        for port in consumed_oracle_ports:
+            _remove_annotation_marker(circuit, port.endpoint.entity)
+
+    if hidden_ports:
+        hidden_names = {port.name for port in hidden_ports}
+        circuit.outputs = [port for port in circuit.outputs if port.name not in hidden_names]
+        for port in hidden_ports:
+            _remove_annotation_marker(circuit, port.endpoint.entity)
+
     circuit.validate()
