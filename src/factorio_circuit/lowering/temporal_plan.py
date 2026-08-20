@@ -238,15 +238,10 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         # ``when_false`` is a second internal use of the data arm two ticks after the semantic Select
         # input boundary. Do not ask the global bus to carry it farther than CP-SAT modeled. This is
         # an exact propagation of the already-consumed token, so live external sources must not be
-        # resampled here.
+        # observed again here.
         final_false = when_false
         if isinstance(final_false, RealizedValue) and final_false.phase < final_input_phase:
-            previous = self._force_exact_alignment
-            self._force_exact_alignment = True
-            try:
-                final_false = super().delay_to(final_false, final_input_phase)
-            finally:
-                self._force_exact_alignment = previous
+            final_false = self.exact_delay_to(final_false, final_input_phase)
 
         result = self._emit_binary_from_operands(
             "+", final_false, gated, description=select.name
@@ -278,12 +273,7 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         if value.phase == lane.start_phase:
             return value
 
-        previous = self._force_exact_alignment
-        self._force_exact_alignment = True
-        try:
-            result = super().delay_to(value, lane.start_phase)
-        finally:
-            self._force_exact_alignment = previous
+        result = self.exact_delay_to(value, lane.start_phase)
         if result.phase != lane.start_phase:  # pragma: no cover - exact-delay invariant
             raise AssertionError("exact temporal-plan alignment missed the scheduled phase")
         return result
@@ -305,24 +295,14 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
                 f"coherent live scalar requested at phase {target_phase} before its solved "
                 f"observation phase {observation_phase}"
             )
-        observed = RealizedValue(
-            signal=value.signal,
-            net=value.net,
-            phase=observation_phase,
-            clean_single_lane=value.clean_single_lane,
-        )
-        self._remember_scalar(observed, self._point_window(observation_phase))
+        observed = self.observe_scalar_at(value, observation_phase)
         if target_phase == observation_phase:
             return observed
-
-        previous = self._force_exact_alignment
-        self._force_exact_alignment = True
-        try:
-            return super().delay_to(observed, target_phase)
-        finally:
-            self._force_exact_alignment = previous
+        return self.exact_delay_to(observed, target_phase)
 
     def delay_to(self, value: RealizedValue, target_phase: int) -> RealizedValue:
+        """Align a Level scalar according to observation, settling, or planned transport policy."""
+
         coherent_observation = self._coherent_scalar_observation(value)
         if coherent_observation is not None:
             return self._delay_coherent_live_scalar(value, target_phase, coherent_observation)
@@ -333,15 +313,11 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
             return value
 
         # Let the established correctness-preserving free cases win first: a held settling value
-        # needs no transport. Unplanned ALAP sources retain ordinary resampling behavior for backward
-        # compatibility with manually constructed temporal plans; solver-generated plans populate
-        # the coherent-source maps above and never reach that resampling path.
+        # needs no transport. Unplanned ALAP sources retain ordinary late-observation behavior for
+        # backward compatibility with manually constructed temporal plans; solver-generated plans
+        # populate the coherent-source maps above and never reach that independent-observation path.
         window = self._scalar_window(value)
-        if (
-            not self._force_exact_alignment
-            and window is not None
-            and window.contains(target_phase)
-        ) or self._can_resample_scalar(value):
+        if (window is not None and window.contains(target_phase)) or self._can_resample_scalar(value):
             return super().delay_to(value, target_phase)
 
         binding = self._bus_origin.get((value.net, value.signal))
@@ -350,6 +326,8 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         return self._delay_on_bus(value, target_phase, binding)
 
     def delay_vector_to(self, value: RealizedVector, target_phase: int) -> RealizedVector:
+        """Align a Level vector, making coherent live observation explicit when planned."""
+
         observation_phase = self._coherent_vector_sources.get(value.net)
         if observation_phase is None:
             return super().delay_vector_to(value, target_phase)
@@ -358,17 +336,10 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
                 f"coherent live vector requested at phase {target_phase} before its solved "
                 f"observation phase {observation_phase}"
             )
-        observed = RealizedVector(value.net, observation_phase)
-        self._remember_vector(observed, self._point_window(observation_phase))
+        observed = self.observe_vector_at(value, observation_phase)
         if target_phase == observation_phase:
             return observed
-
-        previous = self._force_exact_alignment
-        self._force_exact_alignment = True
-        try:
-            return super().delay_vector_to(observed, target_phase)
-        finally:
-            self._force_exact_alignment = previous
+        return self.exact_delay_vector_to(observed, target_phase)
 
     def _delay_on_bus(
         self,
