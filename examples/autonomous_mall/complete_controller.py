@@ -10,6 +10,7 @@ from examples.autonomous_mall.manual_controller import _compose_controller, comp
 _PROTOTYPE_NAME_FIXES = {
     "logistic-chest-requester": "requester-chest",
     "logistic-chest-passive-provider": "passive-provider-chest",
+    "stack-inserter": "bulk-inserter",
 }
 
 
@@ -54,17 +55,19 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
             entity["name"] = _PROTOTYPE_NAME_FIXES[name]
 
     # The assembler bay is horizontal: requester -> feeder -> 3x3 assembler -> inserter -> provider.
-    # Inserter direction 2 is east.  Assembling-machine-3 itself has no orientation field.
+    # Factorio 2.x uses 16 direction values, so east is 4. Assembling-machine-3 itself has no
+    # orientation field.
     for machine in [entity for entity in entities if entity.get("name") == "assembling-machine-3"]:
         feeder = _nearest_device_entity(entities, machine, "MALL DEVICE feeder")
         output_inserter = _nearest_device_entity(entities, machine, "MALL DEVICE output inserter")
-        feeder["direction"] = 2
-        output_inserter["direction"] = 2
+        feeder["direction"] = 4
+        output_inserter["direction"] = 4
         machine.pop("direction", None)
 
-    # Recycler is a different physical machine.  Its native north-facing footprint is 2x4 and the
+    # Recycler is a different physical machine. Its native north-facing footprint is 2x4 and the
     # prototype output vector is (-0.35, -2.3), so the output lands in the chest centered 0.5 tiles
-    # west and 2.5 tiles north of the recycler center.  Feed from the south; no output inserter is used.
+    # west and 2.5 tiles north of the recycler center. Feed from the south; north is direction 0 in
+    # Factorio 2.x. No output inserter is used.
     recycler_output_inserters: set[int] = set()
     for machine in [entity for entity in entities if entity.get("name") == "recycler"]:
         old_x, _old_y = _position(machine)
