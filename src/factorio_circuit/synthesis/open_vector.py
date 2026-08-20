@@ -211,7 +211,7 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
         net_colors: dict[int, WireColor],
         annotation_descriptions: dict[int, str],
     ) -> Any:
-        result = super()._materialize_entity(
+        result = super(VectorPhysicalSynthesizer, self)._materialize_entity(
             entity,
             signals,
             net_colors,
