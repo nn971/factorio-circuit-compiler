@@ -85,8 +85,15 @@ def main() -> None:
     providers = {
         FOOD_CANDIDATE_ORACLE: RandomSignalOracleProvider(update_interval=1),
     }
+
+    # Random-food Snake binds the selector provider's ``candidates`` input to a deterministic
+    # expression. Circuit.compile() normally exposes those provider-input taps as temporary hidden
+    # outputs before ordinary lowering, then consumes/removes them during provider materialization.
+    # This benchmark intentionally stops before layout, so reproduce that physical preparation here
+    # rather than calling lower_to_abstract_physical() on the public-only Circuit.build() module.
+    physical_module = circuit._build_for_physical()
     lowered = lower_to_abstract_physical(
-        circuit,
+        physical_module,
         optimize=False,
         oracle_providers=providers,
         sampling_policy=sampling_policy,
