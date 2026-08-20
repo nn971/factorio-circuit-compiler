@@ -60,6 +60,7 @@ from .temporal_hypergraph import (
 from .temporal_optimize import (
     DelayBusLane,
     DelayBusPlan,
+    LiveSourceObservation,
     TemporalOptimizationResult,
     format_temporal_optimization,
     optimize_temporal_hypergraph,
@@ -77,6 +78,7 @@ __all__ = [
     "DelayBusPlan",
     "EventClockTiming",
     "FACTORIO_LATENCY",
+    "LiveSourceObservation",
     "LogicalDependency",
     "PhaseDelayCensus",
     "PhaseDelayComponent",
