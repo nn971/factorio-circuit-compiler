@@ -113,11 +113,11 @@
       }
     },
     {
-      "id": "temporal-delay-bus-prevalidation-v1",
-      "commit": "b202016d4c3a9dc87bf9011032ee0fd135c68ee5",
+      "id": "temporal-delay-bus-incoherent-live-v1",
+      "commit": "92150920939080259de8be747e893b184404478f",
       "date": "2026-08-20",
       "in_game_validated": false,
-      "notes": "First successful CP-SAT phase placement plus realized multi-lane scalar delay buses at fixed period 65. This milestone has passed solve-to-abstract-physical realization but is deliberately staged as prevalidation until signal allocation/layout and Factorio gameplay acceptance succeed.",
+      "notes": "First end-to-end CP-SAT phase placement, multi-lane scalar buses, signal allocation, safe-folded layout, and playable blueprint at period 65. Rejected during gameplay: independent free resampling of LIVE sources allowed different consumers to observe different movement/random-selector values within one logical occurrence. Observed symptoms were incorrect bumps while turning, eaten food remaining visible, delayed initial food, and uneven-looking frames. Superseded by coherent live-source observation modeling.",
       "metrics": {
         "implementation_combinators": 454,
         "abstract_physical_entities": 465,
@@ -129,11 +129,14 @@
         "phase_delay_vector": 17,
         "computation_combinators": 218,
         "state_implementation_combinators": 60,
-        "max_abstract_lanes_per_net": 32,
-        "signal_conflicts": 502,
+        "max_abstract_lanes_per_net_observed": 36,
         "solver_objective_delays": 71,
-        "solver_best_bound": 64,
+        "solver_best_bound_observed": 64,
         "solver_bus_count": 3,
+        "layout_relays": 16181,
+        "layout_rows": 5,
+        "layout_columns": 93,
+        "extent_tiles": [458, 436],
         "state_period_ticks": 65
       },
       "change_from_random_food_alap_v1": {
