@@ -100,7 +100,6 @@ def test_shared_bus_never_connects_original_producer_net_directly() -> None:
     assert roles.get("phase-delay.scalar-bus", 0) > 0
     assert census.max_signals_per_net >= 2
 
-    nets = {net.id: net for net in planned.nets}
     bus_stages = [
         entity
         for entity in planned.entities
@@ -109,16 +108,27 @@ def test_shared_bus_never_connects_original_producer_net_directly() -> None:
     ]
     assert bus_stages
 
-    # Every non-trunk net entering a shared bus stage must be the output of a private ingress copy.
-    # In particular, an original comparison/arithmetic producer net must never share the bus-stage
-    # input connector, because physical same-color coalescing would then contaminate that producer
-    # network everywhere else it is used.
+    # Every non-trunk net entering a shared bus stage must be an aggregate bus-private ingress net.
+    # Original comparison/arithmetic producer nets must never touch the bus-stage input connector,
+    # because same-color coalescing would contaminate those producer networks everywhere else they
+    # are used. Multiple isolated lanes that join at the same phase intentionally share one ingress
+    # net, so every stage has at most one such non-trunk input alongside the previous bus trunk.
     for stage in bus_stages:
         input_endpoint = Endpoint(stage.id, Connector.INPUT)
+        ingress_nets = []
         for net in planned.nets:
             if input_endpoint not in net.endpoints:
                 continue
             if net.label.startswith("scalar phase delay bus "):
                 continue
-            assert net.label.startswith("scalar delay bus 0 isolated ingress"), net.label
-            assert len(nets[net.id].signals) == 1
+            assert net.label.startswith("scalar delay bus 0 isolated ingress @ "), net.label
+            ingress_nets.append(net)
+        assert len(ingress_nets) <= 1
+
+    ingress_nets = [
+        net
+        for net in planned.nets
+        if net.label.startswith("scalar delay bus 0 isolated ingress @ ")
+    ]
+    assert len(ingress_nets) == len({lane.start_phase + 1 for lane in lanes})
+    assert sum(len(net.signals) for net in ingress_nets) == len(lanes)
