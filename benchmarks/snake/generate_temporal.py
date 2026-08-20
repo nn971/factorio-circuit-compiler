@@ -66,19 +66,23 @@ def _pin_graph_to_schedule(
     graph: TemporalHypergraph,
     schedule: AlapSchedule,
 ) -> TemporalHypergraph:
-    """Freeze every temporal computation to the production ALAP output phase."""
+    """Freeze every computation to the production ALAP phase after its ASAP safety clamp."""
 
     phases: dict[int, int] = {}
     for computation in graph.computations:
-        phase = schedule.phase_for(computation.semantic)
-        if phase is None:
+        requested = schedule.phase_for(computation.semantic)
+        if requested is None:
             raise ValueError(
                 f"state-cone computation {computation.label!r} is missing from production ALAP schedule"
             )
-        if not computation.earliest_phase <= phase <= computation.latest_phase:
+        # ``AlapVectorLowerer._operation_input_phase`` never moves an operation earlier than its
+        # naturally available ASAP phase. Mirror that production rule here rather than treating the
+        # raw backward deadline as an unconditional physical placement.
+        phase = max(computation.earliest_phase, requested)
+        if phase > computation.latest_phase:
             raise ValueError(
-                f"production ALAP phase {phase} for {computation.label!r} lies outside temporal "
-                f"mobility [{computation.earliest_phase}, {computation.latest_phase}]"
+                f"production ALAP phase {phase} for {computation.label!r} lies after temporal "
+                f"latest phase {computation.latest_phase}"
             )
         phases[computation.id] = phase
 
@@ -166,8 +170,8 @@ def main() -> None:
 
     # This is deliberately a bus-sharing validation candidate, not another global-scheduling
     # experiment. Freeze the complete state cone to the exact production ALAP schedule that already
-    # passed Factorio gameplay, including its conservative Select-child deadlines, then let CP-SAT
-    # optimize only which scalar lifetimes share delay buses.
+    # passed Factorio gameplay, including its conservative Select-child deadlines and ASAP clamp,
+    # then let CP-SAT optimize only which scalar lifetimes share delay buses.
     accepted_schedule = build_alap_schedule(lowered.optimized_ir, lowered.state_timing)
     pinned_graph = _pin_graph_to_schedule(graph, accepted_schedule)
     optimization = optimize_temporal_hypergraph(
