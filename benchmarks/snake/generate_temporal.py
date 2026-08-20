@@ -4,10 +4,10 @@ This runner is intentionally separate from :mod:`benchmarks.snake.generate`. The
 continues to exercise the accepted ordinary ALAP lowering path until the temporal delay-bus plan has
 been validated in Factorio.
 
-For in-game validation this generator freezes every state-cone computation to the accepted ALAP
-placement and optimizes only scalar delay-bus sharing. Global phase placement remains available in
-``benchmarks.snake.temporal_optimize`` as a research diagnostic, but is not allowed to perturb live
-movement/oracle observation timing in the validation blueprint.
+For in-game validation this generator freezes every state-cone computation to the exact production
+ALAP schedule and optimizes only scalar delay-bus sharing. Global phase placement remains available
+in ``benchmarks.snake.temporal_optimize`` as a research diagnostic, but is not allowed to perturb
+live movement/oracle observation timing in the validation blueprint.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from factorio_circuit.blueprint.layout_encode import (
 )
 from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
 from factorio_circuit.ir.physical import WireColor
+from factorio_circuit.lowering.alap import AlapSchedule, build_alap_schedule
 from factorio_circuit.lowering.temporal_plan import lower_normalized_vectors_with_temporal_plan
 from factorio_circuit.oracles import (
     materialize_oracle_providers,
@@ -61,12 +62,27 @@ def _marker_wire_color(layout: object, marker_entity: int) -> WireColor:
     return next(iter(colors))
 
 
-def _pin_graph_to_alap(graph: TemporalHypergraph) -> TemporalHypergraph:
-    """Return the same temporal graph with every computation mobility window fixed at ALAP."""
+def _pin_graph_to_schedule(
+    graph: TemporalHypergraph,
+    schedule: AlapSchedule,
+) -> TemporalHypergraph:
+    """Freeze every temporal computation to the production ALAP output phase."""
 
-    placement = graph.alap_placement()
-    phases = dict(placement.phases)
-    return replace(
+    phases: dict[int, int] = {}
+    for computation in graph.computations:
+        phase = schedule.phase_for(computation.semantic)
+        if phase is None:
+            raise ValueError(
+                f"state-cone computation {computation.label!r} is missing from production ALAP schedule"
+            )
+        if not computation.earliest_phase <= phase <= computation.latest_phase:
+            raise ValueError(
+                f"production ALAP phase {phase} for {computation.label!r} lies outside temporal "
+                f"mobility [{computation.earliest_phase}, {computation.latest_phase}]"
+            )
+        phases[computation.id] = phase
+
+    pinned = replace(
         graph,
         computations=tuple(
             replace(
@@ -77,6 +93,8 @@ def _pin_graph_to_alap(graph: TemporalHypergraph) -> TemporalHypergraph:
             for computation in graph.computations
         ),
     )
+    pinned.validate_placement(pinned.alap_placement())
+    return pinned
 
 
 def _restore_accepted_live_sampling(
@@ -147,9 +165,11 @@ def main() -> None:
     )
 
     # This is deliberately a bus-sharing validation candidate, not another global-scheduling
-    # experiment. Freeze the complete state cone to the exact ALAP placement that already passed
-    # Factorio gameplay, then let CP-SAT optimize only which scalar lifetimes share delay buses.
-    pinned_graph = _pin_graph_to_alap(graph)
+    # experiment. Freeze the complete state cone to the exact production ALAP schedule that already
+    # passed Factorio gameplay, including its conservative Select-child deadlines, then let CP-SAT
+    # optimize only which scalar lifetimes share delay buses.
+    accepted_schedule = build_alap_schedule(lowered.optimized_ir, lowered.state_timing)
+    pinned_graph = _pin_graph_to_schedule(graph, accepted_schedule)
     optimization = optimize_temporal_hypergraph(
         pinned_graph,
         bus_capacity=args.bus_capacity,
@@ -159,7 +179,7 @@ def main() -> None:
     )
     optimization = _restore_accepted_live_sampling(optimization)
     print(
-        "temporal generator mode: validated ALAP placement + shared scalar delay buses",
+        "temporal generator mode: production ALAP schedule + shared scalar delay buses",
         file=sys.stderr,
     )
     print(format_temporal_optimization(optimization), file=sys.stderr)
