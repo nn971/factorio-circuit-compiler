@@ -6,8 +6,8 @@ This package is deliberately example-specific. It lives under `examples/` rather
 The branch contains two separate layers:
 
 1. an exact Python reference model for raw-material-efficient quality planning;
-2. a grid-snapped compiled transaction prototype for validating the physical worker protocol in Factorio
-   before the final circuit-side planner is implemented.
+2. a grid-snapped transaction prototype for validating the physical worker protocol in Factorio before
+   the final circuit-side planner is implemented.
 
 The current slice includes:
 
@@ -18,8 +18,11 @@ The current slice includes:
 - physically distinct productivity / quality / recycler worker pools;
 - atomic left-to-right input reservations across multiple workers;
 - exact expected-value helpers for Factorio's quality roll and 25% recycler return;
-- reusable snap-together HEAD / assembler / recycler transaction tiles;
-- a preassembled `[HEAD][P0][P1][Q0][Q1][R0]` controller blueprint requiring no horizontal manual wiring.
+- reusable snap-together controller tiles with a stable horizontal electrical ABI;
+- complete P/Q/R physical production cells with generated machines, logistics, feeders, and completion
+  latches;
+- a preassembled `[HEAD][P0][P1][Q0][Q1][R0]` physical row requiring no machine-side manual circuit
+  wiring.
 
 ## Economic convention
 
@@ -75,7 +78,8 @@ should be issued one attempt at a time, followed by replanning, so expected qual
 fictitious stock.
 
 The pure-Python `Scheduler` models reservation/campaign behavior. `manual_controller.py` contains the
-physical tile implementation used to validate the same discipline in game.
+compiled reservation/worker controller tiles, while `device_tiles.py` composes those controllers with real
+Factorio production entities.
 
 ## Snap-together physical architecture
 
@@ -84,7 +88,7 @@ synthesizer correctly found an odd hard-conflict cycle among runtime-open vector
 lowered topology could not be represented with Factorio's two circuit-wire colors.
 
 The first workaround split reservation and worker FSMs into separately compiled cells, but hand-wiring all
-those pieces was tedious. The current design makes the composition boundary explicit and mechanical:
+those pieces was tedious. The current composition boundary is explicit and mechanical:
 
 ```text
                  frozen available-material bus
@@ -95,7 +99,7 @@ those pieces was tedious. The current design makes the composition boundary expl
                        control bus
 ```
 
-Every worker tile now contains both:
+Every worker controller contains both:
 
 ```text
 reservation stage + one-shot worker FSM
@@ -103,23 +107,51 @@ reservation stage + one-shot worker FSM
 
 so `accepted` never crosses a module boundary.
 
-Each tile is 48x48 with absolute grid snapping. Matching horizontal docks are 1x1 constant-combinator
-markers at the exact same boundary coordinate. Pasting adjacent tiles therefore overlays the marker and
-adds the new tile's wires while retaining the existing ones.
+The controller section is 48x48. Matching horizontal docks are 1x1 constant-combinator markers at the exact
+same boundary coordinate. Pasting adjacent tiles overlays the marker and adds the new tile's wires while
+retaining the existing ones.
 
-Separately compiled modules are allowed to choose different internal wire colors and scalar signals. A
-small ABI adapter strip hides those choices:
+Separately compiled modules may choose different internal wire colors and scalar signals. A small ABI
+adapter strip hides those choices:
 
-- every external dock is red;
+- every public dock is red;
 - vector docks use `EACH * 1 -> EACH` isolation;
-- scalar machine docks rename internal allocated lanes to fixed mall protocol signals.
+- scalar device docks rename internal allocated lanes to fixed mall protocol signals.
 
-This turns physical module composition into a real interface contract rather than an accidental property
-of one synthesis result.
+The complete production-cell generator then extends each worker to 48x72 and consumes the machine-side ABI
+locally. Only the horizontal availability/control docks remain a public inter-cell interface.
+
+## Complete production cells
+
+`device_tiles.py` is intentionally example-level blueprint composition rather than compiler-core logic. A
+complete P/Q assembler cell contains:
+
+```text
+requester chest -> stack-size-1 feeder -> assembling machine 3 -> output inserter -> provider chest
+```
+
+P machines request four productivity modules; Q machines request four quality modules. The R cell uses a
+recycler with four quality modules.
+
+The generated local device harness provides:
+
+- requester chest `Set requests` from the held one-craft demand;
+- green-only assembler Set-recipe input isolated from red machine outputs;
+- red machine contents / working / recipe-finished output;
+- `positive(requester_demand - machine_contents)` circuit filters for the feeder;
+- input enable gated by `not working` so exactly one attempt is fed;
+- a durable F/A completion latch so one-tick recipe-finished pulses cannot be missed.
+
+The v1 feeder supports ordinary solid-only recipes with arbitrary ingredient count. Catalyst-like recipes
+where one item is simultaneously an ingredient and product are excluded because `Read contents` cannot
+distinguish those roles.
+
+Ordinary electric-grid coverage is still external: the generator does not guess where the surrounding
+factory's substations or poles belong.
 
 ## Generic compiler support
 
-The reusable part of this work lives in `factorio_circuit.synthesis.interface` and is exported from the
+The reusable compiler feature lives in `factorio_circuit.synthesis.interface` and is exported from the
 package root:
 
 ```python
@@ -130,27 +162,30 @@ from factorio_circuit import ModuleInterface, compile_module
 Factorio snap-to-grid metadata. The ordinary placer still handles implementation combinators and routing;
 only the public boundary geometry is fixed.
 
-This is intended to be useful beyond the mall for sensors, displays, train-stop controllers, and other
-external-device modules.
+This is useful beyond the mall for sensors, displays, train-stop controllers, and other external-device
+modules.
 
 ## Generate the physical prototype
 
+The convenient complete-cell generator is:
+
 ```bash
-uv run python -m examples.autonomous_mall.manual_controller \
-  > autonomous-mall-manual-blueprint.txt
+uv run python -m examples.autonomous_mall.complete_controller \
+  > autonomous-mall-complete-blueprint.txt
 ```
 
-The generated blueprint book contains:
+Its blueprint book contains:
 
 ```text
-0  complete six-tile controller
-1  HEAD tile
-2  ASSEMBLER worker tile
-3  RECYCLER worker tile
+0  complete physical row [HEAD][P0][P1][Q0][Q1][R0]
+1  complete P productivity worker
+2  complete Q quality worker
+3  complete R recycler worker
+4  controller-only diagnostic row
+5  HEAD tile
 ```
 
-Use entry 0 for the normal in-game test. Entries 1-3 demonstrate the reusable tile ABI and can be stamped
-individually on the shared 48x48 grid.
+`manual_controller.py` remains available when only the controller layer should be inspected.
 
 See [`manual_in_game.md`](manual_in_game.md) for the complete acceptance procedure.
 
@@ -172,20 +207,15 @@ RUN     D=1 L=1   accepted workers execute once
 REARM   D=0 L=0   workers re-arm; snapshot tracks live stock again
 ```
 
-Automating that handshake is a later device/protocol task.
+Automating that handshake is a later controller task.
 
-Job configuration is also local to each tile. `INPUT job_request` and `INPUT job_recipe` are editable
+Job configuration is local to each tile. `INPUT job_request` and `INPUT job_recipe` are editable
 constant-combinator markers. An empty request disables a worker, so a separate `job_enable` signal is no
-longer needed.
+longer needed. R0 has no recipe marker because a recycler chooses its process from the inserted item.
 
-Assembler recipes remain latched between transactions. One-shot execution is instead enforced by an
-external stack-size-1 ingredient feeder gated by the worker's fixed `signal-I` input-enable protocol and
-the machine's local Read-working state. This preserves partial productivity-bar progress across repeated
-jobs of the same recipe.
-
-Each machine's one-tick recipe-finished signal is converted to a persistent external `signal-F` latch. The
-worker returns fixed `signal-A` to acknowledge and clear the latch, so zero-output recycler attempts still
-complete reliably.
+Assembler recipes remain latched between transactions. One-shot execution is enforced by starving the
+machine once `Read working` rises rather than clearing its recipe, preserving partial productivity-bar
+progress across repeated jobs of the same recipe.
 
 ## Quality mechanics
 
@@ -207,9 +237,8 @@ automatically.
 The exact LP remains the oracle against which that circuit algorithm should be tested. A local
 potential/equilibrium algorithm is acceptable only when its deviations from the LP optimum are understood.
 
-The newly stable physical ABI also makes the next external-device milestone straightforward: generate
-matching top-edge assembler/recycler device tiles so they can be pasted directly beneath worker tiles with
-no manual circuit wiring.
+The physical execution boundary is now intentionally boring: once the complete P/Q/R cells pass in-game,
+future work can focus on economic job selection and automatic dispatch/launch rather than more hand wiring.
 
 ## Validation
 
@@ -227,6 +256,9 @@ Focused tests cover:
 - stochastic campaign locking and independent parallel quality campaigns;
 - committing actual stochastic output before reopening a campaign;
 - named module I/O anchors and grid-snapping metadata;
-- independent physical compilation of HEAD / assembler / recycler tiles;
-- fixed-red external dock generation;
-- exact shared-dock deduplication in the six-tile preassembled controller.
+- independent physical compilation of HEAD / assembler / recycler controllers;
+- fixed-red external dock generation and exact shared-dock deduplication;
+- generated requester/inserter/machine/provider cells;
+- fixed productivity/quality/recycler module roles;
+- generated missing-ingredient feeder and durable completion latch;
+- physical wire-reference and conservative wire-reach checks for complete cells.
