@@ -21,6 +21,7 @@ from factorio_circuit.ir.semantic import PayloadShape
 from factorio_circuit.target.factorio.signals import DEFAULT_VIRTUAL_SIGNAL_POOL
 
 from .temporal_hypergraph import (
+    TemporalArc,
     TemporalHypergraph,
     TemporalPlacement,
     TemporalPlacementError,
@@ -75,6 +76,40 @@ def _load_cp_model() -> Any:
         ) from exc
 
 
+def _transport_sensitive_computations(graph: TemporalHypergraph) -> frozenset[int]:
+    """Return computations whose token is not settling-stable for the whole occurrence.
+
+    Constants and register reads are stable sources. A computation derived exclusively from stable
+    sources follows those held values continuously, so the existing settling proof can observe its
+    physical net later without an identity-delay chain. Any ancestry containing a LIVE observation
+    or an EXACT point sample instead produces a phase-specific token that must be transported after
+    its one chosen realization.
+
+    This intentionally matches the first optimizer scope: one physical realization per semantic
+    computation. Later rematerialization will allow a LIVE-dependent computation to be emitted at
+    multiple consumer phases instead of transported.
+    """
+
+    computations = {item.id: item for item in graph.computations}
+    sources = {item.id: item for item in graph.sources}
+    incoming: dict[int, list[TemporalArc]] = {}
+    for arc in graph.arcs:
+        if arc.consumer in computations:
+            incoming.setdefault(arc.consumer, []).append(arc)
+
+    sensitive: set[int] = set()
+    for computation in graph.computations:
+        for arc in incoming.get(computation.id, ()):
+            if arc.producer in computations:
+                if arc.producer in sensitive:
+                    sensitive.add(computation.id)
+                    break
+            elif sources[arc.producer].mode is not TemporalSourceMode.STABLE:
+                sensitive.add(computation.id)
+                break
+    return frozenset(sensitive)
+
+
 def optimize_temporal_hypergraph(
     graph: TemporalHypergraph,
     *,
@@ -84,13 +119,18 @@ def optimize_temporal_hypergraph(
     workers: int = 1,
     incompatible_pairs: tuple[tuple[int, int], ...] = (),
 ) -> TemporalOptimizationResult:
-    """Minimize total delay combinators for one fixed-period hypergraph.
+    """Minimize modeled delay combinators for one fixed-period state cone.
 
     Computation phases are integer decision variables constrained to their precomputed mobility
-    windows. Eligible scalar values are partitioned among continuous delay buses. Non-bus scalar
-    values and whole vectors retain ordinary one-value-per-stage transport cost. Computation/state
-    entity counts are fixed in this first solver, so minimizing delay stages is exactly the relevant
-    variable part of the combinator count.
+    windows. Phase-specific scalar values are partitioned among continuous delay buses. Scalar or
+    vector computations derived entirely from held state/constants are free under the existing
+    settling proof and therefore do not pay transport cost. Exact point-sampled leaves retain their
+    ordinary exact transport cost.
+
+    Computation/state entity counts are fixed in this first solver, so minimizing delay stages is
+    the variable part of the modeled state-cone combinator count. Output-only cones, startup-clock
+    transport, rematerialization, and implementation-choice changes are deliberately outside this
+    first proof problem.
 
     ``incompatible_pairs`` is a forward-compatible hook for physical lane-interference analysis:
     two listed producer ids may not occupy the same delay bus.
@@ -109,7 +149,8 @@ def optimize_temporal_hypergraph(
     computations = {item.id: item for item in graph.computations}
     sources = {item.id: item for item in graph.sources}
     sinks = {item.id: item for item in graph.sinks}
-    outgoing: dict[int, list[object]] = {}
+    transport_sensitive = _transport_sensitive_computations(graph)
+    outgoing: dict[int, list[TemporalArc]] = {}
     for arc in graph.arcs:
         outgoing.setdefault(arc.producer, []).append(arc)
 
@@ -131,8 +172,7 @@ def optimize_temporal_hypergraph(
         )
 
     # Re-state dependency constraints in the solver even though the mobility windows already encode
-    # their transitive bounds. This both documents the model and protects future graph builders that
-    # may compute looser independent windows.
+    # their transitive bounds. This documents the model and protects a future looser window builder.
     for arc in graph.arcs:
         if arc.consumer in computations:
             consumer_phase = phases[arc.consumer]
@@ -176,7 +216,11 @@ def optimize_temporal_hypergraph(
         model.AddMaxEquality(end, terms)
         end_vars[producer] = end
 
-    bus_candidates = [item for item in graph.computations if item.delay_bus_eligible]
+    bus_candidates = [
+        item
+        for item in graph.computations
+        if item.delay_bus_eligible and item.id in transport_sensitive
+    ]
     candidate_ids = {item.id for item in bus_candidates}
     if max_buses is None:
         max_buses = len(bus_candidates)
@@ -198,8 +242,6 @@ def optimize_temporal_hypergraph(
             assignment = model.NewBoolVar(f"bus_{bus}_value_{item.id}")
             assignments[(item.id, bus)] = assignment
             row.append(assignment)
-            # Standard unlabeled-bin symmetry break: the i-th value never needs a bus with index
-            # greater than i because earlier empty labels are interchangeable.
             if bus > candidate_index:
                 model.Add(assignment == 0)
         model.Add(sum(row) == delayed)
@@ -266,7 +308,6 @@ def optimize_temporal_hypergraph(
         for left, right in incompatible:
             model.Add(assignments[(left, bus)] + assignments[(right, bus)] <= 1)
 
-    # Pack active buses toward low indices to eliminate the factorial label symmetry.
     for bus in range(max(0, max_buses - 1)):
         model.Add(bus_active[bus] >= bus_active[bus + 1])
 
@@ -274,7 +315,7 @@ def optimize_temporal_hypergraph(
     vector_terms: list[Any] = []
 
     for item in graph.computations:
-        if item.id in candidate_ids:
+        if item.id not in transport_sensitive or item.id in candidate_ids:
             continue
         end = end_vars.get(item.id)
         if end is None:
@@ -286,9 +327,8 @@ def optimize_temporal_hypergraph(
         else:
             vector_terms.append(length)
 
-    # Exact leaves retain the historical exact-transport cost. LIVE/STABLE leaves can be observed
-    # directly at their consumer tick inside the current occurrence and therefore add no transport
-    # objective here.
+    # Exact leaves are point samples and retain exact transport cost. LIVE leaves can be observed at
+    # their consumer phase, while STABLE leaves are held by the environment/state.
     for source in graph.sources:
         if source.mode is not TemporalSourceMode.EXACT:
             continue
@@ -381,9 +421,9 @@ def format_temporal_optimization(
     """Render a compact exact-search report."""
 
     lines = [
-        "temporal placement optimization",
+        "temporal placement optimization (periodic state cone)",
         (
-            f"  status={result.status}; proven_optimal={result.proven_optimal}; "
+            f"  status={result.status}; model_optimal={result.proven_optimal}; "
             f"objective_delays={result.objective_delays}; best_bound={result.best_bound}; "
             f"wall={result.wall_time_seconds:.3f}s"
         ),
