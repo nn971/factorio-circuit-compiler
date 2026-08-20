@@ -48,9 +48,11 @@ def lower_normalized_vectors(
     when exact transport remains necessary, scalar and vector delay prefixes are shared across
     consumers.
 
-    ``sampling_policy`` controls only live external Level observations.  Under ``ALAP``, an ordinary
-    input or oracle may be freshly observed at the later consumer phase instead of transporting its
-    phase-zero snapshot through identity combinators.  Explicit logical reindexing remains exact.
+    ``sampling_policy`` controls freshness freedom for live Level observations. Under ``ALAP``, an
+    ordinary external input/oracle and supported feed-forward Level logic derived from it may be
+    re-observed at a later consumer phase instead of transporting an earlier chosen token through
+    identity combinators. Different uses may therefore observe different physical ticks. Explicit
+    logical reindexing and explicit exact transport remain token-preserving boundaries.
     """
 
     reject_event_module(module)
