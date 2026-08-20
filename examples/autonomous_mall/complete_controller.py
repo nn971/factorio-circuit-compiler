@@ -29,6 +29,7 @@ DISPATCH = SignalId("virtual", "signal-D")
 LAUNCH = SignalId("virtual", "signal-L")
 WORKING = SignalId("virtual", "signal-W")
 FINISHED = SignalId("virtual", "signal-F")
+FEED_ENABLE = SignalId("virtual", "signal-E")
 EACH = SignalId("virtual", "signal-each")
 
 _PROTOTYPE_NAME_FIXES = {
@@ -203,6 +204,10 @@ def _signal_json(signal: SignalId) -> dict[str, str]:
     return {"type": signal.kind, "name": signal.name}
 
 
+def _networks(*, red: bool, green: bool) -> dict[str, bool]:
+    return {"red": red, "green": green}
+
+
 def _red_arithmetic(
     entity_id: int,
     x: float,
@@ -223,9 +228,40 @@ def _red_arithmetic(
             "arithmetic_conditions": {
                 "operation": "*",
                 "first_signal": _signal_json(first),
-                "first_signal_networks": {"red": True, "green": False},
+                "first_signal_networks": _networks(red=True, green=False),
                 "second_constant": multiplier,
                 "output_signal": _signal_json(output),
+            }
+        },
+    }
+
+
+def _fed_memory(entity_id: int, x: float, y: float, description: str) -> dict[str, object]:
+    """Accumulate feeder hand pulses while signal-E is high, then clear automatically."""
+
+    return {
+        "entity_number": entity_id,
+        "name": "decider-combinator",
+        "position": {"x": x, "y": y},
+        "direction": 4,
+        "player_description": description,
+        "control_behavior": {
+            "decider_conditions": {
+                "conditions": [
+                    {
+                        "first_signal": _signal_json(FEED_ENABLE),
+                        "first_signal_networks": _networks(red=False, green=True),
+                        "constant": 0,
+                        "comparator": ">",
+                    }
+                ],
+                "outputs": [
+                    {
+                        "signal": _signal_json(EACH),
+                        "copy_count_from_input": True,
+                        "networks": _networks(red=True, green=False),
+                    }
+                ],
             }
         },
     }
@@ -261,23 +297,14 @@ def _add_wire(
     wires.add(_normalized_wire(left, left_connector, right, right_connector))
 
 
-def _remove_contents_subtraction(
-    entities: list[dict[str, object]],
+def _discard_wire(
     wires: set[tuple[int, int, int, int]],
-    machine: dict[str, object],
+    left: int,
+    left_connector: int,
+    right: int,
+    right_connector: int,
 ) -> None:
-    """Turn the old request-minus-machine-contents feeder into a plain positive-request filter."""
-
-    raw_relay = _nearest_device_entity(entities, machine, "machine status relay")
-    negate = _nearest_device_entity(entities, machine, "negate machine contents")
-    wires.discard(
-        _normalized_wire(
-            int(raw_relay["entity_number"]),
-            1,
-            int(negate["entity_number"]),
-            1,
-        )
-    )
+    wires.discard(_normalized_wire(left, left_connector, right, right_connector))
 
 
 def _disconnect_latched_recipe(
@@ -289,14 +316,139 @@ def _disconnect_latched_recipe(
 
     recipe_dock = _nearest_device_entity(entities, machine, "DOCK recipe")
     recipe_bridge = _nearest_device_entity(entities, machine, "recipe red->green isolation")
-    wires.discard(
-        _normalized_wire(
-            int(recipe_dock["entity_number"]),
-            1,
-            int(recipe_bridge["entity_number"]),
-            1,
+    _discard_wire(
+        wires,
+        int(recipe_dock["entity_number"]),
+        1,
+        int(recipe_bridge["entity_number"]),
+        1,
+    )
+
+
+def _install_fed_count_feeder(
+    entities: list[dict[str, object]],
+    wires: set[tuple[int, int, int, int]],
+    machine: dict[str, object],
+    *,
+    next_id: int,
+) -> int:
+    """Replace machine-content subtraction with exact per-transaction inserter pulse counting."""
+
+    feeder = _nearest_device_entity(entities, machine, "MALL DEVICE feeder")
+    machine_raw_relay = _nearest_device_entity(entities, machine, "machine status relay")
+    negate_fed = _nearest_device_entity(entities, machine, "negate machine contents")
+    request_sum_relay_b = _nearest_device_entity(entities, machine, "request subtraction relay B")
+    positive_missing = _nearest_device_entity(entities, machine, "positive missing ingredients")
+    filter_relay = _nearest_device_entity(entities, machine, "missing-ingredient filter relay")
+    feed_gate = _nearest_device_entity(entities, machine, "input-enable AND not-working")
+    feed_gate_relay = _nearest_device_entity(entities, machine, "feeder-enable relay")
+
+    feeder_behavior = feeder.get("control_behavior")
+    if not isinstance(feeder_behavior, dict):
+        raise ValueError("mall feeder is missing control behavior")
+    feeder_behavior["input_networks"] = _networks(red=False, green=True)
+    feeder_behavior["output_networks"] = _networks(red=True, green=False)
+    feeder_behavior["circuit_read_hand_contents"] = True
+    feeder_behavior["circuit_hand_read_mode"] = 0
+
+    old_description = _description(negate_fed)
+    negate_fed["player_description"] = old_description.replace(
+        "negate machine contents", "negate fed-count"
+    )
+
+    _discard_wire(
+        wires,
+        int(machine_raw_relay["entity_number"]),
+        1,
+        int(negate_fed["entity_number"]),
+        1,
+    )
+
+    _discard_wire(
+        wires,
+        int(positive_missing["entity_number"]),
+        3,
+        int(filter_relay["entity_number"]),
+        1,
+    )
+    _discard_wire(
+        wires,
+        int(filter_relay["entity_number"]),
+        1,
+        int(feeder["entity_number"]),
+        1,
+    )
+    _discard_wire(
+        wires,
+        int(feed_gate["entity_number"]),
+        3,
+        int(feed_gate_relay["entity_number"]),
+        1,
+    )
+    _discard_wire(
+        wires,
+        int(feed_gate_relay["entity_number"]),
+        1,
+        int(feeder["entity_number"]),
+        1,
+    )
+    _add_wire(
+        wires,
+        int(positive_missing["entity_number"]),
+        4,
+        int(filter_relay["entity_number"]),
+        2,
+    )
+    _add_wire(
+        wires,
+        int(filter_relay["entity_number"]),
+        2,
+        int(feeder["entity_number"]),
+        2,
+    )
+    _add_wire(
+        wires,
+        int(feed_gate["entity_number"]),
+        4,
+        int(feed_gate_relay["entity_number"]),
+        2,
+    )
+    _add_wire(
+        wires,
+        int(feed_gate_relay["entity_number"]),
+        2,
+        int(feeder["entity_number"]),
+        2,
+    )
+
+    mx, _my = _position(machine)
+    origin_x = round((mx - 17.5) / TILE_WIDTH) * TILE_WIDTH
+    fed_memory = next_id
+    next_id += 1
+    entities.append(
+        _fed_memory(
+            fed_memory,
+            origin_x + 27.0,
+            69.0,
+            "MALL DEVICE fed-count accumulator — resets when feeder is disabled",
         )
     )
+
+    _add_wire(wires, int(feeder["entity_number"]), 1, int(filter_relay["entity_number"]), 1)
+    _add_wire(wires, int(filter_relay["entity_number"]), 1, fed_memory, 1)
+    _add_wire(wires, fed_memory, 3, fed_memory, 1)
+    _add_wire(wires, int(filter_relay["entity_number"]), 2, fed_memory, 2)
+    _add_wire(wires, fed_memory, 3, int(negate_fed["entity_number"]), 1)
+
+    expected = _normalized_wire(
+        int(negate_fed["entity_number"]),
+        3,
+        int(request_sum_relay_b["entity_number"]),
+        1,
+    )
+    if expected not in wires:
+        raise ValueError("fed-count negative path is not connected to requester subtraction sum")
+    return next_id
 
 
 def _add_auto_ingredient_reader(
@@ -365,12 +517,9 @@ def _add_auto_ingredient_reader(
         ]
     )
 
-    # Keep the selected recipe live before dispatch so Read ingredients is available for reservation.
     _add_wire(wires, int(recipe_command["entity_number"]), 1, recipe_relay, 1)
     _add_wire(wires, recipe_relay, 1, int(recipe_bridge["entity_number"]), 1)
 
-    # Read ingredients shares the machine output with W/F. Copy the vector and cancel those two
-    # known virtual lanes before feeding the job_request reservation input.
     source = int(raw_relay["entity_number"])
     _add_wire(wires, source, 1, copy_each, 1)
     _add_wire(wires, source, 1, cancel_working, 1)
@@ -387,15 +536,13 @@ def _add_auto_ingredient_reader(
 
 
 def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
-    """Apply real prototypes, correct item flow, and automatic assembler ingredients."""
+    """Apply real prototypes, footprint-aware flow, auto ingredients, and exact feeder counting."""
 
     raw_entities = blueprint.get("entities", [])
     if not isinstance(raw_entities, list) or not all(
         isinstance(entity, dict) for entity in raw_entities
     ):
         raise ValueError("blueprint entities must be dictionaries")
-    # Keep the live blueprint list. A copied list would make newly appended device entities disappear
-    # while leaving wires that reference their entity ids.
     entities = cast(list[dict[str, object]], raw_entities)
 
     for entity in entities:
@@ -413,7 +560,6 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
     }
     next_id = max((int(entity["entity_number"]) for entity in entities), default=0) + 1
 
-    # Inserter direction is pickup-facing. Left->right transfer picks up from west (12).
     assemblers = [entity for entity in entities if entity.get("name") == "assembling-machine-3"]
     for machine in assemblers:
         feeder = _nearest_device_entity(entities, machine, "MALL DEVICE feeder")
@@ -429,17 +575,10 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
         behavior.pop("include_in_crafting", None)
         behavior["read_ingredients"] = True
 
-        _remove_contents_subtraction(entities, wires, machine)
         _disconnect_latched_recipe(entities, wires, machine)
-        next_id = _add_auto_ingredient_reader(
-            entities,
-            wires,
-            machine,
-            next_id=next_id,
-        )
+        next_id = _install_fed_count_feeder(entities, wires, machine, next_id=next_id)
+        next_id = _add_auto_ingredient_reader(entities, wires, machine, next_id=next_id)
 
-    # Recycler is 2x4 and north-facing. Its feeder picks up from the south (8) and drops north; the
-    # recycler itself ejects directly into the provider chest on its north output side.
     recycler_output_inserters: set[int] = set()
     for machine in [entity for entity in entities if entity.get("name") == "recycler"]:
         old_x, _old_y = _position(machine)
@@ -465,7 +604,7 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
             behavior["read_contents"] = False
             behavior.pop("include_in_crafting", None)
             behavior.pop("read_ingredients", None)
-        _remove_contents_subtraction(entities, wires, machine)
+        next_id = _install_fed_count_feeder(entities, wires, machine, next_id=next_id)
 
     if recycler_output_inserters:
         blueprint["entities"] = [
