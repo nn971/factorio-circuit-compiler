@@ -130,7 +130,14 @@ def build_worker_tile(*, recipe_command: bool) -> Circuit:
     idle = old_mode.any().logical_not()
     already_seen = old_seen.signal(SEEN) != 0
 
-    start = launch * accepted * idle * already_seen.logical_not()
+    start = (
+        launch
+        * accepted
+        * idle
+        * already_seen.logical_not()
+        * working.logical_not()
+        * finished.logical_not()
+    )
     clear_seen = already_seen * accepted.logical_not()
     seen_change = start | clear_seen
     seen.set(seen_token.gate(start), when=seen_change)
