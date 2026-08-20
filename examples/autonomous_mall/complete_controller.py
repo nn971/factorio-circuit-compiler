@@ -280,6 +280,25 @@ def _remove_contents_subtraction(
     )
 
 
+def _disconnect_latched_recipe(
+    entities: list[dict[str, object]],
+    wires: set[tuple[int, int, int, int]],
+    machine: dict[str, object],
+) -> None:
+    """Leave the controller's latched recipe output diagnostic-only in a complete worker."""
+
+    recipe_dock = _nearest_device_entity(entities, machine, "DOCK recipe")
+    recipe_bridge = _nearest_device_entity(entities, machine, "recipe red->green isolation")
+    wires.discard(
+        _normalized_wire(
+            int(recipe_dock["entity_number"]),
+            1,
+            int(recipe_bridge["entity_number"]),
+            1,
+        )
+    )
+
+
 def _add_auto_ingredient_reader(
     entities: list[dict[str, object]],
     wires: set[tuple[int, int, int, int]],
@@ -407,6 +426,7 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
         behavior["read_ingredients"] = True
 
         _remove_contents_subtraction(entities, wires, machine)
+        _disconnect_latched_recipe(entities, wires, machine)
         next_id = _add_auto_ingredient_reader(
             entities,
             wires,
