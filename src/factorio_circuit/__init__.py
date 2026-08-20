@@ -23,10 +23,12 @@ from .frontend import (
     FreezeReg,
     Input,
     LogicalTime,
+    Oracle,
     SampleOnReference,
     ScalarEvent,
     SignalsExpr,
     SignalsInput,
+    SignalsOracle,
     VectorEvent,
 )
 from .ir.output import (
@@ -36,6 +38,15 @@ from .ir.output import (
     output_materializations,
 )
 from .ir.physical import SignalId
+from .oracles import (
+    ExternalOracleProvider,
+    OracleBindingError,
+    OraclePhysicalContext,
+    OraclePortDisposition,
+    OracleProvider,
+    ScalarConstantOracleProvider,
+    VectorConstantOracleProvider,
+)
 from .progress import CompileProgress, ProgressCallback
 from .simulate.clocked_events import simulate_events
 from .simulate.events import (
@@ -50,6 +61,7 @@ from .simulate.events import (
     TimestampDomain,
     materialize_event_trace,
 )
+from .simulate.oracle import simulate_stream_with_oracles
 from .simulate.output_materialization import MaterializedOutputTrace, materialize_output_trace
 from .synthesis.placement import PlacementMetrics, PlacementOptions, placement_metrics
 
@@ -74,19 +86,27 @@ __all__ = [
     "EventMaterializationError",
     "EventMaterializationPolicy",
     "EventThroughputError",
+    "ExternalOracleProvider",
     "FreezeReg",
     "Input",
     "LogicalTime",
     "MaterializedEventTrace",
     "MaterializedOutputTrace",
     "MaterializedReturnValue",
+    "Oracle",
+    "OracleBindingError",
+    "OraclePhysicalContext",
+    "OraclePortDisposition",
+    "OracleProvider",
     "OutputMaterialization",
     "OutputMaterializationPolicy",
     "PlacementMetrics",
     "PlacementOptions",
     "ProgressCallback",
+    "ScalarConstantOracleProvider",
     "SignalsExpr",
     "SignalsInput",
+    "SignalsOracle",
     "SampleOnObservation",
     "SampleOnReference",
     "ScalarEvent",
@@ -94,6 +114,7 @@ __all__ = [
     "StateTimingError",
     "StateTimingPlan",
     "TimestampDomain",
+    "VectorConstantOracleProvider",
     "VectorEvent",
     "compile_circuit",
     "lower_to_abstract_physical",
@@ -102,4 +123,5 @@ __all__ = [
     "output_materializations",
     "placement_metrics",
     "simulate_events",
+    "simulate_stream_with_oracles",
 ]

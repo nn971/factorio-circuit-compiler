@@ -330,7 +330,6 @@ class EventVectorFlow:
         return self.source.name
 
 
-# Compatibility-friendly spelling for callers that describe Event values as Flow inputs.
 FlowEventInput = EventScalarFlow
 FlowEventVectorInput = EventVectorFlow
 
@@ -574,8 +573,6 @@ class VectorSelect(VectorFilter):
         *,
         flow: Flow | None = None,
     ) -> None:
-        # Keep the former frontend-private positional constructor while allowing canonical Flow
-        # metadata to be supplied by keyword at normalization time.
         object.__setattr__(self, "op", op)
         object.__setattr__(self, "vector", vector)
         object.__setattr__(self, "right", right)
@@ -961,11 +958,11 @@ def _validate_canonical_scalar(
         )
     if isinstance(value, FlowInput):
         flow = _canonical_flow(value, PayloadShape.SCALAR)
-        if type(value.source) is not Input or flow.logical_offset != 0:
+        if not isinstance(value.source, Input) or flow.logical_offset != 0:
             raise CanonicalInvariantError("canonical scalar source wrapper is malformed")
     elif isinstance(value, FlowInputSample):
         flow = _canonical_flow(value, PayloadShape.SCALAR)
-        if type(value.source) is not Input or flow.logical_offset != value.offset:
+        if not isinstance(value.source, Input) or flow.logical_offset != value.offset:
             raise CanonicalInvariantError("canonical scalar sample offset is inconsistent")
     elif isinstance(value, Constant):
         flow = _canonical_flow(value, PayloadShape.SCALAR)
@@ -1002,11 +999,11 @@ def _validate_canonical_vector(
         )
     if isinstance(value, FlowVectorInput):
         flow = _canonical_flow(value, PayloadShape.VECTOR)
-        if type(value.source) is not VectorInput or flow.logical_offset != 0:
+        if not isinstance(value.source, VectorInput) or flow.logical_offset != 0:
             raise CanonicalInvariantError("canonical vector source wrapper is malformed")
     elif isinstance(value, FlowVectorInputSample):
         flow = _canonical_flow(value, PayloadShape.VECTOR)
-        if type(value.source) is not VectorInput or flow.logical_offset != value.offset:
+        if not isinstance(value.source, VectorInput) or flow.logical_offset != value.offset:
             raise CanonicalInvariantError("canonical vector sample offset is inconsistent")
     elif isinstance(value, VectorConstant):
         flow = _canonical_flow(value, PayloadShape.VECTOR)

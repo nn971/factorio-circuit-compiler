@@ -1,4 +1,4 @@
-"""Public symbolic frontend, including runtime-open vector expressions."""
+"""Public symbolic frontend, including runtime-open vectors and semantic oracles."""
 
 from factorio_circuit.ir.semantic import (
     VectorBinaryOp,
@@ -7,7 +7,7 @@ from factorio_circuit.ir.semantic import (
     VectorSelect,
 )
 
-from .clock_bridges import Circuit
+from .oracle import Circuit, Oracle, SignalsOracle
 from .symbolic import CircuitBuildError, LogicalTime
 from .vector_circuit import (
     AccumulatorReg,
@@ -29,10 +29,12 @@ __all__ = [
     "FreezeReg",
     "Input",
     "LogicalTime",
+    "Oracle",
     "SampleOnReference",
     "ScalarEvent",
     "SignalsExpr",
     "SignalsInput",
+    "SignalsOracle",
     "VectorBinaryOp",
     "VectorEvent",
     "VectorFilter",

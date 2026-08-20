@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from factorio_circuit.analysis import (
@@ -17,6 +18,7 @@ from factorio_circuit.blueprint.layout_encode import (
 from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
 from factorio_circuit.frontend.symbolic import Circuit
 from factorio_circuit.ir.abstract_physical import AbstractPhysicalCircuit
+from factorio_circuit.ir.oracle import oracle_sources
 from factorio_circuit.ir.output import preserve_output_materializations
 from factorio_circuit.ir.physical import PhysicalCircuit
 from factorio_circuit.ir.semantic import (
@@ -31,6 +33,12 @@ from factorio_circuit.lowering.event_accumulator_physical import (
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.lowering.open_vector_pipeline import lower_normalized_vectors
 from factorio_circuit.optimize.pipeline import optimize_normalized_semantic
+from factorio_circuit.oracles import (
+    OracleBindingError,
+    OracleProvider,
+    materialize_oracle_providers,
+    validate_oracle_provider_bindings,
+)
 from factorio_circuit.progress import ProgressCallback, report_progress
 from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
@@ -113,20 +121,30 @@ def lower_to_abstract_physical(
     *,
     optimize: bool = True,
     progress: ProgressCallback | None = None,
+    oracle_providers: Mapping[str, OracleProvider] | None = None,
 ) -> AbstractPhysicalLoweringResult:
     """Run the canonical compiler pipeline through abstract physical lowering only.
 
     This is the stable inspection boundary immediately before signal allocation, red/green
     assignment, physical-net coalescing, placement, and routing. It is useful for diagnostics and
     heavyweight benchmark census work that should not need to materialize a final layout.
+
+    Semantic oracles require exact physical-provider coverage. Providers are materialized into the
+    abstract physical graph before this function returns, so their entities participate in the same
+    joint synthesis/layout pass as ordinary compiler-generated combinators.
     """
 
     report_progress(progress, "frontend", detail="elaborating and lowering source program")
     source_output = _source_output(source)
     semantic = preserve_output_materializations(lower_frontend(source), source_output)
+    providers = validate_oracle_provider_bindings(semantic, oracle_providers)
     clocked = contains_event_semantics(semantic)
 
     if clocked:
+        if oracle_sources(semantic):
+            raise OracleBindingError(
+                "physical oracle providers are currently supported for Level modules only"
+            )
         optimized_semantic = semantic
         report_progress(progress, "timing", detail="analyzing clocked timing and throughput")
         state_timing = analyze_clocked_timing(optimized_semantic)
@@ -157,6 +175,7 @@ def lower_to_abstract_physical(
             enable_packing=optimize,
             state_timing=state_timing,
         )
+        materialize_oracle_providers(optimized_semantic, abstract_physical, providers)
 
     return AbstractPhysicalLoweringResult(
         semantic_ir=semantic,
@@ -174,6 +193,7 @@ def compile_circuit(
     blueprint_safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN,
     placement: PlacementOptions | None = None,
     progress: ProgressCallback | None = None,
+    oracle_providers: Mapping[str, OracleProvider] | None = None,
 ) -> CompilationResult:
     """Compile semantic dataflow through physical synthesis to a final Layout and blueprint.
 
@@ -181,11 +201,19 @@ def compile_circuit(
     clock-aware timing and the physical Event lowerer; semantic Event optimization and packing
     remain disabled until those transforms carry explicit clock proofs.
 
+    Oracle providers are target-side bindings: they are absent from deterministic semantic
+    evaluation and are inserted into the abstract physical graph before joint physical synthesis.
+
     ``progress`` receives coarse compiler phases plus bounded placement/routing updates.
     Callbacks are observational only and do not affect deterministic compilation.
     """
 
-    lowered = lower_to_abstract_physical(source, optimize=optimize, progress=progress)
+    lowered = lower_to_abstract_physical(
+        source,
+        optimize=optimize,
+        progress=progress,
+        oracle_providers=oracle_providers,
+    )
     layout = _synthesize(
         lowered.abstract_physical,
         safe_wire_span=blueprint_safe_wire_span,
@@ -207,6 +235,11 @@ def compile_circuit(
             lowered.optimized_ir,
             enable_packing=False,
             state_timing=lowered.state_timing,
+        )
+        materialize_oracle_providers(
+            lowered.optimized_ir,
+            naive_abstract,
+            validate_oracle_provider_bindings(lowered.optimized_ir, oracle_providers),
         )
         naive_physical = _synthesize(
             naive_abstract,

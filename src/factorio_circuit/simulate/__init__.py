@@ -21,6 +21,7 @@ from .events import (
     TimestampDomain,
     materialize_event_trace,
 )
+from .oracle import simulate_stream_with_oracles
 
 __all__ = [
     "EventActivation",
@@ -39,4 +40,5 @@ __all__ = [
     "TimestampDomain",
     "materialize_event_trace",
     "simulate_events",
+    "simulate_stream_with_oracles",
 ]
