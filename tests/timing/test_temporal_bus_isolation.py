@@ -105,7 +105,7 @@ def test_shared_bus_never_connects_original_producer_net_directly() -> None:
         entity
         for entity in planned.entities
         if isinstance(entity, ArithmeticCombinator)
-        and entity.description.startswith("scalar phase delay bus ")
+        and (entity.description or "").startswith("scalar phase delay bus ")
     ]
     assert bus_stages
 
