@@ -1,19 +1,22 @@
 """Electrically isolated realization of temporal scalar delay buses.
 
-The first temporal bus lowerer connected independent semantic producer nets directly to the same
-``Each + 0 -> Each`` input connector. Physical synthesis is allowed to coalesce disjoint-signal nets
-that meet on one connector, which is normally useful, but here that merge propagates *backwards*
-onto producer nets that may still feed clean-single-lane / Each-sensitive consumers elsewhere.
+The first temporal bus lowerer connected semantic producer nets directly to shared ``Each + 0 ->
+Each`` trunks and returned shared trunk nets directly to ordinary consumers. Both directions are
+unsafe under Factorio's two-wire physical model: same-color coalescing can contaminate a producer
+network backwards, while one shared trunk color can impose incompatible red/green requirements at
+unrelated downstream consumers.
 
-This experimental lowerer inserts one signal-specific one-tick ingress copy per delayed lane before
-that lane is allowed onto a shared bus. Ingress outputs are bus-private, so later coalescing is safe:
-it can no longer contaminate the original computation net. Ingress copies that become available on
-the same ``(bus, phase)`` are wired onto one aggregate bus-private ingress net before the shared bus
-stage. That makes the intended physical fan-in explicit and keeps each bus stage within Factorio's
-two-wire input limit: at most one ingress net plus the previous bus trunk.
+This experimental lowerer therefore treats the bus as a real multiplexed transport fabric:
 
-The ingress copy is also the lane's first exact transport tick, so consumers one tick after
-production can tap it directly.
+* one signal-specific one-tick ingress copy electrically isolates every lane from its producer;
+* ingress copies available on the same ``(bus, phase)`` are explicitly wired onto one aggregate,
+  bus-private ingress net;
+* shared ``Each`` stages carry only bus-private nets; and
+* one signal-specific one-tick egress copy isolates every tap from the shared trunk before the value
+  reaches an ordinary semantic consumer.
+
+Ingress and egress copies replace the first and last ticks of a private scalar delay chain, so the
+logical observation phase does not change. Only the middle transport ticks are shared.
 """
 
 from __future__ import annotations
@@ -63,7 +66,7 @@ type _BusBinding = tuple[int, DelayBusLane]
 
 
 class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
-    """Temporal plan lowerer whose shared-bus ingress cannot backfeed producer nets."""
+    """Temporal plan lowerer with electrical firewalls on both sides of shared scalar buses."""
 
     def __init__(
         self,
@@ -83,6 +86,7 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
         )
         self._bus_ingress_by_lane: dict[tuple[int, int], RealizedValue] = {}
         self._bus_ingress_net_by_phase: dict[tuple[int, int], int] = {}
+        self._bus_egress_by_lane_phase: dict[tuple[int, int, int], RealizedValue] = {}
 
     def _bus_ingress(
         self,
@@ -113,7 +117,6 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
             right=Operand(constant=0),
             output_each=False,
             output_signal=value.signal,
-            # Count the electrical firewall as the private first tick of scalar transport.
             description="phase alignment delay",
         )
         self.circuit.entities.append(entity)
@@ -131,9 +134,6 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
             )
             self._bus_ingress_net_by_phase[ingress_key] = output_net
         else:
-            # All ingress copies on the same bus/phase are already electrically isolated from their
-            # semantic producer nets and carry distinct abstract signal identities. Make that safe
-            # merge explicit here instead of asking the red/green synthesis heuristic to discover it.
             self._attach(output_net, output_endpoint)
             builder = self.net_builders[output_net]
             if value.signal not in builder.signals:
@@ -143,7 +143,6 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
             signal=value.signal,
             net=output_net,
             phase=output_phase,
-            # The aggregate ingress is intentionally multi-lane when several values join together.
             clean_single_lane=False,
         )
         window = self._scalar_window(value)
@@ -156,6 +155,57 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
             )
         self._bus_origin[(result.net, result.signal)] = binding
         self._bus_ingress_by_lane[key] = result
+        return result
+
+    def _bus_egress(
+        self,
+        bus: int,
+        lane: DelayBusLane,
+        trunk: RealizedValue,
+        target_phase: int,
+    ) -> RealizedValue:
+        """Copy one lane off a bus-private trunk before exposing it to semantic consumers."""
+
+        key = (bus, lane.producer, target_phase)
+        cached = self._bus_egress_by_lane_phase.get(key)
+        if cached is not None:
+            return cached
+        if trunk.phase + 1 != target_phase:
+            raise ValueError("isolated delay-bus egress must consume the immediately preceding tick")
+        if not isinstance(trunk.signal, int):
+            raise ValueError("scalar delay buses require compiler-allocated abstract signals")
+
+        entity = ArithmeticCombinator(
+            id=self._take_entity_id(),
+            operation="+",
+            left=Operand(signal=trunk.signal, nets=(trunk.net,)),
+            right=Operand(constant=0),
+            output_each=False,
+            output_signal=trunk.signal,
+            description="phase alignment delay",
+        )
+        self.circuit.entities.append(entity)
+        self._attach(trunk.net, Endpoint(entity.id, Connector.INPUT))
+        output_net = self._new_net(
+            (trunk.signal,),
+            Endpoint(entity.id, Connector.OUTPUT),
+            label=f"scalar delay bus {bus} isolated egress @ {target_phase}",
+        )
+        result = RealizedValue(
+            signal=trunk.signal,
+            net=output_net,
+            phase=target_phase,
+            clean_single_lane=False,
+        )
+        window = self._scalar_window(trunk)
+        if window is None:
+            self._remember_scalar(result, self._point_window(target_phase))
+        else:
+            self._remember_scalar(
+                result,
+                self._window_after_exact_alignment(window, trunk.phase, target_phase),
+            )
+        self._bus_egress_by_lane_phase[key] = result
         return result
 
     def _delay_on_bus(
@@ -185,28 +235,33 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
         if target_phase < current.phase:
             raise ValueError("delay-bus target precedes isolated ingress output")
 
+        # A two-tick lifetime has no shared middle stage: ingress and egress simply replace the two
+        # private delays. Longer lifetimes join the shared trunk after ingress and leave it one tick
+        # before the consumer so the final egress copy preserves the requested target phase.
         self._register_isolated_bus_join(bus, lane, current)
-        for phase in range(current.phase, target_phase):
-            self._ensure_bus_stage(bus, phase)
-
-        output_net = self._bus_stage_output_net[(bus, target_phase - 1)]
-        result = RealizedValue(
-            signal=current.signal,
-            net=output_net,
-            phase=target_phase,
-            clean_single_lane=False,
-        )
-        self._bus_origin[(result.net, result.signal)] = binding
-
-        window = self._scalar_window(current)
-        if window is None:
-            self._remember_scalar(result, self._point_window(target_phase))
+        trunk_phase = target_phase - 1
+        if trunk_phase == current.phase:
+            trunk = current
         else:
-            self._remember_scalar(
-                result,
-                self._window_after_exact_alignment(window, current.phase, target_phase),
+            for phase in range(current.phase, trunk_phase):
+                self._ensure_bus_stage(bus, phase)
+            output_net = self._bus_stage_output_net[(bus, trunk_phase - 1)]
+            trunk = RealizedValue(
+                signal=current.signal,
+                net=output_net,
+                phase=trunk_phase,
+                clean_single_lane=False,
             )
-        return result
+            window = self._scalar_window(current)
+            if window is None:
+                self._remember_scalar(trunk, self._point_window(trunk_phase))
+            else:
+                self._remember_scalar(
+                    trunk,
+                    self._window_after_exact_alignment(window, current.phase, trunk_phase),
+                )
+
+        return self._bus_egress(bus, lane, trunk, target_phase)
 
     def _register_isolated_bus_join(
         self,
@@ -226,6 +281,9 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
                 f"{value.phase}, expected {expected}"
             )
         self._joined_bus_lanes.add(key)
+        # Keep one tuple per signal even when several lanes share the same aggregate ingress net.
+        # _ensure_bus_stage deduplicates input net ids but uses these tuples to recover the complete
+        # lane set that must appear on the stage output.
         self._bus_joins.setdefault((bus, value.phase), []).append((value.net, value.signal))
 
         stage_key = (bus, value.phase)
@@ -242,7 +300,7 @@ def lower_normalized_vectors_with_isolated_temporal_plan(
     graph: TemporalHypergraph,
     optimization: TemporalOptimizationResult,
 ) -> AbstractPhysicalCircuit:
-    """Lower one unpacked periodic Level module with electrically isolated scalar-bus ingress."""
+    """Lower one unpacked periodic Level module with electrically isolated scalar buses."""
 
     unsupported_registers = [
         register
