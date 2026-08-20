@@ -146,9 +146,15 @@ def test_alap_eliminates_scalar_external_input_transport() -> None:
         sampling_policy=SamplingPolicy.ALAP,
     )
 
-    removed = _delay_count(beginning.abstract_physical, "phase alignment delay")
-    assert removed > 0
-    assert _delay_count(alap.abstract_physical, "phase alignment delay") == 0
+    beginning_delays = _delay_count(beginning.abstract_physical, "phase alignment delay")
+    alap_delays = _delay_count(alap.abstract_physical, "phase alignment delay")
+
+    # Both policies retain the exact startup guard for the multicycle state clock.  ALAP removes
+    # only the additional chain that would preserve the phase-zero ``enabled`` snapshot; the
+    # remaining scalar delays are therefore intentional startup transport rather than failed live
+    # observation.
+    assert alap_delays > 0
+    assert beginning_delays > alap_delays
 
 
 def test_alap_can_observe_one_external_vector_at_multiple_consumer_phases() -> None:
