@@ -10,15 +10,9 @@ same live circuit-network source at that phase" rather than "delay the old sampl
 entity is needed for that relocation. Explicit logical samples/reindexing already have a nonzero
 phase and deliberately keep exact-transport behavior.
 
-Two lower-level operations are intentionally explicit here:
-
-* :meth:`observe_scalar_at` / :meth:`observe_vector_at` move an observation boundary without
-  preserving an earlier token; and
-* :meth:`exact_delay_to` / :meth:`exact_delay_vector_to` physically transport one already-chosen
-  token and bypass settling reuse, live resampling, and downstream temporal-plan policies.
-
-``delay_to`` remains the compatibility alignment entry point for Level lowering. Event/pulse
-transport and stateful HOLD are different temporal operations and must not be added to this method.
+The Level-alignment parent owns validity reuse and exact token transport. This layer adds only one
+new temporal operation: late observation of a live external source. Event/pulse transport and
+stateful HOLD remain separate concerns and must not be folded into ``delay_to``.
 """
 
 from __future__ import annotations
@@ -27,13 +21,11 @@ from factorio_circuit.analysis.state_timing import StateTimingPlan
 from factorio_circuit.ir.semantic import CircuitModule
 from factorio_circuit.lowering.alap import AlapVectorLowerer
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
-from factorio_circuit.lowering.open_vector import VectorLowerer
-from factorio_circuit.lowering.vector_delay_trunks import SharedVectorDelayLowerer
 from factorio_circuit.sampling import SamplingPolicy
 
 
 class SamplingPolicyLowerer(AlapVectorLowerer):
-    """ALAP lowerer with explicit Level observation and exact-transport operations."""
+    """ALAP Level lowerer that adds explicit late observation of live external sources."""
 
     def __init__(
         self,
@@ -103,49 +95,6 @@ class SamplingPolicyLowerer(AlapVectorLowerer):
             raise ValueError("cannot observe a vector backwards in time")
         result = RealizedVector(value.net, target_phase)
         self._remember_vector(result, self._point_window(target_phase))
-        return result
-
-    def exact_delay_to(self, value: RealizedValue, target_phase: int) -> RealizedValue:
-        """Physically transport one exact scalar token, bypassing all alignment policies."""
-
-        if value.phase > target_phase:
-            raise ValueError("cannot delay backwards in time")
-        if value.phase == target_phase:
-            return value
-
-        window = self._scalar_window(value)
-        # Call the pre-settling physical implementation explicitly. This is deliberately not
-        # ``super().delay_to``: subclasses may reinterpret that compatibility method as resampling
-        # or shared transport, while exact transport must have one unambiguous meaning.
-        result = VectorLowerer.delay_to(self, value, target_phase)
-        if window is not None:
-            self._remember_scalar(
-                result,
-                self._window_after_exact_alignment(window, value.phase, target_phase),
-            )
-        return result
-
-    def exact_delay_vector_to(
-        self,
-        value: RealizedVector,
-        target_phase: int,
-    ) -> RealizedVector:
-        """Physically transport one exact vector token, retaining shared-prefix reuse only."""
-
-        if value.phase > target_phase:
-            raise ValueError("cannot delay vector backwards in time")
-        if value.phase == target_phase:
-            return value
-
-        window = self._vector_window(value)
-        # SharedVectorDelayLowerer's private helper is an implementation optimization of exact
-        # transport: it only shares prefixes of the *same* token and never changes observation time.
-        result = SharedVectorDelayLowerer._exact_vector_delay_to(self, value, target_phase)
-        if window is not None:
-            self._remember_vector(
-                result,
-                self._window_after_exact_alignment(window, value.phase, target_phase),
-            )
         return result
 
     def delay_to(self, value: RealizedValue, target_phase: int) -> RealizedValue:
