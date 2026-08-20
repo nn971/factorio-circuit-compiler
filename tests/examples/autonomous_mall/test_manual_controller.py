@@ -42,6 +42,7 @@ def _expected_outputs() -> set[str]:
         result.update(
             {
                 f"{worker.name}_requester_demand",
+                f"{worker.name}_input_enable",
                 f"{worker.name}_accepted",
                 f"{worker.name}_busy",
                 f"{worker.name}_waiting_finished",
