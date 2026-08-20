@@ -1,14 +1,20 @@
-"""Solve the experimental temporal Snake plan, synthesize it, and emit a Factorio blueprint.
+"""Solve a conservative temporal Snake bus plan, synthesize it, and emit a Factorio blueprint.
 
 This runner is intentionally separate from :mod:`benchmarks.snake.generate`. The canonical generator
 continues to exercise the accepted ordinary ALAP lowering path until the temporal delay-bus plan has
 been validated in Factorio.
+
+For in-game validation this generator freezes every state-cone computation to the accepted ALAP
+placement and optimizes only scalar delay-bus sharing. Global phase placement remains available in
+``benchmarks.snake.temporal_optimize`` as a research diagnostic, but is not allowed to perturb live
+movement/oracle observation timing in the validation blueprint.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from benchmarks.snake.generate import _TerminalProgress
@@ -53,6 +59,54 @@ def _marker_wire_color(layout: object, marker_entity: int) -> WireColor:
     return next(iter(colors))
 
 
+def _pin_graph_to_alap(graph: object) -> object:
+    """Return the same temporal graph with every computation mobility window fixed at ALAP."""
+
+    placement = graph.alap_placement()
+    phases = dict(placement.phases)
+    return replace(
+        graph,
+        computations=tuple(
+            replace(
+                computation,
+                earliest_phase=phases[computation.id],
+                latest_phase=phases[computation.id],
+            )
+            for computation in graph.computations
+        ),
+    )
+
+
+def _restore_accepted_live_sampling(optimization: object) -> object:
+    """Remove experimental coherent-LIVE transport from a fixed-ALAP validation plan.
+
+    The accepted Snake baseline uses ``SamplingPolicy.ALAP`` exactly as implemented by the ordinary
+    lowerer: each state-cone consumer may observe the external Level source at its already-validated
+    ALAP phase. The current global optimizer also experiments with one coherent source snapshot; that
+    changes behavior and has not passed Factorio validation. With placement frozen to the accepted
+    ALAP schedule, source-observation transport is a constant in the CP-SAT objective and does not
+    affect bus grouping, so strip it before physical lowering and reporting.
+    """
+
+    scalar_transport = sum(
+        item.transport_stages
+        for item in optimization.live_source_observations
+        if item.shape.value == "scalar"
+    )
+    vector_transport = sum(
+        item.transport_stages
+        for item in optimization.live_source_observations
+        if item.shape.value == "vector"
+    )
+    return replace(
+        optimization,
+        ordinary_scalar_delays=optimization.ordinary_scalar_delays - scalar_transport,
+        vector_delays=optimization.vector_delays - vector_transport,
+        objective_delays=optimization.objective_delays - scalar_transport - vector_transport,
+        live_source_observations=(),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="write blueprint string to this file")
@@ -85,13 +139,20 @@ def main() -> None:
         lowered.state_timing,
         sampling_policy=sampling_policy,
     )
+
+    # This is deliberately a bus-sharing validation candidate, not another global-scheduling
+    # experiment. Freeze the complete state cone to the exact ALAP placement that already passed
+    # Factorio gameplay, then let CP-SAT optimize only which scalar lifetimes share delay buses.
+    pinned_graph = _pin_graph_to_alap(graph)
     optimization = optimize_temporal_hypergraph(
-        graph,
+        pinned_graph,
         bus_capacity=args.bus_capacity,
         max_buses=args.max_buses,
         time_limit_seconds=args.time_limit,
         workers=args.workers,
     )
+    optimization = _restore_accepted_live_sampling(optimization)
+    print("temporal generator mode: validated ALAP placement + shared scalar delay buses", file=sys.stderr)
     print(format_temporal_optimization(optimization), file=sys.stderr)
 
     planned = lower_normalized_vectors_with_temporal_plan(
