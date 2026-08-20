@@ -20,6 +20,7 @@ from factorio_circuit.synthesis.placement import PlacementOptions, Position, pla
 from factorio_circuit.synthesis.placement_constraints import resolve_placement_constraints
 from factorio_circuit.synthesis.safe_crossbar import build_safe_crossbar_layout
 from factorio_circuit.synthesis.safe_folded_crossbar import build_safe_folded_crossbar_layout
+from factorio_circuit.synthesis.signal_coloring import allocate_abstract_signals_dsat
 
 
 def _placement_attempt_count(options: PlacementOptions) -> int:
@@ -51,6 +52,21 @@ def _placement_attempt_options(options: PlacementOptions, restart: int) -> Place
 class VectorPhysicalSynthesizer(PhysicalSynthesizer):
     progress: ProgressCallback | None = None
     anchor_positions: Mapping[str, Position] | None = None
+
+    def _allocate_signals(self, net_groups: dict[int, int]) -> dict[int, SignalId]:
+        """Color abstract lanes with deterministic DSATUR.
+
+        Shared delay buses create dense interference cliques, so the vector path uses a dynamic
+        saturation ordering rather than the baseline synthesizer's historical static degree order.
+        """
+
+        return allocate_abstract_signals_dsat(
+            self.circuit,
+            net_groups,
+            signal_pool=self.signal_pool,
+            reserved=self._fixed_signal_ids(),
+            alias_roots=self._signal_alias_roots(),
+        )
 
     def synthesize(self) -> Layout:
         report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
