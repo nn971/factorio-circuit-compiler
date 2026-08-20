@@ -26,8 +26,8 @@ SCREEN_HEIGHT = 16
 CELL_COUNT = SCREEN_WIDTH * SCREEN_HEIGHT
 ORIGIN_X = 8
 ORIGIN_Y = 8
-BODY_CAPACITY = 15
-MAX_LENGTH = BODY_CAPACITY + 1
+BODY_CAPACITY = CELL_COUNT - 1
+MAX_LENGTH = CELL_COUNT
 DEFAULT_LOGICAL_STEPS_PER_MOVE = 1
 
 DIR_E = 0
@@ -153,7 +153,7 @@ def _requested_direction(movement: SignalsExpr, old_direction: Expr) -> tuple[Ex
 
 
 def _capped_body_count(score: Expr) -> Expr:
-    """Return the number of body pixels retained by the bounded Snake representation."""
+    """Return the body-pixel count, capped only by the physical board capacity."""
 
     return (score < BODY_CAPACITY).select(score, BODY_CAPACITY)
 
@@ -173,11 +173,11 @@ def build_snake_circuit(
     logical_steps_per_move: int = DEFAULT_LOGICAL_STEPS_PER_MOVE,
     render_framebuffer: bool = True,
 ) -> Circuit:
-    """Build the bounded Snake prototype with packed time-to-live body state.
+    """Build the board-bounded Snake prototype with packed time-to-live body state.
 
     The snake waits at screen coordinate (8, 8), with initial reference direction east and length
     one. The first direction gesture starts the game and may choose any direction. Each food
-    increases the visible/collidable length by one until the fixed maximum length of 16 is reached.
+    increases the visible/collidable length by one until all 256 board cells are occupied.
     A nonzero ``reset`` input restores this complete initial state and wins over movement/collision
     updates on the same logical occurrence.
 
