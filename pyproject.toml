@@ -18,6 +18,9 @@ dev = [
   "ruff>=0.9",
   "mypy>=1.14",
 ]
+solver = [
+  "ortools>=9.14,<10",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/factorio_circuit"]
