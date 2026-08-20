@@ -96,7 +96,10 @@ def build_manual_controller(
     start_token = circuit.constant_signals({MODE_START: 1})
     wait_token = circuit.constant_signals({MODE_WAIT: 1})
     dispatch_token = circuit.constant_signals({DISPATCH_SEEN: 1})
-    stage_tokens = [circuit.constant_signals({_STAGE_SIGNALS[index]: 1}) for index in range(len(workers))]
+    stage_tokens = [
+        circuit.constant_signals({_STAGE_SIGNALS[index]: 1})
+        for index in range(len(workers))
+    ]
 
     dispatch_seen = circuit.freeze("dispatch_seen")
     dispatch_cursor = circuit.freeze("dispatch_cursor")
