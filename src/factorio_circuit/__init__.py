@@ -51,6 +51,7 @@ from .simulate.events import (
     materialize_event_trace,
 )
 from .simulate.output_materialization import MaterializedOutputTrace, materialize_output_trace
+from .synthesis.interface import ModuleInterface, compile_module
 from .synthesis.placement import PlacementMetrics, PlacementOptions, placement_metrics
 
 __all__ = [
@@ -80,6 +81,7 @@ __all__ = [
     "MaterializedEventTrace",
     "MaterializedOutputTrace",
     "MaterializedReturnValue",
+    "ModuleInterface",
     "OutputMaterialization",
     "OutputMaterializationPolicy",
     "PlacementMetrics",
@@ -96,6 +98,7 @@ __all__ = [
     "TimestampDomain",
     "VectorEvent",
     "compile_circuit",
+    "compile_module",
     "lower_to_abstract_physical",
     "materialize_event_trace",
     "materialize_output_trace",
