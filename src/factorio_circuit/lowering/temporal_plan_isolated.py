@@ -15,8 +15,10 @@ This experimental lowerer therefore treats the bus as a real multiplexed transpo
 * one signal-specific one-tick egress copy isolates every tap from the shared trunk before the value
   reaches an ordinary semantic consumer.
 
-Ingress and egress copies replace the first and last ticks of a private scalar delay chain, so the
-logical observation phase does not change. Only the middle transport ticks are shared.
+A one-tick scalar lifetime never enters the shared fabric at all: it is cheaper and safer to retain
+the ordinary private ``signal + 0 -> signal`` delay. Ingress and egress copies replace the first and
+last ticks of longer private scalar delay chains, so the logical observation phase does not change.
+Only the middle transport ticks are shared.
 """
 
 from __future__ import annotations
@@ -208,6 +210,18 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
         self._bus_egress_by_lane_phase[key] = result
         return result
 
+    def _private_exact_tick(self, value: RealizedValue, target_phase: int) -> RealizedValue:
+        """Transport one scalar tick without exposing any shared bus-private net to a consumer."""
+
+        if target_phase != value.phase + 1:
+            raise ValueError("private exact bus tick must advance by exactly one phase")
+        previous = self._force_exact_alignment
+        self._force_exact_alignment = True
+        try:
+            return super().delay_to(value, target_phase)
+        finally:
+            self._force_exact_alignment = previous
+
     def _delay_on_bus(
         self,
         value: RealizedValue,
@@ -227,13 +241,16 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
         if target_phase == value.phase:
             return value
 
+        # A one-tick use has no shareable middle transport. Do not create an aggregate ingress net
+        # only to expose it immediately to an ordinary consumer: keep this exact tick private.
+        if target_phase == value.phase + 1:
+            return self._private_exact_tick(value, target_phase)
+
         current = value
         if current.phase == lane.start_phase:
             current = self._bus_ingress(bus, lane, current, binding)
-        if target_phase == current.phase:
-            return current
-        if target_phase < current.phase:
-            raise ValueError("delay-bus target precedes isolated ingress output")
+        if target_phase <= current.phase:
+            raise ValueError("delay-bus target does not leave room for isolated egress")
 
         # A two-tick lifetime has no shared middle stage: ingress and egress simply replace the two
         # private delays. Longer lifetimes join the shared trunk after ingress and leave it one tick
