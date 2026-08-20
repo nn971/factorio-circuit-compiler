@@ -4,12 +4,11 @@ This is intentionally application-specific and lives under ``examples``. The eco
 remains the oracle for choosing jobs; this circuit exercises the physical transaction layer that the
 future autonomous planner will drive.
 
-The controller allocates one conservative batch only when every worker is idle. Candidate jobs are
-considered in ``DEFAULT_WORKERS`` order against one live roboport stock snapshot, so accepted jobs
-atomically reserve their complete requester-chest demand before later candidates are considered.
-No new batch starts until all accepted jobs have completed and all external completion latches have
-cleared. This avoids treating robot flight or assembler-local inventory as fresh globally available
-stock.
+A dispatch captures one roboport stock snapshot and then scans the fixed worker list one logical step
+at a time. Each accepted request is subtracted from a stored ``available_snapshot`` before the next
+worker is considered. This gives atomic reservations without constructing an ever-growing recursive
+vector expression in the compiler. No new batch starts until the scan is complete, every accepted job
+has completed, and all external completion latches have cleared.
 
 Assembler recipes remain latched between transactions. One-shot execution is enforced by starving the
 machine of ingredients: ``*_input_enable`` gates a stack-size-1 input inserter, whose local condition
@@ -30,6 +29,7 @@ from .model import WorkerKind
 MODE_START = SignalId("virtual", "signal-C")
 MODE_WAIT = SignalId("virtual", "signal-W")
 DISPATCH_SEEN = SignalId("virtual", "signal-D")
+_STAGE_SIGNALS = tuple(SignalId("virtual", f"signal-{index}") for index in range(10))
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,10 +75,16 @@ def build_manual_controller(
     pulses. The controller emits ``*_ack_finished`` while consuming a completion so the external
     latch can reset. ``dispatch`` is edge-armed: hold it high until the batch is accepted, then
     return it to zero before requesting another batch.
+
+    Reservation is deliberately sequential. ``dispatch`` captures ``stock`` into a FreezeReg and
+    starts a cursor. One worker is considered on each later logical step. This preserves one atomic
+    stock snapshot while keeping the compiler expression graph shallow.
     """
 
     if not workers:
         raise ValueError("manual mall controller requires at least one worker")
+    if len(workers) > len(_STAGE_SIGNALS):
+        raise ValueError(f"manual mall controller supports at most {len(_STAGE_SIGNALS)} workers")
     worker_names = [worker.name for worker in workers]
     if len(worker_names) != len(set(worker_names)):
         raise ValueError("manual mall worker names must be unique")
@@ -90,10 +96,19 @@ def build_manual_controller(
     start_token = circuit.constant_signals({MODE_START: 1})
     wait_token = circuit.constant_signals({MODE_WAIT: 1})
     dispatch_token = circuit.constant_signals({DISPATCH_SEEN: 1})
+    stage_tokens = [circuit.constant_signals({_STAGE_SIGNALS[index]: 1}) for index in range(len(workers))]
 
     dispatch_seen = circuit.freeze("dispatch_seen")
+    dispatch_cursor = circuit.freeze("dispatch_cursor")
+    available_snapshot = circuit.freeze("available_snapshot")
+
     old_dispatch_seen = dispatch_seen.sample()
+    old_cursor = dispatch_cursor.sample()
+    old_available = available_snapshot.sample()
+
     dispatch_is_seen = old_dispatch_seen.signal(DISPATCH_SEEN) != 0
+    cursor_active = old_cursor.any()
+    cursor_idle = cursor_active.logical_not()
 
     states: list[_WorkerState] = []
     for spec in workers:
@@ -131,7 +146,7 @@ def build_manual_controller(
         if state.held_recipe is not None
     }
 
-    batch_ready = dispatch_is_seen.logical_not()
+    batch_ready = dispatch_is_seen.logical_not() * cursor_idle
     for state in states:
         idle = old_modes[state.spec.name].any().logical_not()
         batch_ready = (
@@ -143,22 +158,24 @@ def build_manual_controller(
     dispatch_change = dispatch_fire | rearm_dispatch
     dispatch_seen.set(dispatch_token.gate(dispatch_fire), when=dispatch_change)
 
-    available = stock
-    accepts: list[object] = []
+    stage_active = [old_cursor.signal(_STAGE_SIGNALS[index]) != 0 for index in range(len(states))]
 
-    for state in states:
+    accepts: list[object] = []
+    reserved_now = circuit.constant_signals({})
+
+    for index, state in enumerate(states):
         mode = old_modes[state.spec.name]
         starting = mode.signal(MODE_START) != 0
         waiting = mode.signal(MODE_WAIT) != 0
 
-        candidate = dispatch_fire * state.job_enable * state.job_request.any()
+        candidate = stage_active[index] * state.job_enable * state.job_request.any()
         if state.job_recipe is not None:
             candidate = candidate * state.job_recipe.any()
 
-        request_missing = (state.job_request - available).positive().any()
+        request_missing = (state.job_request - old_available).positive().any()
         accept = candidate * request_missing.logical_not()
         accepts.append(accept)
-        available = available - state.job_request.gate(accept)
+        reserved_now = reserved_now + state.job_request.gate(accept)
 
         worker_started = starting * state.working
         worker_done = waiting * state.finished
@@ -180,14 +197,26 @@ def build_manual_controller(
         circuit.output(f"{state.spec.name}_waiting_finished", waiting)
         circuit.output(f"{state.spec.name}_ack_finished", worker_done)
 
+    scan_advance = cursor_active
+    snapshot_change = dispatch_fire | scan_advance
+    next_available = stock.gate(dispatch_fire) + (old_available - reserved_now).gate(scan_advance)
+    available_snapshot.set(next_available, when=snapshot_change)
+
+    next_cursor = stage_tokens[0].gate(dispatch_fire)
+    for index in range(len(stage_tokens) - 1):
+        next_cursor = next_cursor + stage_tokens[index + 1].gate(stage_active[index])
+    cursor_change = dispatch_fire | scan_advance
+    dispatch_cursor.set(next_cursor, when=cursor_change)
+
     any_accepted = accepts[0]
     for accept in accepts[1:]:
         any_accepted = any_accepted | accept
 
     circuit.output("batch_ready", batch_ready)
     circuit.output("dispatch_armed", dispatch_is_seen.logical_not())
+    circuit.output("dispatch_scanning", cursor_active)
     circuit.output("any_accepted", any_accepted)
-    circuit.output("remaining_snapshot", available)
+    circuit.output("remaining_snapshot", old_available)
     return circuit
 
 
