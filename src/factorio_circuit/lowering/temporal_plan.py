@@ -43,6 +43,7 @@ from factorio_circuit.ir.semantic import (
     VectorScalarOp,
     VectorSelect,
     VectorSignal,
+    VectorValue,
 )
 from factorio_circuit.ir.state import AccumulatorRegister, FreezeRegister, VectorRegisterRead
 from factorio_circuit.lowering.alap import AlapSchedule
@@ -91,6 +92,18 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         self.temporal_optimization = optimization
         self._optimized_semantic_ids = {id(item.semantic) for item in graph.computations}
 
+        # LIVE inputs must be one coherent observation per logical occurrence. CP-SAT chooses the
+        # latest common observation tick (the earliest direct-consumer input). The raw external wire
+        # remains live until that tick; every later use must transport the exact token observed then.
+        self._live_observation_by_semantic: dict[int, int] = {}
+        for observation in optimization.live_source_observations:
+            source = graph.source_by_id(observation.source)
+            if id(source.semantic) in self._live_observation_by_semantic:
+                raise ValueError("one live temporal source received multiple observation phases")
+            self._live_observation_by_semantic[id(source.semantic)] = observation.phase
+        self._coherent_scalar_sources: dict[tuple[int, object], int] = {}
+        self._coherent_vector_sources: dict[int, int] = {}
+
         # Preserve the ordinary ALAP deadlines for nodes outside the first state-cone optimization
         # scope, while overriding every modeled computation with the globally chosen phase.
         scheduled = dict(self.alap_schedule.output_phases)
@@ -121,10 +134,9 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
 
     def realize(self, value: Value) -> RealizedValue:
         if isinstance(value, VectorSignal):
-            # A lane projection is a zero-latency electrical view. Do not inherit the old ALAP
-            # deadline for this view: the newly placed scalar consumer should decide when a live or
-            # stable vector lane is observed. This is particularly important for movement inputs,
-            # which remain resampleable only while they still denote the raw phase-zero source net.
+            # A lane projection is a zero-latency electrical view. The underlying vector source may
+            # nevertheless have one coherent live observation phase; ``delay_to`` recognizes that
+            # source net and prevents independent per-lane resampling after the chosen tick.
             cached = self.memo.get(id(value))
             if cached is not None:
                 return cached
@@ -140,6 +152,13 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
             return result
 
         result = super().realize(value)
+        observation = self._live_observation_by_semantic.get(id(value))
+        if observation is not None:
+            key = (result.net, result.signal)
+            previous = self._coherent_scalar_sources.setdefault(key, observation)
+            if previous != observation:
+                raise ValueError("one physical scalar source has conflicting observation phases")
+
         binding = self._bus_binding_by_semantic.get(id(value))
         if binding is not None:
             _bus, lane = binding
@@ -149,6 +168,15 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
             # producer phase.
             self.memo[id(value)] = result
             self._bus_origin[(result.net, result.signal)] = binding
+        return result
+
+    def realize_vector(self, value: VectorValue) -> RealizedVector:
+        result = super().realize_vector(value)
+        observation = self._live_observation_by_semantic.get(id(value))
+        if observation is not None:
+            previous = self._coherent_vector_sources.setdefault(result.net, observation)
+            if previous != observation:
+                raise ValueError("one physical vector source has conflicting observation phases")
         return result
 
     def _realize_select(self, select: Select) -> RealizedValue:
@@ -260,16 +288,54 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
             raise AssertionError("exact temporal-plan alignment missed the scheduled phase")
         return result
 
+    def _coherent_scalar_observation(self, value: RealizedValue) -> int | None:
+        observation = self._coherent_scalar_sources.get((value.net, value.signal))
+        if observation is not None:
+            return observation
+        return self._coherent_vector_sources.get(value.net)
+
+    def _delay_coherent_live_scalar(
+        self,
+        value: RealizedValue,
+        target_phase: int,
+        observation_phase: int,
+    ) -> RealizedValue:
+        if target_phase < observation_phase:
+            raise ValueError(
+                f"coherent live scalar requested at phase {target_phase} before its solved "
+                f"observation phase {observation_phase}"
+            )
+        observed = RealizedValue(
+            signal=value.signal,
+            net=value.net,
+            phase=observation_phase,
+            clean_single_lane=value.clean_single_lane,
+        )
+        self._remember_scalar(observed, self._point_window(observation_phase))
+        if target_phase == observation_phase:
+            return observed
+
+        previous = self._force_exact_alignment
+        self._force_exact_alignment = True
+        try:
+            return super().delay_to(observed, target_phase)
+        finally:
+            self._force_exact_alignment = previous
+
     def delay_to(self, value: RealizedValue, target_phase: int) -> RealizedValue:
+        coherent_observation = self._coherent_scalar_observation(value)
+        if coherent_observation is not None:
+            return self._delay_coherent_live_scalar(value, target_phase, coherent_observation)
+
         if value.phase > target_phase:
             raise ValueError("cannot delay backwards in time")
         if value.phase == target_phase:
             return value
 
         # Let the established correctness-preserving free cases win first: a held settling value
-        # needs no transport, and an ALAP external Level source can simply be observed at the later
-        # phase. The solver deliberately excludes held-only computations from bus cost for this
-        # reason.
+        # needs no transport. Unplanned ALAP sources retain ordinary resampling behavior for backward
+        # compatibility with manually constructed temporal plans; solver-generated plans populate
+        # the coherent-source maps above and never reach that resampling path.
         window = self._scalar_window(value)
         if (
             not self._force_exact_alignment
@@ -282,6 +348,27 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         if binding is None:
             return super().delay_to(value, target_phase)
         return self._delay_on_bus(value, target_phase, binding)
+
+    def delay_vector_to(self, value: RealizedVector, target_phase: int) -> RealizedVector:
+        observation_phase = self._coherent_vector_sources.get(value.net)
+        if observation_phase is None:
+            return super().delay_vector_to(value, target_phase)
+        if target_phase < observation_phase:
+            raise ValueError(
+                f"coherent live vector requested at phase {target_phase} before its solved "
+                f"observation phase {observation_phase}"
+            )
+        observed = RealizedVector(value.net, observation_phase)
+        self._remember_vector(observed, self._point_window(observation_phase))
+        if target_phase == observation_phase:
+            return observed
+
+        previous = self._force_exact_alignment
+        self._force_exact_alignment = True
+        try:
+            return super().delay_vector_to(observed, target_phase)
+        finally:
+            self._force_exact_alignment = previous
 
     def _delay_on_bus(
         self,
