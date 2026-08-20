@@ -1,13 +1,13 @@
 """Exact temporal placement and scalar delay-bus packing with optional OR-Tools CP-SAT.
 
-This module is intentionally outside the mandatory compiler dependency set.  The temporal
+This module is intentionally outside the mandatory compiler dependency set. The temporal
 hypergraph and cost model are pure Python; callers that want a proof-producing global search can
-install the ``solver`` extra and invoke :func:`optimize_temporal_hypergraph`.
+supply OR-Tools for that invocation and call :func:`optimize_temporal_hypergraph`.
 
-A scalar delay bus is modeled conservatively as one continuous ``Each + 0 -> Each`` pipeline.  A
-lane may join after the bus begins, but once assigned it remains present through the bus end.  Thus a
+A scalar delay bus is modeled conservatively as one continuous ``Each + 0 -> Each`` pipeline. A
+lane may join after the bus begins, but once assigned it remains present through the bus end. Thus a
 bus containing value lifetimes ``[s_i, e_i)`` costs ``max(e_i) - min(s_i)`` physical stages, not the
-size of the union of those intervals.  This matches a realizable Factorio bus where arbitrary lanes
+size of the union of those intervals. This matches a realizable Factorio bus where arbitrary lanes
 cannot disappear between two Each stages without additional filtering hardware.
 """
 
@@ -24,6 +24,7 @@ from .temporal_hypergraph import (
     TemporalHypergraph,
     TemporalPlacement,
     TemporalPlacementError,
+    TemporalSourceMode,
 )
 
 
@@ -69,8 +70,8 @@ def _load_cp_model() -> Any:
         return import_module("ortools.sat.python.cp_model")
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional environment
         raise RuntimeError(
-            "exact temporal optimization requires the optional solver dependency; "
-            "install it with `uv sync --extra solver` or run with `uv run --extra solver ...`"
+            "exact temporal optimization requires OR-Tools for this invocation; run with "
+            "`uv run --with 'ortools>=9.14,<10' ...`"
         ) from exc
 
 
@@ -86,8 +87,8 @@ def optimize_temporal_hypergraph(
     """Minimize total delay combinators for one fixed-period hypergraph.
 
     Computation phases are integer decision variables constrained to their precomputed mobility
-    windows.  Eligible scalar values are partitioned among continuous delay buses.  Non-bus scalar
-    values and whole vectors retain ordinary one-value-per-stage transport cost.  Computation/state
+    windows. Eligible scalar values are partitioned among continuous delay buses. Non-bus scalar
+    values and whole vectors retain ordinary one-value-per-stage transport cost. Computation/state
     entity counts are fixed in this first solver, so minimizing delay stages is exactly the relevant
     variable part of the combinator count.
 
@@ -113,7 +114,11 @@ def optimize_temporal_hypergraph(
         outgoing.setdefault(arc.producer, []).append(arc)
 
     horizon = max(
-        [graph.period, *(item.latest_phase + 1 for item in graph.computations), *(item.phase + 1 for item in graph.sinks)],
+        [
+            graph.period,
+            *(item.latest_phase + 1 for item in graph.computations),
+            *(item.phase + 1 for item in graph.sinks),
+        ],
         default=1,
     )
 
@@ -126,7 +131,7 @@ def optimize_temporal_hypergraph(
         )
 
     # Re-state dependency constraints in the solver even though the mobility windows already encode
-    # their transitive bounds.  This both documents the model and protects future graph builders that
+    # their transitive bounds. This both documents the model and protects future graph builders that
     # may compute looser independent windows.
     for arc in graph.arcs:
         if arc.consumer in computations:
@@ -150,7 +155,11 @@ def optimize_temporal_hypergraph(
         if key in consumer_inputs:
             continue
         if arc.consumer in computations:
-            value = model.NewIntVar(0, horizon, f"input_{arc.producer}_{arc.consumer}_{arc.latency}")
+            value = model.NewIntVar(
+                0,
+                horizon,
+                f"input_{arc.producer}_{arc.consumer}_{arc.latency}",
+            )
             model.Add(value == phases[arc.consumer] - arc.latency)
         else:
             value = model.NewConstant(sinks[arc.consumer].phase)
@@ -177,14 +186,12 @@ def optimize_temporal_hypergraph(
     if bus_candidates and max_buses == 0:
         raise ValueError("max_buses=0 cannot carry delay-bus-eligible values")
 
-    delayed: dict[int, Any] = {}
     assignments: dict[tuple[int, int], Any] = {}
     for candidate_index, item in enumerate(bus_candidates):
         end = end_vars[item.id]
-        flag = model.NewBoolVar(f"delayed_{item.id}")
-        model.Add(end >= phases[item.id] + 1).OnlyEnforceIf(flag)
-        model.Add(end == phases[item.id]).OnlyEnforceIf(flag.Not())
-        delayed[item.id] = flag
+        delayed = model.NewBoolVar(f"delayed_{item.id}")
+        model.Add(end >= phases[item.id] + 1).OnlyEnforceIf(delayed)
+        model.Add(end == phases[item.id]).OnlyEnforceIf(delayed.Not())
 
         row: list[Any] = []
         for bus in range(max_buses):
@@ -195,14 +202,16 @@ def optimize_temporal_hypergraph(
             # greater than i because earlier empty labels are interchangeable.
             if bus > candidate_index:
                 model.Add(assignment == 0)
-        model.Add(sum(row) == flag)
+        model.Add(sum(row) == delayed)
 
     incompatible = {tuple(sorted(pair)) for pair in incompatible_pairs}
     if any(left == right for left, right in incompatible):
         raise ValueError("a delay-bus incompatibility pair must contain two distinct producers")
     unknown = {item for pair in incompatible for item in pair} - candidate_ids
     if unknown:
-        raise ValueError(f"delay-bus incompatibility references unknown candidates: {sorted(unknown)}")
+        raise ValueError(
+            f"delay-bus incompatibility references unknown candidates: {sorted(unknown)}"
+        )
 
     bus_active: list[Any] = []
     bus_starts: list[Any] = []
@@ -221,8 +230,16 @@ def optimize_temporal_hypergraph(
         end_candidates: list[Any] = []
         for item in bus_candidates:
             assignment = assignments[(item.id, bus)]
-            start_candidate = model.NewIntVar(0, horizon, f"bus_{bus}_start_value_{item.id}")
-            end_candidate = model.NewIntVar(0, horizon, f"bus_{bus}_end_value_{item.id}")
+            start_candidate = model.NewIntVar(
+                0,
+                horizon,
+                f"bus_{bus}_start_value_{item.id}",
+            )
+            end_candidate = model.NewIntVar(
+                0,
+                horizon,
+                f"bus_{bus}_end_value_{item.id}",
+            )
             model.Add(start_candidate == phases[item.id]).OnlyEnforceIf(assignment)
             model.Add(start_candidate == horizon).OnlyEnforceIf(assignment.Not())
             model.Add(end_candidate == end_vars[item.id]).OnlyEnforceIf(assignment)
@@ -269,11 +286,11 @@ def optimize_temporal_hypergraph(
         else:
             vector_terms.append(length)
 
-    # Exact leaves retain the historical exact-transport cost.  LIVE/STABLE leaves can be observed
+    # Exact leaves retain the historical exact-transport cost. LIVE/STABLE leaves can be observed
     # directly at their consumer tick inside the current occurrence and therefore add no transport
     # objective here.
     for source in graph.sources:
-        if source.mode.value != "exact":
+        if source.mode is not TemporalSourceMode.EXACT:
             continue
         end = end_vars.get(source.id)
         if end is None:
@@ -321,7 +338,16 @@ def optimize_temporal_hypergraph(
                 index=bus,
                 start_phase=int(solver.Value(bus_starts[bus])),
                 end_phase=int(solver.Value(bus_ends[bus])),
-                lanes=tuple(sorted(lanes, key=lambda lane: (lane.start_phase, lane.end_phase, lane.producer))),
+                lanes=tuple(
+                    sorted(
+                        lanes,
+                        key=lambda lane: (
+                            lane.start_phase,
+                            lane.end_phase,
+                            lane.producer,
+                        ),
+                    )
+                ),
             )
         )
 
@@ -332,7 +358,12 @@ def optimize_temporal_hypergraph(
     return TemporalOptimizationResult(
         status=status,
         placement=placement,
-        buses=tuple(sorted(buses, key=lambda item: (item.start_phase, item.end_phase, item.index))),
+        buses=tuple(
+            sorted(
+                buses,
+                key=lambda item: (item.start_phase, item.end_phase, item.index),
+            )
+        ),
         bus_stages=bus_stage_count,
         ordinary_scalar_delays=ordinary_scalar,
         vector_delays=vector,
@@ -342,7 +373,11 @@ def optimize_temporal_hypergraph(
     )
 
 
-def format_temporal_optimization(result: TemporalOptimizationResult, *, top_buses: int = 20) -> str:
+def format_temporal_optimization(
+    result: TemporalOptimizationResult,
+    *,
+    top_buses: int = 20,
+) -> str:
     """Render a compact exact-search report."""
 
     lines = [
@@ -353,7 +388,8 @@ def format_temporal_optimization(result: TemporalOptimizationResult, *, top_buse
             f"wall={result.wall_time_seconds:.3f}s"
         ),
         (
-            f"  delay cost: buses={result.bus_stages}; ordinary_scalar={result.ordinary_scalar_delays}; "
+            f"  delay cost: buses={result.bus_stages}; "
+            f"ordinary_scalar={result.ordinary_scalar_delays}; "
             f"vector={result.vector_delays}; bus_count={len(result.buses)}"
         ),
         f"  buses (top {min(top_buses, len(result.buses))} by stage count):",
