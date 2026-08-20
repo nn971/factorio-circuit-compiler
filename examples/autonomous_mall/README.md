@@ -1,18 +1,25 @@
-# Autonomous mall reference model
+# Autonomous mall prototype
 
 This package is deliberately example-specific. It lives under `examples/` rather than
 `src/factorio_circuit/` so mall economics and scheduling policy do not become compiler API.
 
-The current slice pins down the controller-independent behavior before building the physical circuit:
+The branch now contains two deliberately separate layers:
+
+1. an exact Python reference model for raw-material-efficient quality planning;
+2. a compiled, manually wired transactional controller for testing the physical worker protocol in
+   Factorio before the final circuit-side planner is implemented.
+
+The current slice includes:
 
 - exact-quality commodities `(item, quality)`;
-- a runtime-configured raw-material boundary by base item name;
+- a runtime-configured raw-material boundary by base item name in the reference planner;
 - no-fluid item recipes lowered into separate productivity, quality, and recycler routes;
 - global expected material optimization across all requested targets and stocked intermediates;
 - physically distinct productivity / quality / recycler worker pools;
 - atomic input reservations across multiple workers;
-- one outstanding stochastic job per quality campaign, while independent campaigns may run in parallel;
-- exact expected-value helpers for Factorio's quality roll and 25% recycler return.
+- exact expected-value helpers for Factorio's quality roll and 25% recycler return;
+- a five-worker compiled transaction controller using roboport stock, requester-chest demands, fixed
+  P/Q/R worker roles, one-shot recipe control, and durable external completion latches.
 
 ## Economic convention
 
@@ -33,7 +40,7 @@ produces useful coproducts, when several final demands share intermediate stock,
 loops interact. The optimum is global within the supplied expected-route model rather than greedy per
 requested item.
 
-The raw boundary is intentionally runtime policy. A future compiled controller can read the mask from a
+The raw boundary is intentionally runtime policy. A future compiled planner can read the mask from a
 constant combinator; the reference planner simply accepts it as a Python set.
 
 ## Routes and worker roles
@@ -64,26 +71,45 @@ No worker changes module role dynamically.
 ## Expected planning versus physical jobs
 
 The LP is the economic reference model. Its route usage can be fractional and describes expected material
-flow. The physical controller must execute integer craft/recycle attempts and observe actual outcomes.
-For stochastic quality work, the intended rule is one atomic attempt, observe the real quality-qualified
-output, update stock, then replan. This prevents predicted quality outcomes from becoming fictitious
-inventory.
+flow. The physical controller executes integer craft/recycle attempts and observes real inventory.
+Stochastic work should be issued one attempt at a time, followed by replanning, so expected quality output
+never becomes fictitious stock.
 
-The scheduler model therefore uses `Job` for one atomic physical attempt rather than directly executing a
-fractional LP route count.
-
-## Oscillation policy
-
-Two mechanisms are explicit in the reference scheduler:
-
-1. **Reservation:** once a job is assigned, its whole ingredient vector is unavailable to every other
-   worker immediately.
-2. **Campaign lock:** only one stochastic job for a given quality campaign may be outstanding. A second
-   quality assembler can still run an unrelated campaign.
-
-The eventual in-game worker protocol should retain a reservation until the worker transaction has
-reported its actual outputs. Roboport stock changes during robot flight therefore do not create duplicate
+The pure-Python `Scheduler` models reservation/campaign behavior. The compiled
+`manual_controller.py` tests the corresponding physical transaction discipline with manually supplied
 jobs.
+
+## Manual physical controller
+
+Generate the five-worker controller with:
+
+```bash
+uv run python -m examples.autonomous_mall.manual_controller \
+  > autonomous-mall-manual-blueprint.txt
+```
+
+The script prints a concrete signal/wire map on stderr and the importable Factorio blueprint string on
+stdout. External machines/chests are intentionally not generated yet.
+
+See [`manual_in_game.md`](manual_in_game.md) for the full wiring and acceptance procedure.
+
+The physical test pool is:
+
+```text
+p0, p1  fixed productivity-module assemblers
+q0, q1  fixed quality-module assemblers
+r0      recycler with quality modules
+```
+
+Scheduling uses conservative epochs. A dispatch is accepted only when every worker and completion latch
+is idle. Candidate jobs are considered in the order above against one roboport stock snapshot, and each
+accepted request is subtracted before the next candidate is considered. The batch then closes until every
+accepted transaction finishes. Robot-flight stock changes therefore cannot create a second allocation in
+that epoch.
+
+The controller intentionally expects each machine's one-tick recipe-finished signal to be converted to a
+persistent external latch. The controller emits a per-worker acknowledgement that clears the latch. This
+keeps the first in-game test independent of a final external-device Event protocol.
 
 ## Quality mechanics
 
@@ -95,12 +121,15 @@ jobs.
 - recycler expected return of exactly 25% of solid recipe ingredients per recycled product;
 - quality upgrading of recycler outputs.
 
-## What remains for the physical mall
+## Remaining controller milestone
 
-This branch intentionally stops before compiling the whole controller. The next layer should translate
-actual game recipe metadata into `ItemRecipe` records, enumerate the available route set for the installed
-module configuration, and implement the transactional requester-chest worker protocol with circuit Events.
-The economic and scheduling behavior in this package is the reference contract for that circuit.
+The transaction layer is now physically compilable, but job selection is still manual in the in-game
+prototype. The missing part is a circuit realization of the economic decision layer: translate actual game
+recipe metadata into the route ROM, apply the runtime raw-material mask and live inventory, choose the
+material-efficient next batch, and drive the existing transaction ports automatically.
+
+The exact LP remains the oracle against which that circuit algorithm should be tested. A local
+potential/equilibrium algorithm is acceptable only when its deviations from the LP optimum are understood.
 
 ## Validation
 
@@ -116,4 +145,5 @@ Focused tests under `tests/examples/autonomous_mall/` cover:
 - reservation conflicts across multiple workers;
 - worker-pool separation;
 - stochastic campaign locking and independent parallel quality campaigns;
-- committing actual stochastic output before reopening a campaign.
+- committing actual stochastic output before reopening a campaign;
+- the compiled manual controller's input/state/output contract.
