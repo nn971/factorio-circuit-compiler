@@ -40,8 +40,7 @@ uv run python -m examples.event_basics occurrence_step
 ```
 
 Checks `source.step(1)`. The source events have unequal physical spacing; the first occurrence is
-suppressed and the later occurrences survive unchanged. `.step(1)` counts occurrences, not game
-ticks.
+suppressed and the later occurrences survive unchanged. `.step(1)` counts occurrences, not game ticks.
 
 ## 4. Derived subclock
 
@@ -112,13 +111,15 @@ assumes the earlier contracts.
 ## Application prototype: autonomous mall
 
 The larger autonomous-mall work lives in `examples/autonomous_mall/`. Its Python reference model solves
-raw-material-efficient quality planning, while `manual_controller.py` compiles the first manually wired
-five-worker transaction controller:
+raw-material-efficient quality planning, while `manual_controller.py` compiles four small physical
+templates that are composed by hand into the five-worker test rig:
 
 ```bash
 uv run python -m examples.autonomous_mall.manual_controller \
   > autonomous-mall-manual-blueprint.txt
 ```
 
-See `examples/autonomous_mall/manual_in_game.md` for the roboport, requester-chest, assembler, recycler,
-and completion-latch wiring procedure and the staged in-game acceptance tests.
+The generated blueprint book contains a stock snapshot, one reservation-cell template, one
+assembler-worker template, and one recycler-worker template. Paste the reservation cell five times and
+the assembler worker four times. See `examples/autonomous_mall/manual_in_game.md` for the exact chain,
+roboport/requester wiring, completion latch, and staged in-game acceptance tests.
