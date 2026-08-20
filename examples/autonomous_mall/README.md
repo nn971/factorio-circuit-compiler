@@ -19,7 +19,8 @@ The current slice includes:
 - atomic input reservations across multiple workers;
 - exact expected-value helpers for Factorio's quality roll and 25% recycler return;
 - a five-worker compiled transaction controller using roboport stock, requester-chest demands, fixed
-  P/Q/R worker roles, one-shot recipe control, and durable external completion latches.
+  P/Q/R worker roles, ingredient-starved one-shot execution, persistent assembler recipes, and durable
+  external completion latches.
 
 ## Economic convention
 
@@ -107,9 +108,15 @@ accepted request is subtracted before the next candidate is considered. The batc
 accepted transaction finishes. Robot-flight stock changes therefore cannot create a second allocation in
 that epoch.
 
-The controller intentionally expects each machine's one-tick recipe-finished signal to be converted to a
-persistent external latch. The controller emits a per-worker acknowledgement that clears the latch. This
-keeps the first in-game test independent of a final external-device Event protocol.
+For assembler workers, the selected recipe remains latched between transactions. One-shot execution is
+instead enforced by a stack-size-1 input inserter gated by both the controller's `<worker>_input_enable`
+and the machine's local Read-working signal. This lets a productivity worker retain partial productivity
+bar progress across repeated jobs of the same recipe. Recipe changes are therefore economically meaningful
+and should eventually carry a switching cost/worker-affinity term in the planner.
+
+Each machine's one-tick recipe-finished signal is converted to a persistent external latch. The controller
+emits a per-worker acknowledgement that clears the latch. This keeps the first in-game test independent of
+a final external-device Event protocol and lets zero-output recycler attempts complete reliably.
 
 ## Quality mechanics
 
@@ -146,4 +153,4 @@ Focused tests under `tests/examples/autonomous_mall/` cover:
 - worker-pool separation;
 - stochastic campaign locking and independent parallel quality campaigns;
 - committing actual stochastic output before reopening a campaign;
-- the compiled manual controller's input/state/output contract.
+- the compiled manual controller's input/state/output contract, including the per-worker input gate.
