@@ -74,6 +74,13 @@ from .temporal_optimize import (
     format_temporal_optimization,
     optimize_temporal_hypergraph,
 )
+from .transport_optimize import (
+    SharedTransportBus,
+    SharedTransportLane,
+    TransportOptimizationResult,
+    format_transport_optimization,
+    optimize_exact_transports,
+)
 
 __all__ = [
     "AbstractPhysicalCensus",
@@ -93,6 +100,8 @@ __all__ = [
     "PhaseDelayCensus",
     "PhaseDelayComponent",
     "RegisterTiming",
+    "SharedTransportBus",
+    "SharedTransportLane",
     "StateOrderError",
     "StateReadTiming",
     "StateTimingError",
@@ -114,6 +123,7 @@ __all__ = [
     "TemporalSourceMode",
     "TemporalTransportCost",
     "TransportInterval",
+    "TransportOptimizationResult",
     "UnsupportedClockCrossing",
     "analyze_causality",
     "analyze_clocked_timing",
@@ -131,8 +141,10 @@ __all__ = [
     "format_phase_delay_census",
     "format_temporal_hypergraph",
     "format_temporal_optimization",
+    "format_transport_optimization",
     "has_nonpositive_cycle",
     "infer_commit_offset",
+    "optimize_exact_transports",
     "optimize_temporal_hypergraph",
     "periodic_causality_graph",
     "state_read_occurrences",
