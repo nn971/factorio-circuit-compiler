@@ -3,10 +3,10 @@
 Examples::
 
     uv run python -m benchmarks.snake.temporal_optimize
-    uv run --extra solver python -m benchmarks.snake.temporal_optimize --solve
+    uv run --with 'ortools>=9.14,<10' python -m benchmarks.snake.temporal_optimize --solve
 
 The first command prints the current abstract-physical delay census plus ASAP/ALAP hypergraph
-transport estimates.  ``--solve`` invokes the optional OR-Tools CP-SAT backend and searches jointly
+transport estimates. ``--solve`` invokes the optional OR-Tools CP-SAT backend and searches jointly
 for computation phases and continuous scalar delay-bus groups at the already-inferred Snake period.
 It does not yet rewrite the blueprint; this is the proof/measurement stage before physical bus
 realization is connected to lowering.
@@ -98,7 +98,7 @@ def main() -> None:
 
     if not args.solve:
         print(
-            "\nexact search not requested; rerun with `uv run --extra solver "
+            "\nexact search not requested; rerun with `uv run --with 'ortools>=9.14,<10' "
             "python -m benchmarks.snake.temporal_optimize --solve`",
             file=sys.stderr,
         )
