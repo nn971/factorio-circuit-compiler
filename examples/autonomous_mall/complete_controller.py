@@ -31,21 +31,16 @@ WORKING = SignalId("virtual", "signal-W")
 FINISHED = SignalId("virtual", "signal-F")
 EACH = SignalId("virtual", "signal-each")
 
-# Final Factorio prototype names. device_tiles.py intentionally remains a composition layer; these
-# aliases are normalized here until that layer grows a first-class entity-prototype abstraction.
 _PROTOTYPE_NAME_FIXES = {
     "logistic-chest-requester": "requester-chest",
     "logistic-chest-passive-provider": "passive-provider-chest",
     "stack-inserter": "bulk-inserter",
 }
 
-# Complete cells need their configuration ports physically close to the machine bay. The semantic
-# circuits are unchanged; only the public anchors differ from the controller-only diagnostic tiles.
+# Complete cells place configuration ports next to the machine bay. The transaction circuit itself is
+# unchanged; only these complete-cell physical interfaces differ from the controller-only prototype.
 COMPLETE_HEAD_INTERFACE = ModuleInterface(
-    inputs={
-        "stock": (8.0, 40.0),
-        "control": (4.0, 40.0),
-    },
+    inputs={"stock": (8.0, 40.0), "control": (4.0, 40.0)},
     outputs={
         "available_out": (40.0, 6.0),
         "control_out": (40.0, 10.0),
@@ -117,13 +112,7 @@ COMPLETE_RECYCLER_DOCKS = (
 
 def _compile_complete_tiles() -> tuple[CompiledTile, CompiledTile, CompiledTile]:
     specs: tuple[
-        tuple[
-            str,
-            Callable[[], object],
-            ModuleInterface,
-            tuple[DockSpec, ...],
-        ],
-        ...,
+        tuple[str, Callable[[], object], ModuleInterface, tuple[DockSpec, ...]], ...
     ] = (
         ("HEAD tile", build_head_tile, COMPLETE_HEAD_INTERFACE, COMPLETE_HEAD_DOCKS),
         (
@@ -272,6 +261,25 @@ def _add_wire(
     wires.add(_normalized_wire(left, left_connector, right, right_connector))
 
 
+def _remove_contents_subtraction(
+    entities: list[dict[str, object]],
+    wires: set[tuple[int, int, int, int]],
+    machine: dict[str, object],
+) -> None:
+    """Turn the old request-minus-machine-contents feeder into a plain positive-request filter."""
+
+    raw_relay = _nearest_device_entity(entities, machine, "machine status relay")
+    negate = _nearest_device_entity(entities, machine, "negate machine contents")
+    wires.discard(
+        _normalized_wire(
+            int(raw_relay["entity_number"]),
+            1,
+            int(negate["entity_number"]),
+            1,
+        )
+    )
+
+
 def _add_auto_ingredient_reader(
     entities: list[dict[str, object]],
     wires: set[tuple[int, int, int, int]],
@@ -283,8 +291,6 @@ def _add_auto_ingredient_reader(
 
     auto_dock = _nearest_device_entity(entities, machine, "DOCK AUTO ingredients — DO NOT EDIT")
     raw_relay = _nearest_device_entity(entities, machine, "machine status relay")
-    request_relay = _nearest_device_entity(entities, machine, "requester demand relay")
-    feeder = _nearest_device_entity(entities, machine, "MALL DEVICE feeder")
     recipe_command = _nearest_device_entity(entities, machine, "DOCK RECIPE COMMAND — EDIT HERE")
     recipe_bridge = _nearest_device_entity(entities, machine, "recipe red->green isolation")
 
@@ -340,19 +346,9 @@ def _add_auto_ingredient_reader(
         ]
     )
 
-    # Recipe command is live before dispatch, so the assembler can expose Read ingredients in time
-    # for reservation. A relay keeps both circuit-wire hops within conservative combinator reach.
+    # Keep the selected recipe live before dispatch so Read ingredients is available for reservation.
     _add_wire(wires, int(recipe_command["entity_number"]), 1, recipe_relay, 1)
     _add_wire(wires, recipe_relay, 1, int(recipe_bridge["entity_number"]), 1)
-
-    # Request exactly one recipe worth of ingredients. requester_demand is START-gated already.
-    _add_wire(
-        wires,
-        int(request_relay["entity_number"]),
-        1,
-        int(feeder["entity_number"]),
-        1,
-    )
 
     # Read ingredients shares the machine output with W/F. Copy the vector and cancel those two
     # known virtual lanes before feeding the job_request reservation input.
@@ -394,7 +390,7 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
     }
     next_id = max((int(entity["entity_number"]) for entity in entities), default=0) + 1
 
-    # Inserter direction is the pickup-facing direction. Left->right transfer picks up from west.
+    # Inserter direction is pickup-facing. Left->right transfer picks up from west (12).
     assemblers = [entity for entity in entities if entity.get("name") == "assembling-machine-3"]
     for machine in assemblers:
         feeder = _nearest_device_entity(entities, machine, "MALL DEVICE feeder")
@@ -410,6 +406,7 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
         behavior.pop("include_in_crafting", None)
         behavior["read_ingredients"] = True
 
+        _remove_contents_subtraction(entities, wires, machine)
         next_id = _add_auto_ingredient_reader(
             entities,
             wires,
@@ -417,7 +414,7 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
             next_id=next_id,
         )
 
-    # Recycler is 2x4 and north-facing. Its feeder picks up from the south and drops north. The
+    # Recycler is 2x4 and north-facing. Its feeder picks up from the south (8) and drops north; the
     # recycler itself ejects directly into the provider chest on its north output side.
     recycler_output_inserters: set[int] = set()
     for machine in [entity for entity in entities if entity.get("name") == "recycler"]:
@@ -444,6 +441,7 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
             behavior["read_contents"] = False
             behavior.pop("include_in_crafting", None)
             behavior.pop("read_ingredients", None)
+        _remove_contents_subtraction(entities, wires, machine)
 
     if recycler_output_inserters:
         blueprint["entities"] = [
