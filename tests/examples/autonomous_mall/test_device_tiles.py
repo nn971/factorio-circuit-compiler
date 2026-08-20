@@ -96,11 +96,12 @@ def test_complete_worker_roles_and_machine_controls(complete_book) -> None:
         assert names["passive-provider-chest"] == 1
         assert names["logistic-chest-requester"] == 0
         assert names["logistic-chest-passive-provider"] == 0
+        assert names["stack-inserter"] == 0
         _assert_wire_reach(blueprint)
 
-    assert Counter(entity["name"] for entity in _entities(productivity))["stack-inserter"] == 2
-    assert Counter(entity["name"] for entity in _entities(quality))["stack-inserter"] == 2
-    assert Counter(entity["name"] for entity in _entities(recycler))["stack-inserter"] == 1
+    assert Counter(entity["name"] for entity in _entities(productivity))["bulk-inserter"] == 2
+    assert Counter(entity["name"] for entity in _entities(quality))["bulk-inserter"] == 2
+    assert Counter(entity["name"] for entity in _entities(recycler))["bulk-inserter"] == 1
 
     p_machine = _one(_entities(productivity), "assembling-machine-3")
     q_machine = _one(_entities(quality), "assembling-machine-3")
@@ -142,8 +143,10 @@ def test_assembler_and_recycler_use_different_item_flow_geometry(complete_book) 
     p_machine = _one(p_entities, "assembling-machine-3")
     p_feeder = _described(p_entities, "MALL DEVICE feeder")[0]
     p_output = _described(p_entities, "MALL DEVICE output inserter")[0]
-    assert p_feeder["direction"] == 2
-    assert p_output["direction"] == 2
+    assert p_feeder["name"] == "bulk-inserter"
+    assert p_output["name"] == "bulk-inserter"
+    assert p_feeder["direction"] == 4
+    assert p_output["direction"] == 4
 
     r_entities = _entities(recycler)
     r_machine = _one(r_entities, "recycler")
@@ -156,6 +159,7 @@ def test_assembler_and_recycler_use_different_item_flow_geometry(complete_book) 
     my = float(r_machine["position"]["y"])
     assert (mx, my) == (17.0, 59.0)
     assert r_machine["direction"] == 0
+    assert r_feeder["name"] == "bulk-inserter"
     assert r_feeder["position"] == {"x": 16.5, "y": 61.5}
     assert r_feeder["direction"] == 0
     assert r_requester["position"] == {"x": 16.5, "y": 62.5}
@@ -174,6 +178,7 @@ def test_complete_worker_has_feeder_and_completion_latch(complete_book) -> None:
         for entity in entities
         if str(entity.get("player_description", "")).startswith("MALL DEVICE feeder")
     )
+    assert feeder["name"] == "bulk-inserter"
     assert feeder["override_stack_size"] == 1
     behavior = feeder["control_behavior"]
     assert isinstance(behavior, dict)
@@ -207,7 +212,8 @@ def test_complete_row_has_five_devices_and_shared_seam_docks(complete_book) -> N
     assert names["recycler"] == 1
     assert names["requester-chest"] == 5
     assert names["passive-provider-chest"] == 5
-    assert names["stack-inserter"] == 9
+    assert names["bulk-inserter"] == 9
+    assert names["stack-inserter"] == 0
     assert names["logistic-chest-requester"] == 0
     assert names["logistic-chest-passive-provider"] == 0
 
