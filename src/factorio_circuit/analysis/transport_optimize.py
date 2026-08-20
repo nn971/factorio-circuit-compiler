@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any
 
+from factorio_circuit.ir.semantic import PayloadShape
 from factorio_circuit.target.factorio.signals import DEFAULT_VIRTUAL_SIGNAL_POOL
 
 from .temporal_alignment import ExactTransportDemand, TemporalAlignmentAnalysis
@@ -33,6 +34,9 @@ from .temporal_hypergraph import TemporalPlacementError
 
 @dataclass(frozen=True, slots=True)
 class SharedTransportLane:
+    """One unique abstract lane instance assigned to a shared transport carrier."""
+
+    lane_id: int
     producer: int
     label: str
     start_phase: int
@@ -84,7 +88,6 @@ class TransportOptimizationResult:
         return self.status.upper() == "OPTIMAL"
 
 
-
 def _load_cp_model() -> Any:
     try:
         return import_module("ortools.sat.python.cp_model")
@@ -95,14 +98,13 @@ def _load_cp_model() -> Any:
         ) from exc
 
 
-
 def _all_private_result(
     transports: tuple[ExactTransportDemand, ...],
     *,
     status: str = "OPTIMAL",
 ) -> TransportOptimizationResult:
-    scalar = sum(item.length for item in transports if item.shape.value == "scalar")
-    vector = sum(item.length for item in transports if item.shape.value == "vector")
+    scalar = sum(item.length for item in transports if item.shape is PayloadShape.SCALAR)
+    vector = sum(item.length for item in transports if item.shape is PayloadShape.VECTOR)
     return TransportOptimizationResult(
         status=status,
         buses=(),
@@ -115,7 +117,6 @@ def _all_private_result(
         best_bound=scalar + vector,
         wall_time_seconds=0.0,
     )
-
 
 
 def optimize_exact_transports(
@@ -185,9 +186,10 @@ def optimize_exact_transports(
             assignment = model.NewBoolVar(f"bus_{bus}_producer_{item.producer}")
             assignments[(item.producer, bus)] = assignment
             row.append(assignment)
-            # Deterministic symmetry reduction: the nth candidate never opens a bus farther right
-            # than the candidate pairs before it could possibly populate.
-            if bus > candidate_index // 2:
+            # Deterministic symmetry reduction only: after bus labels are ordered, candidate i can
+            # never need a bus index greater than i.  Stronger pairing assumptions can remove real
+            # optima when overlapping intervals favor crossed groups.
+            if bus > candidate_index:
                 model.Add(assignment == 0)
         model.Add(private + sum(row) == 1)
 
@@ -239,9 +241,11 @@ def optimize_exact_transports(
     fixed_scalar = sum(
         item.length
         for item in transports
-        if item.shape.value == "scalar" and item.producer not in candidate_ids
+        if item.shape is PayloadShape.SCALAR and item.producer not in candidate_ids
     )
-    fixed_vector = sum(item.length for item in transports if item.shape.value == "vector")
+    fixed_vector = sum(
+        item.length for item in transports if item.shape is PayloadShape.VECTOR
+    )
 
     private_terms = [item.length * private_vars[item.producer] for item in candidates]
     interface_terms = [
@@ -262,6 +266,7 @@ def optimize_exact_transports(
 
     buses: list[SharedTransportBus] = []
     assigned_to_bus: set[int] = set()
+    next_lane_id = 1
     for bus in range(max_buses):
         if not solver.BooleanValue(bus_active[bus]):
             continue
@@ -271,6 +276,7 @@ def optimize_exact_transports(
                 assigned_to_bus.add(item.producer)
                 lanes.append(
                     SharedTransportLane(
+                        lane_id=next_lane_id,
                         producer=item.producer,
                         label=item.label,
                         start_phase=item.start_phase,
@@ -278,6 +284,7 @@ def optimize_exact_transports(
                         tap_phases=item.tap_phases,
                     )
                 )
+                next_lane_id += 1
         buses.append(
             SharedTransportBus(
                 index=bus,
@@ -294,8 +301,10 @@ def optimize_exact_transports(
     bus_interfaces = sum(
         lane.interface_combinators for bus in buses for lane in bus.lanes
     )
-    private_scalar = sum(item.length for item in private if item.shape.value == "scalar")
-    vector = sum(item.length for item in private if item.shape.value == "vector")
+    private_scalar = sum(
+        item.length for item in private if item.shape is PayloadShape.SCALAR
+    )
+    vector = sum(item.length for item in private if item.shape is PayloadShape.VECTOR)
     objective = bus_middle + bus_interfaces + private_scalar + vector
     fixed = fixed_scalar + fixed_vector
     variable_bound = int(round(solver.BestObjectiveBound()))
@@ -312,7 +321,6 @@ def optimize_exact_transports(
         best_bound=variable_bound + fixed,
         wall_time_seconds=float(solver.WallTime()),
     )
-
 
 
 def format_transport_optimization(result: TransportOptimizationResult) -> str:
