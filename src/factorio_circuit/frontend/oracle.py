@@ -14,6 +14,7 @@ from .vector_circuit import Input, SignalsInput
 if TYPE_CHECKING:
     from factorio_circuit.compiler import CompilationResult
     from factorio_circuit.oracles import OracleProvider
+    from factorio_circuit.synthesis.placement import PlacementOptions, Position
 
 
 class Oracle(Input):
@@ -65,6 +66,8 @@ class Circuit(_Circuit):
         *,
         optimize: bool = True,
         blueprint_safe_wire_span: float | None = None,
+        placement: PlacementOptions | None = None,
+        physical_anchors: Mapping[str, Position] | None = None,
         oracle_providers: Mapping[str, OracleProvider] | None = None,
     ) -> CompilationResult:
         """Compile this circuit with explicit physical providers for every oracle."""
@@ -78,5 +81,7 @@ class Circuit(_Circuit):
             self,
             optimize=optimize,
             blueprint_safe_wire_span=safe_span,
+            placement=placement,
+            physical_anchors=physical_anchors,
             oracle_providers=oracle_providers,
         )

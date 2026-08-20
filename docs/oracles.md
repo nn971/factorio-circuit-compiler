@@ -70,6 +70,53 @@ ordinary combinators rather than appended to a finished layout.
 probes, tests, and fixed target observations. They also serve as examples for implementing new
 providers.
 
+## Provider placement contracts
+
+Provider implementation and provider location are separate concerns. A selector combinator can be
+placed freely, while a stock reader, temperature sensor, assembler reader, train stop, or generated
+sensor construction may have to remain at a world-relative site.
+
+Every provider entity may therefore declare either:
+
+```python
+FreePlacement()
+AnchoredPlacement("mall-roboport")
+```
+
+Ordinary compiler-generated entities remain implicitly free. Provider entities record their
+placement constraint in `AbstractPhysicalCircuit.placement_constraints`, so the requirement survives
+abstract lowering without introducing coordinates into deterministic semantics.
+
+An anchored provider stores only a symbolic site name during lowering:
+
+```python
+provider = ScalarConstantOracleProvider(
+    42,
+    placement=AnchoredPlacement("furnace-temperature-sensor"),
+)
+```
+
+A final blueprint resolves that site through deployment configuration:
+
+```python
+c.compile(
+    oracle_providers={"temperature": provider},
+    physical_anchors={
+        "furnace-temperature-sensor": (120.0, -36.0),
+    },
+)
+```
+
+`lower_to_abstract_physical(...)` intentionally permits unresolved symbolic anchors. Final physical
+placement does not: every `ANCHORED` entity must have a coordinate before placement/routing begins.
+Low-level entity-id anchors in `PlacementOptions.anchors` may coexist with symbolic anchors only when
+they resolve to the same position.
+
+Placement is attached per physical entity rather than per oracle provider. A future multi-entity
+provider can therefore anchor only its world-facing sensor while leaving helper combinators free for
+the net-aware placer to optimize around the fixed site. This is the intended model for assemblers,
+roboports, train stops, and larger generated devices.
+
 The initial provider context exposes the oracle output net. Providers that consume deterministic
 semantic expressions (for example random selection from a computed free-pixel mask) will extend the
 same interface with named provider-input nets; nondeterministic behavior itself remains outside the

@@ -1,5 +1,6 @@
 """Whole-vector physical synthesis extension."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -10,7 +11,8 @@ from factorio_circuit.lowering.vector_unary import VECTOR_EACH_PLACEHOLDER
 from factorio_circuit.progress import ProgressCallback, report_progress
 from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
 from factorio_circuit.synthesis.physical import PhysicalSynthesizer
-from factorio_circuit.synthesis.placement import PlacementOptions, plan_physical_circuit
+from factorio_circuit.synthesis.placement import PlacementOptions, Position, plan_physical_circuit
+from factorio_circuit.synthesis.placement_constraints import resolve_placement_constraints
 from factorio_circuit.synthesis.safe_crossbar import build_safe_crossbar_layout
 from factorio_circuit.synthesis.safe_folded_crossbar import build_safe_folded_crossbar_layout
 
@@ -18,7 +20,7 @@ from factorio_circuit.synthesis.safe_folded_crossbar import build_safe_folded_cr
 def _placement_attempt_count(options: PlacementOptions) -> int:
     """Return deterministic synthesis attempts for the requested placement policy."""
 
-    # Row placement is invariant under target-fill/corridor retry parameters.  Greedy net-aware
+    # Row placement is invariant under target-fill/corridor retry parameters. Greedy net-aware
     # placement (iterations=0), however, *does* change when the candidate grid is made
     # sparser, so it
     # should retain deterministic retries instead of being forced to a single attempt.
@@ -28,8 +30,8 @@ def _placement_attempt_count(options: PlacementOptions) -> int:
 def _placement_attempt_options(options: PlacementOptions, restart: int) -> PlacementOptions:
     """Make later deterministic attempts progressively easier to route.
 
-    Lower target fill supplies more unused grid slots.  When routing corridors are enabled, widen
-    them by the inverse factor as well.  This deliberately spends area after a routing failure
+    Lower target fill supplies more unused grid slots. When routing corridors are enabled, widen
+    them by the inverse factor as well. This deliberately spends area after a routing failure
     rather
     than repeating nearly the same hostile geometry.
     """
@@ -50,6 +52,7 @@ def _placement_attempt_options(options: PlacementOptions, restart: int) -> Place
 @dataclass(slots=True)
 class VectorPhysicalSynthesizer(PhysicalSynthesizer):
     progress: ProgressCallback | None = None
+    anchor_positions: Mapping[str, Position] | None = None
 
     def synthesize(self) -> Layout:
         report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
@@ -65,7 +68,11 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
         report_progress(self.progress, "synthesis", detail="materializing physical combinators")
         physical = self._materialize_circuit(signal_allocation, net_colors)
 
-        selected = self.placement_options or PlacementOptions()
+        selected = resolve_placement_constraints(
+            self.circuit,
+            self.placement_options or PlacementOptions(),
+            self.anchor_positions,
+        )
         strategy = str(selected.strategy)
         if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
             if selected.anchors:
@@ -230,6 +237,7 @@ def synthesize_vector_layout(
     *,
     safe_wire_span: float,
     placement: PlacementOptions | None = None,
+    anchor_positions: Mapping[str, Position] | None = None,
     progress: ProgressCallback | None = None,
 ) -> Layout:
     return VectorPhysicalSynthesizer(
@@ -237,4 +245,5 @@ def synthesize_vector_layout(
         safe_wire_span=safe_wire_span,
         placement_options=placement,
         progress=progress,
+        anchor_positions=anchor_positions,
     ).synthesize()

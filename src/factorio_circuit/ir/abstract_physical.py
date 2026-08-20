@@ -31,6 +31,49 @@ class SignalDomain(StrEnum):
     FLUID = "fluid"
 
 
+class EntityPlacementMode(StrEnum):
+    """Spatial freedom carried by one abstract physical entity."""
+
+    FREE = "free"
+    ANCHORED = "anchored"
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class PhysicalAnchor:
+    """Symbolic deployment site resolved only when final placement is requested."""
+
+    name: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError("physical anchor name must be non-empty")
+
+
+@dataclass(frozen=True, slots=True)
+class EntityPlacementConstraint:
+    """Placement requirement for one abstract physical entity.
+
+    Unconstrained compiler entities simply omit this record. Providers may emit an explicit
+    ``FREE`` record for clarity, while ``ANCHORED`` entities carry a symbolic site name that is
+    resolved by deployment configuration before final placement.
+    """
+
+    entity: int
+    mode: EntityPlacementMode = EntityPlacementMode.FREE
+    anchor: PhysicalAnchor | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entity, int) or isinstance(self.entity, bool) or self.entity <= 0:
+            raise ValueError("placement constraint entity id must be a positive integer")
+        if not isinstance(self.mode, EntityPlacementMode):
+            raise ValueError("placement constraint mode must be an EntityPlacementMode")
+        if self.mode is EntityPlacementMode.FREE:
+            if self.anchor is not None:
+                raise ValueError("free placement constraints cannot name an anchor")
+        elif not isinstance(self.anchor, PhysicalAnchor):
+            raise ValueError("anchored placement constraints require a PhysicalAnchor")
+
+
 @dataclass(frozen=True, slots=True, order=True)
 class AbstractSignal:
     """A late-allocated signal-lane variable.
@@ -230,6 +273,7 @@ class AbstractPhysicalCircuit:
     net_conflicts: list[NetConflict] = field(default_factory=list)
     inputs: list[InputPort] = field(default_factory=list)
     outputs: list[OutputPort] = field(default_factory=list)
+    placement_constraints: list[EntityPlacementConstraint] = field(default_factory=list)
 
     @property
     def combinator_count(self) -> int:
@@ -264,6 +308,15 @@ class AbstractPhysicalCircuit:
         entity_ids = _unique_ids("entity", (entity.id for entity in self.entities))
         signal_ids = _unique_ids("signal", (signal.id for signal in self.signals))
         net_ids = _unique_ids("net", (net.id for net in self.nets))
+
+        constrained_entities: set[int] = set()
+        for constraint in self.placement_constraints:
+            _require(entity_ids, constraint.entity, "entity")
+            if constraint.entity in constrained_entities:
+                raise ValueError(
+                    f"entity {constraint.entity} has multiple abstract placement constraints"
+                )
+            constrained_entities.add(constraint.entity)
 
         for net in self.nets:
             if len(set(net.signals)) != len(net.signals):

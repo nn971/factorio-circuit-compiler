@@ -42,7 +42,7 @@ from factorio_circuit.oracles import (
 from factorio_circuit.progress import ProgressCallback, report_progress
 from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
-from factorio_circuit.synthesis.placement import PlacementOptions
+from factorio_circuit.synthesis.placement import PlacementOptions, Position
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,12 +106,14 @@ def _synthesize(
     *,
     safe_wire_span: float,
     placement: PlacementOptions | None,
+    physical_anchors: Mapping[str, Position] | None,
     progress: ProgressCallback | None,
 ) -> Layout:
     return synthesize_vector_layout(
         circuit,
         safe_wire_span=safe_wire_span,
         placement=placement,
+        anchor_positions=physical_anchors,
         progress=progress,
     )
 
@@ -130,8 +132,9 @@ def lower_to_abstract_physical(
     heavyweight benchmark census work that should not need to materialize a final layout.
 
     Semantic oracles require exact physical-provider coverage. Providers are materialized into the
-    abstract physical graph before this function returns, so their entities participate in the same
-    joint synthesis/layout pass as ordinary compiler-generated combinators.
+    abstract physical graph before this function returns, so their entities and unresolved symbolic
+    placement requirements participate in the same joint synthesis/layout pass as ordinary
+    compiler-generated combinators.
     """
 
     report_progress(progress, "frontend", detail="elaborating and lowering source program")
@@ -192,6 +195,7 @@ def compile_circuit(
     optimize: bool = True,
     blueprint_safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN,
     placement: PlacementOptions | None = None,
+    physical_anchors: Mapping[str, Position] | None = None,
     progress: ProgressCallback | None = None,
     oracle_providers: Mapping[str, OracleProvider] | None = None,
 ) -> CompilationResult:
@@ -203,6 +207,9 @@ def compile_circuit(
 
     Oracle providers are target-side bindings: they are absent from deterministic semantic
     evaluation and are inserted into the abstract physical graph before joint physical synthesis.
+    ``physical_anchors`` resolves symbolic placement sites declared by providers. Abstract lowering
+    may leave those sites unresolved, but final placement requires a coordinate for every anchored
+    entity.
 
     ``progress`` receives coarse compiler phases plus bounded placement/routing updates.
     Callbacks are observational only and do not affect deterministic compilation.
@@ -218,6 +225,7 @@ def compile_circuit(
         lowered.abstract_physical,
         safe_wire_span=blueprint_safe_wire_span,
         placement=placement,
+        physical_anchors=physical_anchors,
         progress=progress,
     )
 
@@ -245,6 +253,7 @@ def compile_circuit(
             naive_abstract,
             safe_wire_span=blueprint_safe_wire_span,
             placement=placement,
+            physical_anchors=physical_anchors,
             progress=progress,
         ).circuit
     else:

@@ -39,7 +39,9 @@ from .ir.output import (
 )
 from .ir.physical import SignalId
 from .oracles import (
+    AnchoredPlacement,
     ExternalOracleProvider,
+    FreePlacement,
     OracleBindingError,
     OraclePhysicalContext,
     OraclePortDisposition,
@@ -68,6 +70,7 @@ from .synthesis.placement import PlacementMetrics, PlacementOptions, placement_m
 __all__ = [
     "AbstractPhysicalLoweringResult",
     "AccumulatorReg",
+    "AnchoredPlacement",
     "Circuit",
     "CircuitBuildError",
     "ClockDomainTiming",
@@ -87,6 +90,7 @@ __all__ = [
     "EventMaterializationPolicy",
     "EventThroughputError",
     "ExternalOracleProvider",
+    "FreePlacement",
     "FreezeReg",
     "Input",
     "LogicalTime",

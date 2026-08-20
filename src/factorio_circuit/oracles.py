@@ -13,12 +13,16 @@ from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from factorio_circuit.ir.abstract_physical import (
+    AbstractEntity,
     AbstractNet,
     AbstractPhysicalCircuit,
     ConstantCombinator,
     Connector,
     Endpoint,
+    EntityPlacementConstraint,
+    EntityPlacementMode,
     InputPort,
+    PhysicalAnchor,
 )
 from factorio_circuit.ir.oracle import OracleSource, VectorOracleInput, oracle_sources
 from factorio_circuit.ir.physical import SignalId
@@ -36,13 +40,33 @@ class OraclePortDisposition(StrEnum):
     EXTERNAL = "external"
 
 
+@dataclass(frozen=True, slots=True)
+class FreePlacement:
+    """Provider entity may participate freely in ordinary physical placement."""
+
+
+@dataclass(frozen=True, slots=True)
+class AnchoredPlacement:
+    """Provider entity must be placed at one symbolic deployment anchor."""
+
+    anchor: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.anchor, str) or not self.anchor:
+            raise ValueError("anchored provider placement requires a non-empty anchor name")
+
+
+ProviderPlacement = FreePlacement | AnchoredPlacement
+FREE_PLACEMENT = FreePlacement()
+
+
 @dataclass(slots=True)
 class OraclePhysicalContext:
     """Mutable, target-level context exposed to an oracle provider.
 
     Providers operate on an already-lowered :class:`AbstractPhysicalCircuit`, but before
-    physical synthesis. Entity ids and oracle-net edits performed here therefore participate
-    in the ordinary joint synthesis/layout pass.
+    physical synthesis. Entity ids, oracle-net edits, and placement constraints performed here
+    therefore participate in the ordinary joint synthesis/layout pass.
     """
 
     circuit: AbstractPhysicalCircuit
@@ -69,6 +93,34 @@ class OraclePhysicalContext:
         entity_id = self._next_entity_id
         self._next_entity_id += 1
         return entity_id
+
+    def add_entity(
+        self,
+        entity: AbstractEntity,
+        *,
+        placement: ProviderPlacement = FREE_PLACEMENT,
+    ) -> None:
+        """Add one provider entity plus its physical placement contract.
+
+        Ordinary compiler entities remain implicitly free. Provider entities record their
+        intended freedom explicitly so target devices can be anchored without teaching the
+        deterministic semantic layer anything about coordinates.
+        """
+
+        if not isinstance(placement, (FreePlacement, AnchoredPlacement)):
+            raise OracleBindingError(
+                "provider placement must be FreePlacement or AnchoredPlacement"
+            )
+        self.circuit.entities.append(entity)
+        if isinstance(placement, AnchoredPlacement):
+            constraint = EntityPlacementConstraint(
+                entity=entity.id,
+                mode=EntityPlacementMode.ANCHORED,
+                anchor=PhysicalAnchor(placement.anchor),
+            )
+        else:
+            constraint = EntityPlacementConstraint(entity=entity.id)
+        self.circuit.placement_constraints.append(constraint)
 
     def attach(self, endpoint: Endpoint) -> None:
         """Attach a provider endpoint to the oracle's output net."""
@@ -129,10 +181,13 @@ class ScalarConstantOracleProvider:
     """Small deterministic provider useful for probes/tests and fixed target observations."""
 
     value: int
+    placement: ProviderPlacement = FREE_PLACEMENT
 
     def __post_init__(self) -> None:
         if isinstance(self.value, bool) or not isinstance(self.value, int):
             raise TypeError("scalar constant oracle value must be an integer")
+        if not isinstance(self.placement, (FreePlacement, AnchoredPlacement)):
+            raise TypeError("scalar constant oracle placement is invalid")
 
     def materialize(self, context: OraclePhysicalContext) -> OraclePortDisposition:
         signal = context.signal
@@ -145,7 +200,7 @@ class ScalarConstantOracleProvider:
             signals=((signal, self.value),),
             description=f"ORACLE {context.source.name}: constant {self.value}",
         )
-        context.circuit.entities.append(entity)
+        context.add_entity(entity, placement=self.placement)
         context.attach(Endpoint(entity.id, Connector.SINGLE))
         return OraclePortDisposition.CONSUMED
 
@@ -155,6 +210,7 @@ class VectorConstantOracleProvider:
     """Constant whole-signal-map provider, primarily for physical-provider verification."""
 
     signals: Mapping[SignalId, int]
+    placement: ProviderPlacement = FREE_PLACEMENT
 
     def __post_init__(self) -> None:
         normalized: dict[SignalId, int] = {}
@@ -165,6 +221,8 @@ class VectorConstantOracleProvider:
                 raise TypeError("vector constant oracle values must be integers")
             if value != 0:
                 normalized[signal] = value
+        if not isinstance(self.placement, (FreePlacement, AnchoredPlacement)):
+            raise TypeError("vector constant oracle placement is invalid")
         object.__setattr__(self, "signals", normalized)
 
     def materialize(self, context: OraclePhysicalContext) -> OraclePortDisposition:
@@ -180,7 +238,7 @@ class VectorConstantOracleProvider:
             signals=ordered,
             description=f"ORACLE {context.source.name}: constant vector",
         )
-        context.circuit.entities.append(entity)
+        context.add_entity(entity, placement=self.placement)
         context.attach(Endpoint(entity.id, Connector.SINGLE))
         context.add_fixed_signals(*(signal for signal, _ in ordered))
         return OraclePortDisposition.CONSUMED
