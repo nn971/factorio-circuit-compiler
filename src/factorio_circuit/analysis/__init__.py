@@ -43,6 +43,15 @@ from .state_timing import (
     earliest_vector_phase,
     validate_event_throughput,
 )
+from .temporal_alignment import (
+    ExactTransportDemand,
+    TemporalAlignmentAnalysis,
+    TemporalAlignmentDemand,
+    TemporalAlignmentKind,
+    TemporalAvailability,
+    TemporalAvailabilityKind,
+    analyze_temporal_alignment,
+)
 from .temporal_builder import build_temporal_hypergraph
 from .temporal_hypergraph import (
     TemporalArc,
@@ -77,6 +86,7 @@ __all__ = [
     "DelayBusLane",
     "DelayBusPlan",
     "EventClockTiming",
+    "ExactTransportDemand",
     "FACTORIO_LATENCY",
     "LiveSourceObservation",
     "LogicalDependency",
@@ -88,7 +98,12 @@ __all__ = [
     "StateTimingError",
     "StateTimingPlan",
     "TargetLatencyModel",
+    "TemporalAlignmentAnalysis",
+    "TemporalAlignmentDemand",
+    "TemporalAlignmentKind",
     "TemporalArc",
+    "TemporalAvailability",
+    "TemporalAvailabilityKind",
     "TemporalComputation",
     "TemporalHypergraph",
     "TemporalOptimizationResult",
@@ -104,6 +119,7 @@ __all__ = [
     "analyze_clocked_timing",
     "analyze_normalized_state_timing",
     "analyze_state_timing",
+    "analyze_temporal_alignment",
     "build_temporal_hypergraph",
     "census_abstract_physical",
     "census_phase_delays",
