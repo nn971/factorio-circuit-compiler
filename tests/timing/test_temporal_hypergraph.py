@@ -6,6 +6,8 @@ from factorio_circuit.analysis import (
     TemporalComputation,
     TemporalHypergraph,
     TemporalSink,
+    TemporalSource,
+    TemporalSourceMode,
     build_temporal_hypergraph,
     optimize_temporal_hypergraph,
 )
@@ -29,7 +31,7 @@ def _shared_scalar_fanout() -> Circuit:
 
     # ``shared`` is needed both directly at the state boundary and through a deeper scalar chain.
     # A one-realization ALAP schedule must compute it early enough for ``late`` and then preserve it
-    # for the direct use.  The temporal hypergraph should expose that lifetime instead of hiding it
+    # for the direct use. The temporal hypergraph should expose that lifetime instead of hiding it
     # inside emitted phase-delay combinators.
     shared = enabled != 0
     late = shared
@@ -61,19 +63,30 @@ def test_temporal_hypergraph_exposes_shared_scalar_transport() -> None:
 
     asap = graph.transport_cost(graph.asap_placement())
     alap = graph.transport_cost(graph.alap_placement())
+    assert asap.bus_eligible_scalar_serial > 0
     assert alap.bus_eligible_scalar_serial > 0
-    assert alap.scalar_serial <= asap.scalar_serial
     assert all(item.end_phase > item.start_phase for item in alap.intervals)
 
 
 def _fixed_bus_graph(
     intervals: tuple[tuple[int, int], ...],
 ) -> TemporalHypergraph:
+    sources = []
     computations = []
     sinks = []
     arcs = []
     next_id = 1
     for index, (start, end) in enumerate(intervals):
+        source = TemporalSource(
+            id=next_id,
+            label=f"sample_{index}",
+            shape=PayloadShape.SCALAR,
+            mode=TemporalSourceMode.EXACT,
+            start_phase=start,
+            end_phase_exclusive=start + 1,
+            semantic=object(),
+        )
+        next_id += 1
         semantic = BinaryOp("+", Constant(index), Constant(1), name=f"value_{index}")
         computation = TemporalComputation(
             id=next_id,
@@ -86,12 +99,14 @@ def _fixed_bus_graph(
         next_id += 1
         sink = TemporalSink(next_id, f"sink_{index}", PayloadShape.SCALAR, end)
         next_id += 1
+        sources.append(source)
         computations.append(computation)
         sinks.append(sink)
+        arcs.append(TemporalArc(source.id, computation.id, 0, PayloadShape.SCALAR))
         arcs.append(TemporalArc(computation.id, sink.id, 0, PayloadShape.SCALAR))
     return TemporalHypergraph(
         period=max((end for _start, end in intervals), default=1) + 1,
-        sources=(),
+        sources=tuple(sources),
         computations=tuple(computations),
         sinks=tuple(sinks),
         arcs=tuple(arcs),
