@@ -1,30 +1,8 @@
-# Snap-together in-game autonomous mall test
+# Complete tileable autonomous mall in-game test
 
-The physical transaction prototype is now built from **grid-snapped tiles with a stable electrical ABI**.
-You no longer wire the reservation chain by hand.
-
-The generated blueprint book contains:
-
-```text
-0  complete controller: [HEAD][P0][P1][Q0][Q1][R0]
-1  reusable HEAD tile
-2  reusable ASSEMBLER worker tile
-3  reusable RECYCLER worker tile
-```
-
-Each tile is 48x48 and uses absolute snap-to-grid. Horizontal ports terminate in blank 1x1 constant
-combinators on the tile boundary. Adjacent tiles put the matching connectors on the exact same world tile.
-Pasting the next tile over that existing marker adds its wires while retaining the previous wires, so the
-shared marker becomes the plug/socket between modules.
-
-The internal compiler is free to choose red/green networks and virtual scalar lanes. A small arithmetic
-adapter strip hides those choices from the public dock:
-
-- every external dock uses **red wire**;
-- whole-vector ports use `EACH * 1 -> EACH` isolation;
-- machine scalar ports are renamed onto fixed mall protocol signals.
-
-This is why separately compiled tiles can be composed safely without inspecting a generated wiring map.
+The physical transaction prototype now has **complete pasteable production cells**. The controller-only
+tiles remain available for diagnostics, but the normal in-game path no longer requires wiring requester
+chests, assemblers, inserters, or completion latches by hand.
 
 ## Generate and import
 
@@ -32,315 +10,259 @@ From the repository root:
 
 ```bash
 uv sync --extra dev
-uv run pytest tests/synthesis/test_module_interface.py \
-  tests/examples/autonomous_mall/test_manual_controller.py
 uv run pytest -m acceptance \
-  tests/examples/autonomous_mall/test_manual_controller.py
-uv run python -m examples.autonomous_mall.manual_controller \
-  > autonomous-mall-manual-blueprint.txt
+  tests/examples/autonomous_mall/test_manual_controller.py \
+  tests/examples/autonomous_mall/test_device_tiles.py
+uv run python -m examples.autonomous_mall.complete_controller \
+  > autonomous-mall-complete-blueprint.txt
 ```
 
-Import `autonomous-mall-manual-blueprint.txt` into Factorio. Start with book entry **0**, the fully assembled
-six-tile controller. Entries 1-3 are useful for verifying that manual tile-by-tile stamping also works.
+Import `autonomous-mall-complete-blueprint.txt` into Factorio.
 
-## What is already connected
-
-The assembled controller is:
+The book contains:
 
 ```text
-                 frozen available-material bus
-          ------------------------------------------------>
-
- [ HEAD ][ P0 ][ P1 ][ Q0 ][ Q1 ][ R0 ]
-          ------------------------------------------------>
-                       control bus
+0  complete row: [HEAD][P0][P1][Q0][Q1][R0]
+1  reusable complete P productivity worker
+2  reusable complete Q quality worker
+3  reusable complete R recycler worker
+4  controller-only [HEAD][P0][P1][Q0][Q1][R0] diagnostic row
+5  reusable HEAD tile
 ```
 
-There are two shared horizontal boundary docks between every adjacent pair:
+The complete worker cells use a 48x72 absolute snapping grid. Their upper 48 tiles are the already-tested
+controller. The lower bay contains the physical machine and all local circuit plumbing.
+
+## What a complete worker contains
+
+A P or Q cell contains:
 
 ```text
-available bus   arbitrary item/quality signal vector
-control bus     fixed mall control lanes
+requester chest -> stack inserter -> assembling machine 3 -> stack inserter -> provider chest
 ```
 
-The worker priority is therefore physically encoded by the left-to-right order:
+The P machine requests four `productivity-module-3`; the Q machine requests four `quality-module-3`.
+The R cell substitutes a recycler with four `quality-module-3`.
 
-```text
-P0 -> P1 -> Q0 -> Q1 -> R0
-```
+The generator also wires the local device protocol automatically:
 
-Every worker computes
+- requester demand drives requester-chest `Set requests`;
+- assembler recipe is isolated onto the machine's green input network;
+- machine contents, working, and recipe-finished status use its red output network;
+- the input inserter uses stack-size override 1;
+- its circuit filters are `positive(requester_demand - machine_contents)`;
+- it is enabled only while the worker is in its input phase and the machine is not working;
+- the one-tick recipe-finished signal is caught by a SET/HOLD latch;
+- the worker acknowledgement clears that latch.
 
-```text
-accepted = dispatch
-           AND job_request is nonempty
-           AND the entire request fits in available_in
-           AND job_recipe is nonempty          # assembler tiles only
+Consequently the machine-side `signal-I/W/F/A` ABI still exists internally for debugging, but the player
+no longer wires it.
 
-remaining_out = available_in - job_request     # only when accepted
-```
+### Current recipe scope
 
-`remaining_out` is the next tile's `available_in`. A downstream worker therefore cannot spend material
-already reserved by an upstream worker.
+The generated feeder supports ordinary **solid-only, no-fluid** recipes with any number of ingredients.
+For now exclude recipes where the same item is simultaneously an ingredient and a product (catalyst-like
+recipes), because `Read contents` does not identify which semantic role an item occupies.
 
-## HEAD tile
+Productivity workers must of course use recipes that permit productivity modules.
 
-HEAD has two things you need to touch.
+## What remains external
 
-### Roboport stock dock
+The generator deliberately does not guess your electric-grid layout. Paste the row under substation/pole
+coverage so every combinator, inserter, logistic chest, and machine has power.
 
-The bottom marker labelled:
+There is only one external **circuit wire** required for the basic test:
 
-```text
-DOCK roboport stock
-```
+1. put a roboport in an isolated logistic network;
+2. enable `Read logistic network contents`;
+3. red-wire the roboport to HEAD's `DOCK roboport stock` marker.
 
-is the only material-stock connection. Put one roboport in an isolated logistic network, enable **Read
-logistic network contents**, and connect the roboport to this dock with a **red wire**.
+The horizontal available/control buses are already joined across every worker seam.
 
-### Control marker
+## HEAD controls
 
-HEAD's `INPUT control` marker is intentionally left editable instead of being given another external dock.
-Use the following fixed virtual signals:
+HEAD's editable `INPUT control` marker uses:
 
 ```text
 signal-D = dispatch
 signal-L = launch
 ```
 
-A batch uses four manual phases:
+Use four manual phases for the first tests:
 
 ```text
-IDLE:     D=0, L=0
-FREEZE:   D=1, L=0
-RUN:      D=1, L=1
-REARM:    D=0, L=0
+IDLE:     D=0, L=0    snapshot follows live roboport stock
+FREEZE:   D=1, L=0    snapshot freezes and reservations propagate
+RUN:      D=1, L=1    accepted workers execute once
+REARM:    D=0, L=0    workers re-arm and snapshot resumes tracking
 ```
 
-While `D=0`, HEAD continuously tracks live roboport stock. Raising `D` freezes the snapshot. Wait roughly
-one second during the first tests so the five reservation stages visibly settle, then raise `L`.
+Wait roughly one second in FREEZE while visually testing the prototype. The final controller can automate
+this settle/launch handshake later.
 
-## Configure jobs directly on each tile
+## Configure a worker
 
-There is no longer a separate job-definition constant combinator or `job_enable` wire.
+Each worker has editable controller markers rather than external job wiring.
 
-The marker labelled `INPUT job_request` is itself an editable constant combinator. Put the exact
-one-attempt ingredient vector there. An empty request disables that tile.
+For an assembler worker set:
 
-Assembler tiles also have `INPUT job_recipe`; put the exact recipe/product signal there. A nonempty request
-with an empty recipe is not accepted.
+```text
+INPUT job_request = exact one-craft ingredient vector
+INPUT job_recipe  = recipe/product signal x1
+```
 
-Example for one normal iron gear:
+An empty `job_request` disables that worker. An assembler request with empty `job_recipe` is also rejected.
+
+For one normal iron gear:
 
 ```text
 job_request:  normal iron plate x2
 job_recipe:   normal iron gear wheel x1
 ```
 
-Configure P0/P1 for productivity-module machines, Q0/Q1 for quality-module machines, and R0 for the
-recycler. The controller logic for the four assemblers is identical; their physical module role lives in
-the attached machine.
+R0 has no recipe marker; configure only the exact-quality item to recycle in `job_request`.
 
-## Stable machine-side ABI
+## Test 1: complete-cell placement
 
-Every worker exposes its physical device interface along the bottom edge. All these docks use **red wire**.
-Vector docks preserve the item/quality vector directly; scalar docks use fixed virtual lanes:
+Paste book entry 0 under power coverage. Before changing any controls, inspect the row:
 
 ```text
-DOCK requester demand       vector
-DOCK recipe                 vector, assembler tiles only
-DOCK input enable           signal-I
-DOCK working                signal-W
-DOCK finished               signal-F
-DOCK finish acknowledgement signal-A
+[HEAD][ P0 ][ P1 ][ Q0 ][ Q1 ][ R0 ]
 ```
 
-This means a future assembler/recycler device blueprint can use matching top-edge markers and be pasted
-straight underneath a worker tile with the same overlap trick. For this milestone, wire the physical
-machines to these stable docks manually; no compiler-generated signal lookup is needed.
+Every worker should already contain a requester chest, two inserters, its machine, and a provider chest.
+P0/P1 should request productivity modules; Q0/Q1 and R0 should request quality modules.
 
-## First assembler device
+At each horizontal seam there should still be one shared `available bus` marker and one shared `control
+bus` marker, each with red wiring into both neighboring controllers.
 
-For P0 build:
+If the physical machine entities fail to import but entry 4 still imports correctly, report exactly which
+entities/settings Factorio rejected; entry 4 isolates the known-good controller from the new device layer.
 
-```text
-requester chest -> stack-size-1 inserter -> assembling machine 3 -> inserter -> provider chest
-```
+## Test 2: reservation only
 
-Connect with red wire:
+Leave all machines idle. Put exactly two normal iron plates in the logistic network. Configure identical
+one-gear jobs on P0 and Q0; leave P1/Q1/R0 empty.
 
-```text
-DOCK requester demand -> requester chest Set requests
-DOCK recipe           -> assembler Set recipe
-assembler Read working as signal-W -> DOCK working
-completion latch signal-F          -> DOCK finished
-DOCK finish acknowledgement signal-A -> completion-latch reset
-```
-
-Install productivity modules permanently in the P worker. Q workers use quality modules permanently.
-
-### Exact one-craft feeder
-
-Do not stop a productivity job by removing its recipe; that can discard partial productivity progress.
-Keep the recipe selected and starve the machine after one craft starts.
-
-For the iron-gear smoke test, set the input inserter stack-size override to 1 and enable it only when:
-
-```text
-signal-I > 0
-AND
-assembler Read working = 0
-```
-
-The assembler's local working signal should gate the inserter directly. The two plates enter, the craft
-starts, working rises, and no third plate is inserted.
-
-For a general no-fluid multi-ingredient recipe, later add:
-
-```text
-missing_to_machine = positive(requester_demand - machine_contents)
-```
-
-and use that vector to Set filters on the stack-size-1 input inserter. Keep catalyst-style recipes out of
-this first test because machine contents is ambiguous when an item is simultaneously ingredient and
-product.
-
-## Durable completion latch
-
-Do not feed a one-tick recipe-finished pulse directly to the worker. Convert it to the fixed `signal-F`
-protocol lane:
-
-```text
-SET:   if recipe_finished > 0          -> signal-F = 1
-HOLD:  if signal-F > 0 AND signal-A=0  -> signal-F = 1
-```
-
-Feed HOLD back to itself. Connect the held `signal-F` to `DOCK finished`; connect `DOCK finish
-acknowledgement` (`signal-A`) back to the HOLD condition.
-
-The recycler must use the same latch because a recycle attempt may legitimately produce zero output.
-
-## Test 1: verify tile docking only
-
-Before attaching machines, import the **ASSEMBLER worker tile** entry and stamp several copies in one row
-using the blueprint's absolute grid snapping.
-
-At every seam you should see **one**, not two displaced, boundary constant combinators at the available-bus
-and control-bus heights. Hover them: each shared marker should have red wires into both neighboring tiles.
-
-This visually checks the exact-overlap plug/socket mechanism.
-
-## Test 2: stock snapshot and reservation chain
-
-Use the complete controller blueprint. Put exactly two normal iron plates in the logistic network.
-Configure:
-
-```text
-P0 job_request = 2 iron plates
-P0 job_recipe  = 1 iron gear
-Q0 job_request = 2 iron plates
-Q0 job_recipe  = 1 iron gear
-```
-
-Leave P1/Q1/R0 requests empty.
-
-Set:
+From IDLE, raise D only:
 
 ```text
 D=1, L=0
 ```
 
-After the chain settles, expected:
+Expected after reservation propagation:
 
 ```text
 P0 accepted = 1
 Q0 accepted = 0
 ```
 
-Repeat from IDLE with four plates. Expected:
+Return to IDLE, put four plates in logistics, let HEAD observe them, then freeze again. Expected:
 
 ```text
 P0 accepted = 1
 Q0 accepted = 1
 ```
 
-No horizontal wiring should be touched during this test.
+This checks the shared horizontal material bus and left-to-right atomic reservation order.
 
-## Test 3: one-shot P0
+## Test 3: one complete P0 transaction
 
-With at least two plates and only P0 enabled:
+Enable only P0 with the iron-gear job and keep at least two iron plates in logistics.
 
-1. `D=0, L=0`: let HEAD follow roboport inventory.
-2. `D=1, L=0`: freeze and wait for P0 acceptance.
-3. `D=1, L=1`: launch.
+Run:
+
+```text
+IDLE    D=0 L=0
+FREEZE  D=1 L=0
+RUN     D=1 L=1
+```
+
+Expected physical sequence:
+
+```text
+P0 is accepted
+-> requester chest asks for two plates
+-> robots deliver the plates
+-> generated feeder inserts missing ingredients one at a time
+-> assembler starts
+-> working status blocks further feeding
+-> exactly one gear craft completes
+-> generated completion latch captures recipe-finished
+-> worker acknowledges completion
+-> latch clears and worker returns idle
+```
+
+Keep `D=1, L=1` for several seconds after the gear finishes. **A second craft must not start.**
+
+Then set `D=0, L=0`. The worker should re-arm for another transaction.
+
+## Test 4: P0 and Q0 concurrently
+
+Configure the same gear job on P0 and Q0 and give the frozen snapshot four plates.
 
 Expected:
 
-1. requester demand asks for exactly two plates;
-2. the gear recipe remains selected;
-3. the feeder inserts exactly two plates;
-4. working rises and blocks the feeder locally;
-5. exactly one gear finishes;
-6. `signal-F` latches;
-7. `signal-A` acknowledges it;
-8. the worker returns idle.
+```text
+P0 accepted = 1
+Q0 accepted = 1
+```
 
-Keep both D and L high for several seconds after completion. A second craft must **not** start.
+Raise launch. Both machines should operate concurrently. Robot flight and the resulting change in live
+logistic inventory must not alter the already-frozen reservation decisions.
 
-Then set `D=0, L=0` to re-arm the worker.
-
-## Test 4: parallel reservation/execution
-
-With four plates frozen and identical one-gear jobs on P0 and Q0, both should be accepted. Raising launch
-should let the two machines run concurrently. Roboport stock changing while robots fly must not alter the
-already frozen reservations.
+P0 should use productivity modules and Q0 quality modules without either worker changing role.
 
 ## Test 5: productivity persistence
 
-Keep P0 on the same gear recipe and run repeated one-craft batches with productivity modules.
+Run repeated one-craft P0 batches without changing the recipe.
 
-Expected: partial productivity-bar progress survives between batches and eventually produces bonus output.
-If it resets every transaction, the machine-side recipe wiring is wrong.
+Expected: partial productivity-bar progress survives between transactions and eventually yields the
+productivity bonus. The worker stops a transaction by starving the machine, not by clearing its recipe.
 
 ## Test 6: quality
 
-Attach a Q worker with quality modules and repeatedly launch one normal gear attempt.
+Run repeated Q0 batches from normal ingredients.
 
-Expected: every accepted batch still performs exactly one craft, while observed output quality varies.
+Expected: each accepted transaction still performs one attempt, while output quality follows the game's
+quality randomness. Actual outputs return to logistic stock and are observed by later replanning/snapshots;
+the controller never assumes expected quality output physically exists.
 
 ## Test 7: recycler
 
-Configure R0 `job_request` to one exact-quality gear. There is no recipe dock or job-recipe marker for R0.
-Attach a recycler with quality modules.
+Configure R0 to request one exact-quality recyclable item and launch it through the same batch protocol.
+The recycler selects its reverse process from the inserted item; it has no Set-recipe connection.
 
-Expected: one item is consumed per accepted launch. Zero-output attempts still complete through the
-`signal-F` / `signal-A` completion protocol.
+Expected: exactly one item is consumed per accepted launch. Even a recycle attempt that yields no physical
+output still completes because completion is based on the machine's recipe-finished pulse, not on detected
+output items.
 
 ## Test 8: all five workers
 
-Give all workers affordable jobs, freeze the stock, wait for reservation propagation, then launch.
+Give all five workers affordable jobs, freeze stock, wait for reservation propagation, then launch.
 
 Expected:
 
-- reservation order is P0, P1, Q0, Q1, R0;
-- each tile sees all upstream reservations already subtracted;
-- all accepted workers can operate concurrently after launch;
-- holding launch high never repeats a transaction;
-- returning D and L to zero re-arms the row.
+- priority is P0, P1, Q0, Q1, R0;
+- each worker sees upstream reservations already subtracted;
+- all accepted workers can run concurrently;
+- holding launch high never starts a second transaction;
+- returning D and L to zero re-arms the complete row.
 
 ## What this milestone validates
 
-The snap-together controller validates a stronger physical contract than the earlier manual prototype:
+This version validates the full physical transaction layer rather than only its controller:
 
-- named compiler I/O anchors;
-- reusable absolute-grid module geometry;
-- exact overlapping plug/socket markers;
-- a fixed-red whole-vector ABI across independently synthesized modules;
-- fixed scalar machine protocol lanes independent of compiler signal allocation;
-- frozen roboport stock and left-to-right atomic reservations;
-- integrated reservation + worker FSM tiles;
-- requester-chest transport, persistent recipes, durable completion, and one-shot execution.
+- named compiler I/O anchors and snap-compatible module geometry;
+- fixed-red horizontal whole-vector ABI;
+- frozen roboport inventory and atomic left-to-right reservations;
+- integrated reservation and one-shot worker FSM;
+- generated requester-chest transport;
+- generated general solid-ingredient feeder;
+- persistent assembler recipes;
+- fixed productivity/quality physical roles;
+- generated durable completion latch;
+- complete P/Q/R cells that can be stamped as reusable 48x72 units.
 
-The material-efficiency LP in `planner.py` is still the Python oracle. Job markers are still configured
-manually. The next controller milestone can automate economic job selection and the dispatch/launch
-handshake on top of this stable physical module ABI.
+The economic planner is still the Python oracle. Job selection and the D/L batch handshake remain manual;
+those are the next controller-side automation layers once these complete physical cells pass in-game tests.
