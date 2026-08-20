@@ -40,7 +40,7 @@ def _shared_controls() -> Circuit:
     return circuit
 
 
-def test_shared_bus_never_connects_original_producer_net_directly() -> None:
+def test_shared_bus_is_electrically_isolated_at_ingress_and_egress() -> None:
     baseline = lower_to_abstract_physical(
         _shared_controls(),
         optimize=False,
@@ -100,6 +100,7 @@ def test_shared_bus_never_connects_original_producer_net_directly() -> None:
     assert roles.get("phase-delay.scalar-bus", 0) > 0
     assert census.max_signals_per_net >= 2
 
+    entities = {entity.id: entity for entity in planned.entities}
     bus_stages = [
         entity
         for entity in planned.entities
@@ -107,12 +108,10 @@ def test_shared_bus_never_connects_original_producer_net_directly() -> None:
         and (entity.description or "").startswith("scalar phase delay bus ")
     ]
     assert bus_stages
+    bus_stage_ids = {entity.id for entity in bus_stages}
 
-    # Every non-trunk net entering a shared bus stage must be an aggregate bus-private ingress net.
-    # Original comparison/arithmetic producer nets must never touch the bus-stage input connector,
-    # because same-color coalescing would contaminate those producer networks everywhere else they
-    # are used. Multiple isolated lanes that join at the same phase intentionally share one ingress
-    # net, so every stage has at most one such non-trunk input alongside the previous bus trunk.
+    # Every non-trunk net entering a shared bus stage must be one aggregate bus-private ingress net.
+    # Original comparison/arithmetic producer nets must never touch the bus-stage input connector.
     for stage in bus_stages:
         input_endpoint = Endpoint(stage.id, Connector.INPUT)
         ingress_nets = []
@@ -132,3 +131,31 @@ def test_shared_bus_never_connects_original_producer_net_directly() -> None:
     ]
     assert len(ingress_nets) == len({lane.start_phase + 1 for lane in lanes})
     assert sum(len(net.signals) for net in ingress_nets) == len(lanes)
+
+    # Shared trunk nets may feed only another shared bus stage or a signal-specific scalar egress
+    # copy. They must never terminate directly at an ordinary semantic consumer, because one global
+    # trunk wire color cannot satisfy arbitrary downstream red/green relationships.
+    egress_input_entities: set[int] = set()
+    for net in planned.nets:
+        if not net.label.startswith("scalar phase delay bus "):
+            continue
+        for endpoint in net.endpoints:
+            if endpoint.connector is not Connector.INPUT or endpoint.entity in bus_stage_ids:
+                continue
+            entity = entities[endpoint.entity]
+            assert isinstance(entity, ArithmeticCombinator)
+            assert entity.operation == "+"
+            assert entity.left.signal is not None
+            assert not entity.left.each
+            assert entity.output_signal == entity.left.signal
+            assert entity.right.constant == 0
+            egress_input_entities.add(entity.id)
+
+    assert egress_input_entities
+    egress_nets = [
+        net
+        for net in planned.nets
+        if net.label.startswith("scalar delay bus 0 isolated egress @ ")
+    ]
+    assert egress_nets
+    assert all(len(net.signals) == 1 for net in egress_nets)
