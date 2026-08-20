@@ -95,6 +95,7 @@ class ExactTransportDemand:
     start_phase: int
     end_phase: int
     consumers: tuple[int, ...]
+    tap_phases: tuple[int, ...] = ()
 
     @property
     def length(self) -> int:
@@ -102,7 +103,19 @@ class ExactTransportDemand:
 
     @property
     def scalar_bus_candidate(self) -> bool:
-        return self.shape is PayloadShape.SCALAR and self.length > 0
+        return self.shape is PayloadShape.SCALAR and self.length >= 3
+
+    @property
+    def long_tap_phases(self) -> tuple[int, ...]:
+        """Taps that can leave an isolated shared trunk through a final one-tick egress."""
+
+        return tuple(phase for phase in self.tap_phases if phase >= self.start_phase + 2)
+
+    @property
+    def has_one_tick_tap(self) -> bool:
+        """Whether a private one-tick branch is still needed alongside any shared bus ingress."""
+
+        return self.start_phase + 1 in self.tap_phases
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +303,7 @@ def analyze_temporal_alignment(
                     start_phase=start,
                     end_phase=max(item.phase for item in items),
                     consumers=tuple(sorted({item.consumer for item in items})),
+                    tap_phases=tuple(sorted({item.phase for item in items})),
                 )
                 for (producer, start), items in grouped_transports.items()
             ),
