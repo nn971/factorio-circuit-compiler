@@ -118,18 +118,17 @@ def test_temporal_lowerer_transports_one_coherent_live_observation() -> None:
 
     raw = lowerer.realize(cast(Value, source.semantic))
     at_observation = lowerer.delay_to(raw, observation.phase)
+    entities_before_transport = len(lowerer.circuit.entities)
     at_latest_use = lowerer.delay_to(raw, observation.end_phase)
 
     assert at_observation.net == raw.net
     assert at_observation.phase == observation.phase
     assert at_latest_use.net != raw.net
     assert at_latest_use.phase == observation.end_phase
-    delay_entities = [
-        entity
-        for entity in lowerer.circuit.entities
-        if entity.description.startswith("scalar phase delay")
-    ]
-    assert len(delay_entities) == observation.transport_stages
+    assert (
+        len(lowerer.circuit.entities) - entities_before_transport
+        == observation.transport_stages
+    )
 
 
 @pytest.mark.skipif(find_spec("ortools") is None, reason="OR-Tools is an optional dependency")
