@@ -1,11 +1,11 @@
 """Blueprint composition for complete autonomous-mall production cells.
 
-This module deliberately lives under ``examples/``.  The compiler produces the controller circuit;
+This module deliberately lives under ``examples/``. The compiler produces the controller circuit;
 this layer appends ordinary Factorio machines, logistic chests, inserters, and a small device harness.
 The only public electrical ABI that remains between independently pasted cells is the horizontal
 available/control bus already exposed by ``manual_controller.py``.
 
-The generated v1 cells support solid-ingredient recipes only.  The feeder computes
+The generated v1 cells support solid-ingredient recipes only. The feeder computes
 ``positive(requester_demand - machine_contents)`` and feeds one item at a time until the machine starts.
 Recipes where one item is simultaneously an ingredient and a product remain out of scope because the
 machine contents signal does not distinguish those roles.
@@ -21,19 +21,17 @@ from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.synthesis.interface import encode_blueprint_payload
 
 TILE_WIDTH = 48
-CONTROLLER_HEIGHT = 48
 COMPLETE_TILE_HEIGHT = 72
 FACTORIO_BLUEPRINT_VERSION = 562949955518464
 
 EACH = SignalId("virtual", "signal-each")
-ANYTHING = SignalId("virtual", "signal-anything")
 WORKING = SignalId("virtual", "signal-W")
 FINISHED = SignalId("virtual", "signal-F")
 INPUT_ENABLE = SignalId("virtual", "signal-I")
 ACK_FINISHED = SignalId("virtual", "signal-A")
 FEED_ENABLE = SignalId("virtual", "signal-E")
 
-# Factorio 2.1 defines.inventory.crafter_modules.  The old assembling-machine/furnace module
+# Factorio 2.1 defines.inventory.crafter_modules. The old assembling-machine/furnace module
 # inventories were folded into this common crafter inventory while retaining index 4.
 CRAFTER_MODULES_INVENTORY = 4
 
@@ -102,7 +100,7 @@ class CompleteMallBook:
 
 
 def extend_head_tile(wrapper: dict[str, object]) -> dict[str, object]:
-    """Put the proven 48x48 HEAD controller on the same 48x72 grid as worker cells."""
+    """Put the proven HEAD controller on the same 48x72 grid as complete worker cells."""
 
     result = deepcopy(wrapper)
     blueprint = _blueprint(result)
@@ -138,22 +136,21 @@ def attach_worker_device(
     ack_dock = _dock_id(entities, "finish acknowledgement")
     recipe_dock = _dock_id(entities, "recipe") if spec.recipe_command else None
 
-    # Ordinary item-moving entities.  The horizontal arrangement keeps the entire machine bay
-    # compact and leaves ample room around it for the generated control combinators.
+    # Item-moving entities. The horizontal arrangement keeps the machine bay compact and leaves
+    # room around it for the generated control combinators.
     requester = next_id
     feeder = next_id + 1
     machine = next_id + 2
     output_inserter = next_id + 3
     provider = next_id + 4
     next_id += 5
-
     entities.extend(
         [
             {
                 "entity_number": requester,
                 "name": "logistic-chest-requester",
                 "position": {"x": 14.5, "y": 60.5},
-                "player_description": "MALL DEVICE requester — requests current one-craft demand",
+                "player_description": "MALL DEVICE requester — one-craft demand",
                 "control_behavior": {
                     "set_requests": True,
                     "read_contents": False,
@@ -168,7 +165,7 @@ def attach_worker_device(
                 "direction": 4,
                 "override_stack_size": 1,
                 "player_description": (
-                    "MALL DEVICE feeder — circuit filters are missing solid ingredients; stack=1"
+                    "MALL DEVICE feeder — missing solid ingredients; stack-size override 1"
                 ),
                 "control_behavior": {
                     "input_networks": _networks(red=True, green=False),
@@ -199,25 +196,27 @@ def attach_worker_device(
         ]
     )
 
-    # Requester-demand fanout.  A blank constant combinator is a passive red-network relay.
+    # Requester-demand fanout and the positive side of request - machine_contents.
     request_relay = next_id
-    request_sum_relay_a = next_id + 1
-    request_sum_relay_b = next_id + 2
-    next_id += 3
+    request_bridge = next_id + 1
+    request_sum_relay_a = next_id + 2
+    request_sum_relay_b = next_id + 3
+    next_id += 4
     entities.extend(
         [
             _relay(request_relay, 12.0, 55.0, "requester demand relay"),
+            _relay(request_bridge, 10.0, 60.0, "request subtraction bridge"),
             _relay(request_sum_relay_a, 15.0, 64.0, "request subtraction relay A"),
             _relay(request_sum_relay_b, 22.0, 64.0, "request subtraction relay B"),
         ]
     )
     _wire(wires, requester_dock, 1, request_relay, 1)
     _wire(wires, request_relay, 1, requester, 1)
-    _wire(wires, request_relay, 1, request_sum_relay_a, 1)
+    _wire(wires, request_relay, 1, request_bridge, 1)
+    _wire(wires, request_bridge, 1, request_sum_relay_a, 1)
     _wire(wires, request_sum_relay_a, 1, request_sum_relay_b, 1)
 
-    # Assembler recipe is intentionally bridged to GREEN so the machine's RED status/contents output
-    # cannot flow back into its Set-recipe input network.
+    # Assembler recipe is bridged to GREEN so RED machine status/contents cannot feed Set recipe.
     if recipe_dock is not None:
         recipe_bridge = next_id
         next_id += 1
@@ -237,7 +236,7 @@ def attach_worker_device(
         _wire(wires, recipe_dock, 1, recipe_bridge, 1)
         _wire(wires, recipe_bridge, 4, machine, 2)
 
-    # Machine output fanout.  RED contains contents plus the fixed W/F status lanes.
+    # Machine RED output contains contents plus the fixed W/F status lanes.
     machine_relay = next_id
     machine_raw_relay = next_id + 1
     working_relay = next_id + 2
@@ -256,7 +255,7 @@ def attach_worker_device(
 
     # General solid-ingredient feeder:
     #     missing = positive(requester_demand - machine_contents)
-    # The negative path also sees W/F virtual lanes, but Set filters ignores non-item signals.
+    # The negative path also sees W/F virtual lanes; circuit-set inserter filters ignore non-items.
     negate_contents = next_id
     positive_missing = next_id + 1
     filter_relay = next_id + 2
@@ -278,9 +277,7 @@ def attach_worker_device(
                 positive_missing,
                 25.0,
                 67.0,
-                conditions=[
-                    _condition(EACH, ">", constant=0, network="red"),
-                ],
+                conditions=[_condition(EACH, ">", constant=0, network="red")],
                 output=EACH,
                 copy_count=True,
                 description="MALL DEVICE positive missing ingredients -> inserter filters",
@@ -309,7 +306,6 @@ def attach_worker_device(
                     _condition(WORKING, "=", constant=0, network="red", compare_type="and"),
                 ],
                 output=FEED_ENABLE,
-                output_constant=1,
                 description="MALL DEVICE input-enable AND not-working",
             ),
             _relay(feed_gate_relay, 18.0, 56.0, "feeder-enable relay"),
@@ -320,13 +316,12 @@ def attach_worker_device(
     _wire(wires, feed_gate, 3, feed_gate_relay, 1)
     _wire(wires, feed_gate_relay, 1, feeder, 1)
 
-    # Durable completion latch.  SET catches the machine's one-tick F pulse.  HOLD feeds F back until
-    # the worker emits acknowledgement A; the held F, not the raw pulse, drives the controller input.
+    # Durable completion latch. SET catches the machine's one-tick F pulse. HOLD feeds F back until
+    # acknowledgement A; the held F, not the raw pulse, drives the controller input.
     completion_set = next_id
     completion_hold = next_id + 1
     completion_latch = next_id + 2
     ack_relay = next_id + 3
-    next_id += 4
     entities.extend(
         [
             _decider(
@@ -335,7 +330,6 @@ def attach_worker_device(
                 54.0,
                 conditions=[_condition(FINISHED, ">", constant=0, network="red")],
                 output=FINISHED,
-                output_constant=1,
                 description="MALL DEVICE completion SET",
             ),
             _decider(
@@ -344,10 +338,15 @@ def attach_worker_device(
                 54.0,
                 conditions=[
                     _condition(FINISHED, ">", constant=0, network="red"),
-                    _condition(ACK_FINISHED, "=", constant=0, network="red", compare_type="and"),
+                    _condition(
+                        ACK_FINISHED,
+                        "=",
+                        constant=0,
+                        network="red",
+                        compare_type="and",
+                    ),
                 ],
                 output=FINISHED,
-                output_constant=1,
                 description="MALL DEVICE completion HOLD until acknowledgement",
             ),
             _relay(completion_latch, 33.0, 54.0, "completion latch bus"),
@@ -362,7 +361,7 @@ def attach_worker_device(
     _wire(wires, ack_dock, 1, ack_relay, 1)
     _wire(wires, ack_relay, 1, completion_hold, 1)
 
-    blueprint["wires"] = [list(item) for item in sorted(set(_wire_tuple(wire) for wire in wires))]
+    blueprint["wires"] = [list(item) for item in sorted({_wire_tuple(wire) for wire in wires})]
     _validate_wire_references(blueprint)
     _validate_bounds(blueprint)
     return result
@@ -535,7 +534,8 @@ def _arithmetic(
                 "operation": operation,
                 "first_signal": _signal_json(first),
                 "first_signal_networks": _networks(
-                    red=first_network == "red", green=first_network == "green"
+                    red=first_network == "red",
+                    green=first_network == "green",
                 ),
                 "second_constant": second_constant,
                 "output_signal": _signal_json(output),
@@ -551,7 +551,6 @@ def _decider(
     *,
     conditions: Sequence[dict[str, object]],
     output: SignalId,
-    output_constant: int = 1,
     copy_count: bool = False,
     description: str,
 ) -> dict[str, object]:
@@ -559,8 +558,6 @@ def _decider(
         "signal": _signal_json(output),
         "copy_count_from_input": copy_count,
     }
-    if not copy_count and output_constant != 1:
-        output_spec["constant"] = output_constant
     return {
         "entity_number": entity_id,
         "name": "decider-combinator",
@@ -586,7 +583,10 @@ def _condition(
 ) -> dict[str, object]:
     result: dict[str, object] = {
         "first_signal": _signal_json(signal),
-        "first_signal_networks": _networks(red=network == "red", green=network == "green"),
+        "first_signal_networks": _networks(
+            red=network == "red",
+            green=network == "green",
+        ),
         "constant": constant,
         "comparator": comparator,
     }
@@ -626,7 +626,11 @@ def _wires(blueprint: dict[str, object]) -> list[object]:
 
 def _dock_id(entities: Iterable[dict[str, object]], label: str) -> int:
     expected = f"DOCK {label}"
-    matches = [int(entity["entity_number"]) for entity in entities if entity.get("player_description") == expected]
+    matches = [
+        int(entity["entity_number"])
+        for entity in entities
+        if entity.get("player_description") == expected
+    ]
     if len(matches) != 1:
         raise ValueError(f"expected exactly one {expected!r}, got {len(matches)}")
     return matches[0]
