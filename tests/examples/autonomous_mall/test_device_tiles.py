@@ -1,4 +1,5 @@
 from collections import Counter
+from math import hypot
 
 import pytest
 
@@ -52,6 +53,27 @@ def _requested_module(machine: dict[str, object]) -> str:
     return str(item_id["name"])
 
 
+def _assert_wire_reach(blueprint: dict[str, object], maximum: float = 9.0) -> None:
+    entities = _entities(blueprint)
+    positions = {
+        int(entity["entity_number"]): (
+            float(entity["position"]["x"]),
+            float(entity["position"]["y"]),
+        )
+        for entity in entities
+    }
+    wires = blueprint["wires"]
+    assert isinstance(wires, list)
+    for left, _left_connector, right, _right_connector in wires:
+        left_position = positions[int(left)]
+        right_position = positions[int(right)]
+        distance = hypot(
+            left_position[0] - right_position[0],
+            left_position[1] - right_position[1],
+        )
+        assert distance <= maximum + 1e-9
+
+
 @pytest.mark.slow
 @pytest.mark.acceptance
 def test_complete_worker_roles_and_machine_controls(complete_book) -> None:
@@ -60,12 +82,16 @@ def test_complete_worker_roles_and_machine_controls(complete_book) -> None:
     recycler = _entry(complete_book, 3)
 
     for blueprint in (productivity, quality, recycler):
-        assert blueprint["snap-to-grid"] == {"x": TILE_WIDTH, "y": COMPLETE_TILE_HEIGHT}
+        assert blueprint["snap-to-grid"] == {
+            "x": TILE_WIDTH,
+            "y": COMPLETE_TILE_HEIGHT,
+        }
         assert blueprint["absolute-snapping"] is True
         names = Counter(entity["name"] for entity in _entities(blueprint))
         assert names["logistic-chest-requester"] == 1
         assert names["logistic-chest-passive-provider"] == 1
         assert names["stack-inserter"] == 2
+        _assert_wire_reach(blueprint)
 
     p_machine = _one(_entities(productivity), "assembling-machine-3")
     q_machine = _one(_entities(quality), "assembling-machine-3")
@@ -95,14 +121,14 @@ def test_complete_worker_roles_and_machine_controls(complete_book) -> None:
 
 @pytest.mark.slow
 @pytest.mark.acceptance
-def test_complete_worker_generates_exact_one_craft_feeder_and_completion_latch(complete_book) -> None:
+def test_complete_worker_has_feeder_and_completion_latch(complete_book) -> None:
     productivity = _entry(complete_book, 1)
     entities = _entities(productivity)
 
     feeder = next(
         entity
         for entity in entities
-        if entity.get("player_description", "").startswith("MALL DEVICE feeder")
+        if str(entity.get("player_description", "")).startswith("MALL DEVICE feeder")
     )
     assert feeder["override_stack_size"] == 1
     behavior = feeder["control_behavior"]
@@ -128,7 +154,7 @@ def test_complete_worker_generates_exact_one_craft_feeder_and_completion_latch(c
 
 @pytest.mark.slow
 @pytest.mark.acceptance
-def test_complete_row_contains_five_devices_and_keeps_two_shared_docks_per_seam(complete_book) -> None:
+def test_complete_row_has_five_devices_and_shared_seam_docks(complete_book) -> None:
     assembled = _entry(complete_book, 0)
     entities = _entities(assembled)
     names = Counter(entity["name"] for entity in entities)
