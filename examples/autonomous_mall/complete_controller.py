@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from math import hypot
-from typing import Callable
+from typing import Callable, cast
 
 from factorio_circuit import ModuleInterface, SignalId, compile_module
 
@@ -390,9 +390,13 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
     """Apply real prototypes, correct item flow, and automatic assembler ingredients."""
 
     raw_entities = blueprint.get("entities", [])
-    if not isinstance(raw_entities, list):
-        raise ValueError("blueprint entities must be a list")
-    entities = [entity for entity in raw_entities if isinstance(entity, dict)]
+    if not isinstance(raw_entities, list) or not all(
+        isinstance(entity, dict) for entity in raw_entities
+    ):
+        raise ValueError("blueprint entities must be dictionaries")
+    # Keep the live blueprint list. A copied list would make newly appended device entities disappear
+    # while leaving wires that reference their entity ids.
+    entities = cast(list[dict[str, object]], raw_entities)
 
     for entity in entities:
         name = entity.get("name")
@@ -466,11 +470,8 @@ def _normalize_worker_devices(blueprint: dict[str, object]) -> None:
     if recycler_output_inserters:
         blueprint["entities"] = [
             entity
-            for entity in raw_entities
-            if not (
-                isinstance(entity, dict)
-                and int(entity.get("entity_number", -1)) in recycler_output_inserters
-            )
+            for entity in entities
+            if int(entity.get("entity_number", -1)) not in recycler_output_inserters
         ]
         wires = {
             wire
