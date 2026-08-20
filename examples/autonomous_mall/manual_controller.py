@@ -1,14 +1,14 @@
 """Manually wired transactional controller for the autonomous mall in-game prototype.
 
-This is intentionally application-specific and lives under ``examples``.  The economic LP planner
+This is intentionally application-specific and lives under ``examples``. The economic LP planner
 remains the oracle for choosing jobs; this circuit exercises the physical transaction layer that the
 future autonomous planner will drive.
 
-The controller allocates one conservative batch only when every worker is idle.  Candidate jobs are
+The controller allocates one conservative batch only when every worker is idle. Candidate jobs are
 considered in ``DEFAULT_WORKERS`` order against one live roboport stock snapshot, so accepted jobs
 atomically reserve their complete requester-chest demand before later candidates are considered.
 No new batch starts until all accepted jobs have completed and all external completion latches have
-cleared.  This avoids treating robot flight or assembler-local inventory as fresh globally available
+cleared. This avoids treating robot flight or assembler-local inventory as fresh globally available
 stock.
 """
 
@@ -67,8 +67,8 @@ def build_manual_controller(
     """Build the manually wired multi-worker transactional controller.
 
     External ``*_finished`` inputs must be persistent completion latches, not one-tick machine
-    pulses.  The controller emits ``*_ack_finished`` while consuming a completion so the external
-    latch can reset.  ``dispatch`` is edge-armed: hold it high until the batch is accepted, then
+    pulses. The controller emits ``*_ack_finished`` while consuming a completion so the external
+    latch can reset. ``dispatch`` is edge-armed: hold it high until the batch is accepted, then
     return it to zero before requesting another batch.
     """
 
@@ -123,7 +123,9 @@ def build_manual_controller(
     batch_ready = dispatch_is_seen.logical_not()
     for state in states:
         idle = old_modes[state.spec.name].any().logical_not()
-        batch_ready = batch_ready * idle * state.working.logical_not() * state.finished.logical_not()
+        batch_ready = (
+            batch_ready * idle * state.working.logical_not() * state.finished.logical_not()
+        )
 
     dispatch_fire = dispatch_active * batch_ready
     rearm_dispatch = dispatch_is_seen * dispatch_active.logical_not()
@@ -157,7 +159,8 @@ def build_manual_controller(
         if state.held_recipe is not None and state.job_recipe is not None:
             state.held_recipe.set(state.job_recipe, when=accept)
 
-        circuit.output(f"{state.spec.name}_requester_demand", old_requests[state.spec.name].gate(starting))
+        requester_demand = old_requests[state.spec.name].gate(starting)
+        circuit.output(f"{state.spec.name}_requester_demand", requester_demand)
         if state.held_recipe is not None:
             circuit.output(
                 f"{state.spec.name}_recipe",
