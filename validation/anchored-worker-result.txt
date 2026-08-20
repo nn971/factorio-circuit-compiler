@@ -1,0 +1,3403 @@
+source_commit=9bead948519da9aebcf3c109296dcea30758d32a
+
+===== focused pytest =====
+................FFF                                                      [100%]
+=================================== FAILURES ===================================
+_________ test_compiled_worker_binds_six_device_ports_by_exact_overlap _________
+
+self = VectorPhysicalSynthesizer(circuit=AbstractPhysicalCircuit(name='anchored_assembler_worker', signals=[AbstractSignal(id...16, corridor_width=2.0, target_fill=0.6, iterations=0, random_seed=0, restarts=3, retry_fill_scale=0.9), progress=None)
+
+    def synthesize(self) -> Layout:
+        report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
+        self.circuit.validate()
+    
+        report_progress(self.progress, "synthesis", detail="assigning red/green net colors")
+        net_colors = self._assign_net_colors()
+        net_groups = self._coalesce_shared_connector_nets(net_colors)
+    
+        report_progress(self.progress, "synthesis", detail="allocating concrete signals")
+        signal_allocation = self._allocate_signals(net_groups)
+    
+        report_progress(self.progress, "synthesis", detail="materializing physical combinators")
+        physical = self._materialize_circuit(signal_allocation, net_colors)
+    
+        selected = self.placement_options or PlacementOptions()
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
+            if selected.anchors:
+                raise ValueError(
+                    f"{strategy} does not yet support fixed placement anchors; "
+                    "use the net-aware layout for anchored synthesis"
+                )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+    
+            report_progress(
+                self.progress,
+                "safe-folded-layout",
+                detail="using row-local folded bus geometry; routing search disabled",
+            )
+            return build_safe_folded_crossbar_layout(
+                self.circuit,
+                physical,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation=signal_allocation,
+                safe_wire_span=self.safe_wire_span,
+                progress=self.progress,
+            )
+    
+        selected.validate()
+        attempts = _placement_attempt_count(selected)
+    
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = _placement_attempt_options(selected, restart)
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart,
+                total=attempts,
+                detail=(
+                    f"strategy={attempt_options.strategy}; "
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
+                ),
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart + 1,
+                total=attempts,
+                detail=f"placed {len(positions)} entities",
+            )
+    
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+>               routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
+                    progress=self.progress,
+                )
+
+src/factorio_circuit/synthesis/open_vector.py:143: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/factorio_circuit/blueprint/routing.py:126: in route_wires
+    relay_positions = _find_relay_positions(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = (12.0, 21.469135802469136), target = (8.0, 27.469135802469136)
+safe_span = 7.0
+occupied = [((19.5, 44.0), (0.5, 0.5), 1), ((4.0, 3.0), (0.5, 0.5), 2), ((11.0, 3.0), (0.5, 0.5), 3), ((18.0, 3.0), (0.5, 0.5), 4), ((10.5, 44.0), (0.5, 0.5), 5), ((13.5, 44.0), (0.5, 0.5), 6), ...]
+edge_index = 194, edge_total = 237
+forbidden_areas = ((15.23456790123457, 17.23456790123457, 15.73456790123457, 17.73456790123457),)
+progress = None
+
+    def _find_relay_positions(
+        source: tuple[float, float],
+        target: tuple[float, float],
+        *,
+        safe_span: float,
+        occupied: list[tuple[tuple[float, float], tuple[float, float], int]],
+        edge_index: int,
+        edge_total: int,
+        forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
+        progress: ProgressCallback | None = None,
+    ) -> list[tuple[float, float]]:
+        distance = _distance(source, target)
+        dx = target[0] - source[0]
+        dy = target[1] - source[1]
+        norm = distance or 1.0
+        perp = (-dy / norm, dx / norm)
+    
+        # Start far enough off the main combinator row to clear a horizontal 2x1 combinator.
+        # Alternate sides first, then try more distant lanes. edge_index rotates the ordering so
+        # consecutive long connections do not all prefer the same routing lane.
+        max_offset_step = int((safe_span - 0.25) * 4)
+        base_offsets = [
+            direction * step / 4 for step in range(5, max_offset_step + 1) for direction in (1, -1)
+        ]
+        rotate = (edge_index - 1) % len(base_offsets)
+        offsets = [0.0, *base_offsets[rotate:], *base_offsets[:rotate]]
+    
+        for offset in offsets:
+            abs_offset = abs(offset)
+            if abs_offset >= safe_span - 0.25:
+                continue
+    
+            # The first and last segments travel both along the edge and out to the parallel lane.
+            # Pick enough segments that those diagonal segments still fit comfortably inside reach.
+            longitudinal_budget = sqrt(max(0.25, safe_span * safe_span - abs_offset * abs_offset))
+            minimum_segments = max(2, ceil(distance / longitudinal_budget))
+    
+            # Trying a few denser subdivisions also shifts relay positions along the lane and often
+            # resolves an otherwise accidental collision with another relay.
+            for segments in range(minimum_segments, minimum_segments + 5):
+                candidates = []
+                for relay_index in range(1, segments):
+                    fraction = relay_index / segments
+                    candidates.append(
+                        (
+                            source[0] + dx * fraction + perp[0] * offset,
+                            source[1] + dy * fraction + perp[1] * offset,
+                        )
+                    )
+    
+                if not _chain_is_in_reach(source, candidates, target, safe_span):
+                    continue
+                if _relay_candidates_are_clear(candidates, occupied, forbidden_areas=forbidden_areas):
+                    return candidates
+    
+        fallback = _find_grid_relay_positions(
+            source,
+            target,
+            safe_span=safe_span,
+            occupied=occupied,
+            edge_index=edge_index,
+            edge_total=edge_total,
+            forbidden_areas=forbidden_areas,
+            progress=progress,
+        )
+        if fallback is not None:
+            return fallback
+    
+>       raise ValueError(
+            "could not route a collision-free circuit wire within the configured reach; "
+            "parallel lanes and grid search were both exhausted"
+        )
+E       ValueError: could not route a collision-free circuit wire within the configured reach; parallel lanes and grid search were both exhausted
+
+src/factorio_circuit/blueprint/routing.py:260: ValueError
+
+The above exception was the direct cause of the following exception:
+
+    def test_compiled_worker_binds_six_device_ports_by_exact_overlap() -> None:
+>       result = compile_assembler_worker()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/examples/autonomous_mall/test_anchored_worker.py:96: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+examples/autonomous_mall/anchored_worker.py:158: in compile_assembler_worker
+    return compile_module(
+src/factorio_circuit/synthesis/interface.py:132: in compile_module
+    result = compile_circuit(
+src/factorio_circuit/compiler.py:211: in compile_circuit
+    naive_physical = _synthesize(
+src/factorio_circuit/compiler.py:103: in _synthesize
+    return synthesize_vector_layout(
+src/factorio_circuit/synthesis/open_vector.py:240: in synthesize_vector_layout
+    ).synthesize()
+      ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = VectorPhysicalSynthesizer(circuit=AbstractPhysicalCircuit(name='anchored_assembler_worker', signals=[AbstractSignal(id...16, corridor_width=2.0, target_fill=0.6, iterations=0, random_seed=0, restarts=3, retry_fill_scale=0.9), progress=None)
+
+    def synthesize(self) -> Layout:
+        report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
+        self.circuit.validate()
+    
+        report_progress(self.progress, "synthesis", detail="assigning red/green net colors")
+        net_colors = self._assign_net_colors()
+        net_groups = self._coalesce_shared_connector_nets(net_colors)
+    
+        report_progress(self.progress, "synthesis", detail="allocating concrete signals")
+        signal_allocation = self._allocate_signals(net_groups)
+    
+        report_progress(self.progress, "synthesis", detail="materializing physical combinators")
+        physical = self._materialize_circuit(signal_allocation, net_colors)
+    
+        selected = self.placement_options or PlacementOptions()
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
+            if selected.anchors:
+                raise ValueError(
+                    f"{strategy} does not yet support fixed placement anchors; "
+                    "use the net-aware layout for anchored synthesis"
+                )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+    
+            report_progress(
+                self.progress,
+                "safe-folded-layout",
+                detail="using row-local folded bus geometry; routing search disabled",
+            )
+            return build_safe_folded_crossbar_layout(
+                self.circuit,
+                physical,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation=signal_allocation,
+                safe_wire_span=self.safe_wire_span,
+                progress=self.progress,
+            )
+    
+        selected.validate()
+        attempts = _placement_attempt_count(selected)
+    
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = _placement_attempt_options(selected, restart)
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart,
+                total=attempts,
+                detail=(
+                    f"strategy={attempt_options.strategy}; "
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
+                ),
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart + 1,
+                total=attempts,
+                detail=f"placed {len(positions)} entities",
+            )
+    
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+                routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
+                    progress=self.progress,
+                )
+            except ValueError as exc:
+                if "parallel lanes and grid search were both exhausted" not in str(exc):
+                    raise
+                last_routing_error = exc
+                if restart + 1 < attempts:
+                    next_options = _placement_attempt_options(selected, restart + 1)
+                    report_progress(
+                        self.progress,
+                        "retry",
+                        completed=restart + 1,
+                        total=attempts,
+                        detail=(
+                            "routing failed; rebuilding with more space: "
+                            f"fill={next_options.target_fill:.3f}; "
+                            f"corridor={next_options.corridor_width:.2f}"
+                        ),
+                    )
+                continue
+    
+            final_positions = routed_positions(physical, positions, routing)
+            report_progress(
+                self.progress,
+                "synthesis",
+                detail=(
+                    f"physical layout complete; combinators={physical.combinator_count}; "
+                    f"relays={len(routing.relays)}"
+                ),
+            )
+            return Layout(
+                circuit=physical,
+                positions=final_positions,
+                relays=tuple(
+                    LayoutRelay(relay.entity_id, relay.position, relay.description)
+                    for relay in routing.relays
+                ),
+                wires=tuple(
+                    LayoutWire(
+                        wire.source_entity,
+                        wire.source_connector_id,
+                        wire.target_entity,
+                        wire.target_connector_id,
+                        wire.color,
+                    )
+                    for wire in routing.wires
+                ),
+                signal_allocation=tuple(sorted(signal_allocation.items())),
+                net_colors=tuple(sorted(net_colors.items())),
+                net_groups=tuple(sorted(net_groups.items())),
+            )
+    
+        assert last_routing_error is not None
+>       raise ValueError(
+            f"physical synthesis exhausted {attempts} deterministic placement attempt(s) "
+            "without finding a collision-free, reach-safe route that keeps reserved "
+            "corridors clear of relay entities"
+        ) from last_routing_error
+E       ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+
+src/factorio_circuit/synthesis/open_vector.py:201: ValueError
+____ test_composed_worker_device_has_legal_wire_reach_and_no_entity_overlap ____
+
+self = VectorPhysicalSynthesizer(circuit=AbstractPhysicalCircuit(name='anchored_assembler_worker', signals=[AbstractSignal(id...16, corridor_width=2.0, target_fill=0.6, iterations=0, random_seed=0, restarts=3, retry_fill_scale=0.9), progress=None)
+
+    def synthesize(self) -> Layout:
+        report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
+        self.circuit.validate()
+    
+        report_progress(self.progress, "synthesis", detail="assigning red/green net colors")
+        net_colors = self._assign_net_colors()
+        net_groups = self._coalesce_shared_connector_nets(net_colors)
+    
+        report_progress(self.progress, "synthesis", detail="allocating concrete signals")
+        signal_allocation = self._allocate_signals(net_groups)
+    
+        report_progress(self.progress, "synthesis", detail="materializing physical combinators")
+        physical = self._materialize_circuit(signal_allocation, net_colors)
+    
+        selected = self.placement_options or PlacementOptions()
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
+            if selected.anchors:
+                raise ValueError(
+                    f"{strategy} does not yet support fixed placement anchors; "
+                    "use the net-aware layout for anchored synthesis"
+                )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+    
+            report_progress(
+                self.progress,
+                "safe-folded-layout",
+                detail="using row-local folded bus geometry; routing search disabled",
+            )
+            return build_safe_folded_crossbar_layout(
+                self.circuit,
+                physical,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation=signal_allocation,
+                safe_wire_span=self.safe_wire_span,
+                progress=self.progress,
+            )
+    
+        selected.validate()
+        attempts = _placement_attempt_count(selected)
+    
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = _placement_attempt_options(selected, restart)
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart,
+                total=attempts,
+                detail=(
+                    f"strategy={attempt_options.strategy}; "
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
+                ),
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart + 1,
+                total=attempts,
+                detail=f"placed {len(positions)} entities",
+            )
+    
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+>               routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
+                    progress=self.progress,
+                )
+
+src/factorio_circuit/synthesis/open_vector.py:143: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/factorio_circuit/blueprint/routing.py:126: in route_wires
+    relay_positions = _find_relay_positions(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = (12.0, 21.469135802469136), target = (8.0, 27.469135802469136)
+safe_span = 7.0
+occupied = [((19.5, 44.0), (0.5, 0.5), 1), ((4.0, 3.0), (0.5, 0.5), 2), ((11.0, 3.0), (0.5, 0.5), 3), ((18.0, 3.0), (0.5, 0.5), 4), ((10.5, 44.0), (0.5, 0.5), 5), ((13.5, 44.0), (0.5, 0.5), 6), ...]
+edge_index = 194, edge_total = 237
+forbidden_areas = ((15.23456790123457, 17.23456790123457, 15.73456790123457, 17.73456790123457),)
+progress = None
+
+    def _find_relay_positions(
+        source: tuple[float, float],
+        target: tuple[float, float],
+        *,
+        safe_span: float,
+        occupied: list[tuple[tuple[float, float], tuple[float, float], int]],
+        edge_index: int,
+        edge_total: int,
+        forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
+        progress: ProgressCallback | None = None,
+    ) -> list[tuple[float, float]]:
+        distance = _distance(source, target)
+        dx = target[0] - source[0]
+        dy = target[1] - source[1]
+        norm = distance or 1.0
+        perp = (-dy / norm, dx / norm)
+    
+        # Start far enough off the main combinator row to clear a horizontal 2x1 combinator.
+        # Alternate sides first, then try more distant lanes. edge_index rotates the ordering so
+        # consecutive long connections do not all prefer the same routing lane.
+        max_offset_step = int((safe_span - 0.25) * 4)
+        base_offsets = [
+            direction * step / 4 for step in range(5, max_offset_step + 1) for direction in (1, -1)
+        ]
+        rotate = (edge_index - 1) % len(base_offsets)
+        offsets = [0.0, *base_offsets[rotate:], *base_offsets[:rotate]]
+    
+        for offset in offsets:
+            abs_offset = abs(offset)
+            if abs_offset >= safe_span - 0.25:
+                continue
+    
+            # The first and last segments travel both along the edge and out to the parallel lane.
+            # Pick enough segments that those diagonal segments still fit comfortably inside reach.
+            longitudinal_budget = sqrt(max(0.25, safe_span * safe_span - abs_offset * abs_offset))
+            minimum_segments = max(2, ceil(distance / longitudinal_budget))
+    
+            # Trying a few denser subdivisions also shifts relay positions along the lane and often
+            # resolves an otherwise accidental collision with another relay.
+            for segments in range(minimum_segments, minimum_segments + 5):
+                candidates = []
+                for relay_index in range(1, segments):
+                    fraction = relay_index / segments
+                    candidates.append(
+                        (
+                            source[0] + dx * fraction + perp[0] * offset,
+                            source[1] + dy * fraction + perp[1] * offset,
+                        )
+                    )
+    
+                if not _chain_is_in_reach(source, candidates, target, safe_span):
+                    continue
+                if _relay_candidates_are_clear(candidates, occupied, forbidden_areas=forbidden_areas):
+                    return candidates
+    
+        fallback = _find_grid_relay_positions(
+            source,
+            target,
+            safe_span=safe_span,
+            occupied=occupied,
+            edge_index=edge_index,
+            edge_total=edge_total,
+            forbidden_areas=forbidden_areas,
+            progress=progress,
+        )
+        if fallback is not None:
+            return fallback
+    
+>       raise ValueError(
+            "could not route a collision-free circuit wire within the configured reach; "
+            "parallel lanes and grid search were both exhausted"
+        )
+E       ValueError: could not route a collision-free circuit wire within the configured reach; parallel lanes and grid search were both exhausted
+
+src/factorio_circuit/blueprint/routing.py:260: ValueError
+
+The above exception was the direct cause of the following exception:
+
+    def test_composed_worker_device_has_legal_wire_reach_and_no_entity_overlap() -> None:
+>       composed = build_anchored_worker_device(
+            modules=("productivity-module-3",) * 4,
+        ).blueprint
+
+tests/examples/autonomous_mall/test_anchored_worker.py:116: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+examples/autonomous_mall/anchored_worker.py:222: in build_anchored_worker_device
+    worker = worker_as_anchored_blueprint()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+examples/autonomous_mall/anchored_worker.py:191: in worker_as_anchored_blueprint
+    compiled = result or compile_assembler_worker()
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+examples/autonomous_mall/anchored_worker.py:158: in compile_assembler_worker
+    return compile_module(
+src/factorio_circuit/synthesis/interface.py:132: in compile_module
+    result = compile_circuit(
+src/factorio_circuit/compiler.py:211: in compile_circuit
+    naive_physical = _synthesize(
+src/factorio_circuit/compiler.py:103: in _synthesize
+    return synthesize_vector_layout(
+src/factorio_circuit/synthesis/open_vector.py:240: in synthesize_vector_layout
+    ).synthesize()
+      ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = VectorPhysicalSynthesizer(circuit=AbstractPhysicalCircuit(name='anchored_assembler_worker', signals=[AbstractSignal(id...16, corridor_width=2.0, target_fill=0.6, iterations=0, random_seed=0, restarts=3, retry_fill_scale=0.9), progress=None)
+
+    def synthesize(self) -> Layout:
+        report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
+        self.circuit.validate()
+    
+        report_progress(self.progress, "synthesis", detail="assigning red/green net colors")
+        net_colors = self._assign_net_colors()
+        net_groups = self._coalesce_shared_connector_nets(net_colors)
+    
+        report_progress(self.progress, "synthesis", detail="allocating concrete signals")
+        signal_allocation = self._allocate_signals(net_groups)
+    
+        report_progress(self.progress, "synthesis", detail="materializing physical combinators")
+        physical = self._materialize_circuit(signal_allocation, net_colors)
+    
+        selected = self.placement_options or PlacementOptions()
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
+            if selected.anchors:
+                raise ValueError(
+                    f"{strategy} does not yet support fixed placement anchors; "
+                    "use the net-aware layout for anchored synthesis"
+                )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+    
+            report_progress(
+                self.progress,
+                "safe-folded-layout",
+                detail="using row-local folded bus geometry; routing search disabled",
+            )
+            return build_safe_folded_crossbar_layout(
+                self.circuit,
+                physical,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation=signal_allocation,
+                safe_wire_span=self.safe_wire_span,
+                progress=self.progress,
+            )
+    
+        selected.validate()
+        attempts = _placement_attempt_count(selected)
+    
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = _placement_attempt_options(selected, restart)
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart,
+                total=attempts,
+                detail=(
+                    f"strategy={attempt_options.strategy}; "
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
+                ),
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart + 1,
+                total=attempts,
+                detail=f"placed {len(positions)} entities",
+            )
+    
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+                routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
+                    progress=self.progress,
+                )
+            except ValueError as exc:
+                if "parallel lanes and grid search were both exhausted" not in str(exc):
+                    raise
+                last_routing_error = exc
+                if restart + 1 < attempts:
+                    next_options = _placement_attempt_options(selected, restart + 1)
+                    report_progress(
+                        self.progress,
+                        "retry",
+                        completed=restart + 1,
+                        total=attempts,
+                        detail=(
+                            "routing failed; rebuilding with more space: "
+                            f"fill={next_options.target_fill:.3f}; "
+                            f"corridor={next_options.corridor_width:.2f}"
+                        ),
+                    )
+                continue
+    
+            final_positions = routed_positions(physical, positions, routing)
+            report_progress(
+                self.progress,
+                "synthesis",
+                detail=(
+                    f"physical layout complete; combinators={physical.combinator_count}; "
+                    f"relays={len(routing.relays)}"
+                ),
+            )
+            return Layout(
+                circuit=physical,
+                positions=final_positions,
+                relays=tuple(
+                    LayoutRelay(relay.entity_id, relay.position, relay.description)
+                    for relay in routing.relays
+                ),
+                wires=tuple(
+                    LayoutWire(
+                        wire.source_entity,
+                        wire.source_connector_id,
+                        wire.target_entity,
+                        wire.target_connector_id,
+                        wire.color,
+                    )
+                    for wire in routing.wires
+                ),
+                signal_allocation=tuple(sorted(signal_allocation.items())),
+                net_colors=tuple(sorted(net_colors.items())),
+                net_groups=tuple(sorted(net_groups.items())),
+            )
+    
+        assert last_routing_error is not None
+>       raise ValueError(
+            f"physical synthesis exhausted {attempts} deterministic placement attempt(s) "
+            "without finding a collision-free, reach-safe route that keeps reserved "
+            "corridors clear of relay entities"
+        ) from last_routing_error
+E       ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+
+src/factorio_circuit/synthesis/open_vector.py:201: ValueError
+__________ test_probe_seeds_stock_recipe_controls_and_active_provider __________
+
+self = VectorPhysicalSynthesizer(circuit=AbstractPhysicalCircuit(name='anchored_assembler_worker', signals=[AbstractSignal(id...16, corridor_width=2.0, target_fill=0.6, iterations=0, random_seed=0, restarts=3, retry_fill_scale=0.9), progress=None)
+
+    def synthesize(self) -> Layout:
+        report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
+        self.circuit.validate()
+    
+        report_progress(self.progress, "synthesis", detail="assigning red/green net colors")
+        net_colors = self._assign_net_colors()
+        net_groups = self._coalesce_shared_connector_nets(net_colors)
+    
+        report_progress(self.progress, "synthesis", detail="allocating concrete signals")
+        signal_allocation = self._allocate_signals(net_groups)
+    
+        report_progress(self.progress, "synthesis", detail="materializing physical combinators")
+        physical = self._materialize_circuit(signal_allocation, net_colors)
+    
+        selected = self.placement_options or PlacementOptions()
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
+            if selected.anchors:
+                raise ValueError(
+                    f"{strategy} does not yet support fixed placement anchors; "
+                    "use the net-aware layout for anchored synthesis"
+                )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+    
+            report_progress(
+                self.progress,
+                "safe-folded-layout",
+                detail="using row-local folded bus geometry; routing search disabled",
+            )
+            return build_safe_folded_crossbar_layout(
+                self.circuit,
+                physical,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation=signal_allocation,
+                safe_wire_span=self.safe_wire_span,
+                progress=self.progress,
+            )
+    
+        selected.validate()
+        attempts = _placement_attempt_count(selected)
+    
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = _placement_attempt_options(selected, restart)
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart,
+                total=attempts,
+                detail=(
+                    f"strategy={attempt_options.strategy}; "
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
+                ),
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart + 1,
+                total=attempts,
+                detail=f"placed {len(positions)} entities",
+            )
+    
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+>               routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
+                    progress=self.progress,
+                )
+
+src/factorio_circuit/synthesis/open_vector.py:143: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/factorio_circuit/blueprint/routing.py:126: in route_wires
+    relay_positions = _find_relay_positions(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = (12.0, 21.469135802469136), target = (8.0, 27.469135802469136)
+safe_span = 7.0
+occupied = [((19.5, 44.0), (0.5, 0.5), 1), ((4.0, 3.0), (0.5, 0.5), 2), ((11.0, 3.0), (0.5, 0.5), 3), ((18.0, 3.0), (0.5, 0.5), 4), ((10.5, 44.0), (0.5, 0.5), 5), ((13.5, 44.0), (0.5, 0.5), 6), ...]
+edge_index = 194, edge_total = 237
+forbidden_areas = ((15.23456790123457, 17.23456790123457, 15.73456790123457, 17.73456790123457),)
+progress = None
+
+    def _find_relay_positions(
+        source: tuple[float, float],
+        target: tuple[float, float],
+        *,
+        safe_span: float,
+        occupied: list[tuple[tuple[float, float], tuple[float, float], int]],
+        edge_index: int,
+        edge_total: int,
+        forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
+        progress: ProgressCallback | None = None,
+    ) -> list[tuple[float, float]]:
+        distance = _distance(source, target)
+        dx = target[0] - source[0]
+        dy = target[1] - source[1]
+        norm = distance or 1.0
+        perp = (-dy / norm, dx / norm)
+    
+        # Start far enough off the main combinator row to clear a horizontal 2x1 combinator.
+        # Alternate sides first, then try more distant lanes. edge_index rotates the ordering so
+        # consecutive long connections do not all prefer the same routing lane.
+        max_offset_step = int((safe_span - 0.25) * 4)
+        base_offsets = [
+            direction * step / 4 for step in range(5, max_offset_step + 1) for direction in (1, -1)
+        ]
+        rotate = (edge_index - 1) % len(base_offsets)
+        offsets = [0.0, *base_offsets[rotate:], *base_offsets[:rotate]]
+    
+        for offset in offsets:
+            abs_offset = abs(offset)
+            if abs_offset >= safe_span - 0.25:
+                continue
+    
+            # The first and last segments travel both along the edge and out to the parallel lane.
+            # Pick enough segments that those diagonal segments still fit comfortably inside reach.
+            longitudinal_budget = sqrt(max(0.25, safe_span * safe_span - abs_offset * abs_offset))
+            minimum_segments = max(2, ceil(distance / longitudinal_budget))
+    
+            # Trying a few denser subdivisions also shifts relay positions along the lane and often
+            # resolves an otherwise accidental collision with another relay.
+            for segments in range(minimum_segments, minimum_segments + 5):
+                candidates = []
+                for relay_index in range(1, segments):
+                    fraction = relay_index / segments
+                    candidates.append(
+                        (
+                            source[0] + dx * fraction + perp[0] * offset,
+                            source[1] + dy * fraction + perp[1] * offset,
+                        )
+                    )
+    
+                if not _chain_is_in_reach(source, candidates, target, safe_span):
+                    continue
+                if _relay_candidates_are_clear(candidates, occupied, forbidden_areas=forbidden_areas):
+                    return candidates
+    
+        fallback = _find_grid_relay_positions(
+            source,
+            target,
+            safe_span=safe_span,
+            occupied=occupied,
+            edge_index=edge_index,
+            edge_total=edge_total,
+            forbidden_areas=forbidden_areas,
+            progress=progress,
+        )
+        if fallback is not None:
+            return fallback
+    
+>       raise ValueError(
+            "could not route a collision-free circuit wire within the configured reach; "
+            "parallel lanes and grid search were both exhausted"
+        )
+E       ValueError: could not route a collision-free circuit wire within the configured reach; parallel lanes and grid search were both exhausted
+
+src/factorio_circuit/blueprint/routing.py:260: ValueError
+
+The above exception was the direct cause of the following exception:
+
+    def test_probe_seeds_stock_recipe_controls_and_active_provider() -> None:
+>       blueprint = build_probe_blueprint()
+                    ^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/examples/autonomous_mall/test_anchored_worker.py:156: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+examples/autonomous_mall/anchored_worker_probe.py:55: in build_probe_blueprint
+    result = compile_assembler_worker()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+examples/autonomous_mall/anchored_worker.py:158: in compile_assembler_worker
+    return compile_module(
+src/factorio_circuit/synthesis/interface.py:132: in compile_module
+    result = compile_circuit(
+src/factorio_circuit/compiler.py:211: in compile_circuit
+    naive_physical = _synthesize(
+src/factorio_circuit/compiler.py:103: in _synthesize
+    return synthesize_vector_layout(
+src/factorio_circuit/synthesis/open_vector.py:240: in synthesize_vector_layout
+    ).synthesize()
+      ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = VectorPhysicalSynthesizer(circuit=AbstractPhysicalCircuit(name='anchored_assembler_worker', signals=[AbstractSignal(id...16, corridor_width=2.0, target_fill=0.6, iterations=0, random_seed=0, restarts=3, retry_fill_scale=0.9), progress=None)
+
+    def synthesize(self) -> Layout:
+        report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
+        self.circuit.validate()
+    
+        report_progress(self.progress, "synthesis", detail="assigning red/green net colors")
+        net_colors = self._assign_net_colors()
+        net_groups = self._coalesce_shared_connector_nets(net_colors)
+    
+        report_progress(self.progress, "synthesis", detail="allocating concrete signals")
+        signal_allocation = self._allocate_signals(net_groups)
+    
+        report_progress(self.progress, "synthesis", detail="materializing physical combinators")
+        physical = self._materialize_circuit(signal_allocation, net_colors)
+    
+        selected = self.placement_options or PlacementOptions()
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
+            if selected.anchors:
+                raise ValueError(
+                    f"{strategy} does not yet support fixed placement anchors; "
+                    "use the net-aware layout for anchored synthesis"
+                )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+    
+            report_progress(
+                self.progress,
+                "safe-folded-layout",
+                detail="using row-local folded bus geometry; routing search disabled",
+            )
+            return build_safe_folded_crossbar_layout(
+                self.circuit,
+                physical,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation=signal_allocation,
+                safe_wire_span=self.safe_wire_span,
+                progress=self.progress,
+            )
+    
+        selected.validate()
+        attempts = _placement_attempt_count(selected)
+    
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = _placement_attempt_options(selected, restart)
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart,
+                total=attempts,
+                detail=(
+                    f"strategy={attempt_options.strategy}; "
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
+                ),
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart + 1,
+                total=attempts,
+                detail=f"placed {len(positions)} entities",
+            )
+    
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+                routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
+                    progress=self.progress,
+                )
+            except ValueError as exc:
+                if "parallel lanes and grid search were both exhausted" not in str(exc):
+                    raise
+                last_routing_error = exc
+                if restart + 1 < attempts:
+                    next_options = _placement_attempt_options(selected, restart + 1)
+                    report_progress(
+                        self.progress,
+                        "retry",
+                        completed=restart + 1,
+                        total=attempts,
+                        detail=(
+                            "routing failed; rebuilding with more space: "
+                            f"fill={next_options.target_fill:.3f}; "
+                            f"corridor={next_options.corridor_width:.2f}"
+                        ),
+                    )
+                continue
+    
+            final_positions = routed_positions(physical, positions, routing)
+            report_progress(
+                self.progress,
+                "synthesis",
+                detail=(
+                    f"physical layout complete; combinators={physical.combinator_count}; "
+                    f"relays={len(routing.relays)}"
+                ),
+            )
+            return Layout(
+                circuit=physical,
+                positions=final_positions,
+                relays=tuple(
+                    LayoutRelay(relay.entity_id, relay.position, relay.description)
+                    for relay in routing.relays
+                ),
+                wires=tuple(
+                    LayoutWire(
+                        wire.source_entity,
+                        wire.source_connector_id,
+                        wire.target_entity,
+                        wire.target_connector_id,
+                        wire.color,
+                    )
+                    for wire in routing.wires
+                ),
+                signal_allocation=tuple(sorted(signal_allocation.items())),
+                net_colors=tuple(sorted(net_colors.items())),
+                net_groups=tuple(sorted(net_groups.items())),
+            )
+    
+        assert last_routing_error is not None
+>       raise ValueError(
+            f"physical synthesis exhausted {attempts} deterministic placement attempt(s) "
+            "without finding a collision-free, reach-safe route that keeps reserved "
+            "corridors clear of relay entities"
+        ) from last_routing_error
+E       ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+
+src/factorio_circuit/synthesis/open_vector.py:201: ValueError
+=========================== short test summary info ============================
+FAILED tests/examples/autonomous_mall/test_anchored_worker.py::test_compiled_worker_binds_six_device_ports_by_exact_overlap - ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+FAILED tests/examples/autonomous_mall/test_anchored_worker.py::test_composed_worker_device_has_legal_wire_reach_and_no_entity_overlap - ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+FAILED tests/examples/autonomous_mall/test_anchored_worker.py::test_probe_seeds_stock_recipe_controls_and_active_provider - ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+3 failed, 16 passed in 108.02s (0:01:48)
+exit_code=1
+
+===== full pytest =====
+.........................................FFF............................ [ 18%]
+........................................................................ [ 36%]
+........................................................................ [ 54%]
+........................................................................ [ 72%]
+........................................................................ [ 90%]
+.......................................                                  [100%]
+=================================== FAILURES ===================================
+_________ test_compiled_worker_binds_six_device_ports_by_exact_overlap _________
+
+self = VectorPhysicalSynthesizer(circuit=AbstractPhysicalCircuit(name='anchored_assembler_worker', signals=[AbstractSignal(id...16, corridor_width=2.0, target_fill=0.6, iterations=0, random_seed=0, restarts=3, retry_fill_scale=0.9), progress=None)
+
+    def synthesize(self) -> Layout:
+        report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
+        self.circuit.validate()
+    
+        report_progress(self.progress, "synthesis", detail="assigning red/green net colors")
+        net_colors = self._assign_net_colors()
+        net_groups = self._coalesce_shared_connector_nets(net_colors)
+    
+        report_progress(self.progress, "synthesis", detail="allocating concrete signals")
+        signal_allocation = self._allocate_signals(net_groups)
+    
+        report_progress(self.progress, "synthesis", detail="materializing physical combinators")
+        physical = self._materialize_circuit(signal_allocation, net_colors)
+    
+        selected = self.placement_options or PlacementOptions()
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
+            if selected.anchors:
+                raise ValueError(
+                    f"{strategy} does not yet support fixed placement anchors; "
+                    "use the net-aware layout for anchored synthesis"
+                )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+    
+            report_progress(
+                self.progress,
+                "safe-folded-layout",
+                detail="using row-local folded bus geometry; routing search disabled",
+            )
+            return build_safe_folded_crossbar_layout(
+                self.circuit,
+                physical,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation=signal_allocation,
+                safe_wire_span=self.safe_wire_span,
+                progress=self.progress,
+            )
+    
+        selected.validate()
+        attempts = _placement_attempt_count(selected)
+    
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = _placement_attempt_options(selected, restart)
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart,
+                total=attempts,
+                detail=(
+                    f"strategy={attempt_options.strategy}; "
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
+                ),
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart + 1,
+                total=attempts,
+                detail=f"placed {len(positions)} entities",
+            )
+    
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+>               routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
+                    progress=self.progress,
+                )
+
+src/factorio_circuit/synthesis/open_vector.py:143: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/factorio_circuit/blueprint/routing.py:126: in route_wires
+    relay_positions = _find_relay_positions(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = (12.0, 21.469135802469136), target = (8.0, 27.469135802469136)
+safe_span = 7.0
+occupied = [((19.5, 44.0), (0.5, 0.5), 1), ((4.0, 3.0), (0.5, 0.5), 2), ((11.0, 3.0), (0.5, 0.5), 3), ((18.0, 3.0), (0.5, 0.5), 4), ((10.5, 44.0), (0.5, 0.5), 5), ((13.5, 44.0), (0.5, 0.5), 6), ...]
+edge_index = 194, edge_total = 237
+forbidden_areas = ((15.23456790123457, 17.23456790123457, 15.73456790123457, 17.73456790123457),)
+progress = None
+
+    def _find_relay_positions(
+        source: tuple[float, float],
+        target: tuple[float, float],
+        *,
+        safe_span: float,
+        occupied: list[tuple[tuple[float, float], tuple[float, float], int]],
+        edge_index: int,
+        edge_total: int,
+        forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
+        progress: ProgressCallback | None = None,
+    ) -> list[tuple[float, float]]:
+        distance = _distance(source, target)
+        dx = target[0] - source[0]
+        dy = target[1] - source[1]
+        norm = distance or 1.0
+        perp = (-dy / norm, dx / norm)
+    
+        # Start far enough off the main combinator row to clear a horizontal 2x1 combinator.
+        # Alternate sides first, then try more distant lanes. edge_index rotates the ordering so
+        # consecutive long connections do not all prefer the same routing lane.
+        max_offset_step = int((safe_span - 0.25) * 4)
+        base_offsets = [
+            direction * step / 4 for step in range(5, max_offset_step + 1) for direction in (1, -1)
+        ]
+        rotate = (edge_index - 1) % len(base_offsets)
+        offsets = [0.0, *base_offsets[rotate:], *base_offsets[:rotate]]
+    
+        for offset in offsets:
+            abs_offset = abs(offset)
+            if abs_offset >= safe_span - 0.25:
+                continue
+    
+            # The first and last segments travel both along the edge and out to the parallel lane.
+            # Pick enough segments that those diagonal segments still fit comfortably inside reach.
+            longitudinal_budget = sqrt(max(0.25, safe_span * safe_span - abs_offset * abs_offset))
+            minimum_segments = max(2, ceil(distance / longitudinal_budget))
+    
+            # Trying a few denser subdivisions also shifts relay positions along the lane and often
+            # resolves an otherwise accidental collision with another relay.
+            for segments in range(minimum_segments, minimum_segments + 5):
+                candidates = []
+                for relay_index in range(1, segments):
+                    fraction = relay_index / segments
+                    candidates.append(
+                        (
+                            source[0] + dx * fraction + perp[0] * offset,
+                            source[1] + dy * fraction + perp[1] * offset,
+                        )
+                    )
+    
+                if not _chain_is_in_reach(source, candidates, target, safe_span):
+                    continue
+                if _relay_candidates_are_clear(candidates, occupied, forbidden_areas=forbidden_areas):
+                    return candidates
+    
+        fallback = _find_grid_relay_positions(
+            source,
+            target,
+            safe_span=safe_span,
+            occupied=occupied,
+            edge_index=edge_index,
+            edge_total=edge_total,
+            forbidden_areas=forbidden_areas,
+            progress=progress,
+        )
+        if fallback is not None:
+            return fallback
+    
+>       raise ValueError(
+            "could not route a collision-free circuit wire within the configured reach; "
+            "parallel lanes and grid search were both exhausted"
+        )
+E       ValueError: could not route a collision-free circuit wire within the configured reach; parallel lanes and grid search were both exhausted
+
+src/factorio_circuit/blueprint/routing.py:260: ValueError
+
+The above exception was the direct cause of the following exception:
+
+    def test_compiled_worker_binds_six_device_ports_by_exact_overlap() -> None:
+>       result = compile_assembler_worker()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/examples/autonomous_mall/test_anchored_worker.py:96: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+examples/autonomous_mall/anchored_worker.py:158: in compile_assembler_worker
+    return compile_module(
+src/factorio_circuit/synthesis/interface.py:132: in compile_module
+    result = compile_circuit(
+src/factorio_circuit/compiler.py:211: in compile_circuit
+    naive_physical = _synthesize(
+src/factorio_circuit/compiler.py:103: in _synthesize
+    return synthesize_vector_layout(
+src/factorio_circuit/synthesis/open_vector.py:240: in synthesize_vector_layout
+    ).synthesize()
+      ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = VectorPhysicalSynthesizer(circuit=AbstractPhysicalCircuit(name='anchored_assembler_worker', signals=[AbstractSignal(id...16, corridor_width=2.0, target_fill=0.6, iterations=0, random_seed=0, restarts=3, retry_fill_scale=0.9), progress=None)
+
+    def synthesize(self) -> Layout:
+        report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
+        self.circuit.validate()
+    
+        report_progress(self.progress, "synthesis", detail="assigning red/green net colors")
+        net_colors = self._assign_net_colors()
+        net_groups = self._coalesce_shared_connector_nets(net_colors)
+    
+        report_progress(self.progress, "synthesis", detail="allocating concrete signals")
+        signal_allocation = self._allocate_signals(net_groups)
+    
+        report_progress(self.progress, "synthesis", detail="materializing physical combinators")
+        physical = self._materialize_circuit(signal_allocation, net_colors)
+    
+        selected = self.placement_options or PlacementOptions()
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
+            if selected.anchors:
+                raise ValueError(
+                    f"{strategy} does not yet support fixed placement anchors; "
+                    "use the net-aware layout for anchored synthesis"
+                )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+    
+            report_progress(
+                self.progress,
+                "safe-folded-layout",
+                detail="using row-local folded bus geometry; routing search disabled",
+            )
+            return build_safe_folded_crossbar_layout(
+                self.circuit,
+                physical,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation=signal_allocation,
+                safe_wire_span=self.safe_wire_span,
+                progress=self.progress,
+            )
+    
+        selected.validate()
+        attempts = _placement_attempt_count(selected)
+    
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = _placement_attempt_options(selected, restart)
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart,
+                total=attempts,
+                detail=(
+                    f"strategy={attempt_options.strategy}; "
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
+                ),
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart + 1,
+                total=attempts,
+                detail=f"placed {len(positions)} entities",
+            )
+    
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+                routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
+                    progress=self.progress,
+                )
+            except ValueError as exc:
+                if "parallel lanes and grid search were both exhausted" not in str(exc):
+                    raise
+                last_routing_error = exc
+                if restart + 1 < attempts:
+                    next_options = _placement_attempt_options(selected, restart + 1)
+                    report_progress(
+                        self.progress,
+                        "retry",
+                        completed=restart + 1,
+                        total=attempts,
+                        detail=(
+                            "routing failed; rebuilding with more space: "
+                            f"fill={next_options.target_fill:.3f}; "
+                            f"corridor={next_options.corridor_width:.2f}"
+                        ),
+                    )
+                continue
+    
+            final_positions = routed_positions(physical, positions, routing)
+            report_progress(
+                self.progress,
+                "synthesis",
+                detail=(
+                    f"physical layout complete; combinators={physical.combinator_count}; "
+                    f"relays={len(routing.relays)}"
+                ),
+            )
+            return Layout(
+                circuit=physical,
+                positions=final_positions,
+                relays=tuple(
+                    LayoutRelay(relay.entity_id, relay.position, relay.description)
+                    for relay in routing.relays
+                ),
+                wires=tuple(
+                    LayoutWire(
+                        wire.source_entity,
+                        wire.source_connector_id,
+                        wire.target_entity,
+                        wire.target_connector_id,
+                        wire.color,
+                    )
+                    for wire in routing.wires
+                ),
+                signal_allocation=tuple(sorted(signal_allocation.items())),
+                net_colors=tuple(sorted(net_colors.items())),
+                net_groups=tuple(sorted(net_groups.items())),
+            )
+    
+        assert last_routing_error is not None
+>       raise ValueError(
+            f"physical synthesis exhausted {attempts} deterministic placement attempt(s) "
+            "without finding a collision-free, reach-safe route that keeps reserved "
+            "corridors clear of relay entities"
+        ) from last_routing_error
+E       ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+
+src/factorio_circuit/synthesis/open_vector.py:201: ValueError
+____ test_composed_worker_device_has_legal_wire_reach_and_no_entity_overlap ____
+
+self = VectorPhysicalSynthesizer(circuit=AbstractPhysicalCircuit(name='anchored_assembler_worker', signals=[AbstractSignal(id...16, corridor_width=2.0, target_fill=0.6, iterations=0, random_seed=0, restarts=3, retry_fill_scale=0.9), progress=None)
+
+    def synthesize(self) -> Layout:
+        report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
+        self.circuit.validate()
+    
+        report_progress(self.progress, "synthesis", detail="assigning red/green net colors")
+        net_colors = self._assign_net_colors()
+        net_groups = self._coalesce_shared_connector_nets(net_colors)
+    
+        report_progress(self.progress, "synthesis", detail="allocating concrete signals")
+        signal_allocation = self._allocate_signals(net_groups)
+    
+        report_progress(self.progress, "synthesis", detail="materializing physical combinators")
+        physical = self._materialize_circuit(signal_allocation, net_colors)
+    
+        selected = self.placement_options or PlacementOptions()
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
+            if selected.anchors:
+                raise ValueError(
+                    f"{strategy} does not yet support fixed placement anchors; "
+                    "use the net-aware layout for anchored synthesis"
+                )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+    
+            report_progress(
+                self.progress,
+                "safe-folded-layout",
+                detail="using row-local folded bus geometry; routing search disabled",
+            )
+            return build_safe_folded_crossbar_layout(
+                self.circuit,
+                physical,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation=signal_allocation,
+                safe_wire_span=self.safe_wire_span,
+                progress=self.progress,
+            )
+    
+        selected.validate()
+        attempts = _placement_attempt_count(selected)
+    
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = _placement_attempt_options(selected, restart)
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart,
+                total=attempts,
+                detail=(
+                    f"strategy={attempt_options.strategy}; "
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
+                ),
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart + 1,
+                total=attempts,
+                detail=f"placed {len(positions)} entities",
+            )
+    
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+>               routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
+                    progress=self.progress,
+                )
+
+src/factorio_circuit/synthesis/open_vector.py:143: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/factorio_circuit/blueprint/routing.py:126: in route_wires
+    relay_positions = _find_relay_positions(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = (12.0, 21.469135802469136), target = (8.0, 27.469135802469136)
+safe_span = 7.0
+occupied = [((19.5, 44.0), (0.5, 0.5), 1), ((4.0, 3.0), (0.5, 0.5), 2), ((11.0, 3.0), (0.5, 0.5), 3), ((18.0, 3.0), (0.5, 0.5), 4), ((10.5, 44.0), (0.5, 0.5), 5), ((13.5, 44.0), (0.5, 0.5), 6), ...]
+edge_index = 194, edge_total = 237
+forbidden_areas = ((15.23456790123457, 17.23456790123457, 15.73456790123457, 17.73456790123457),)
+progress = None
+
+    def _find_relay_positions(
+        source: tuple[float, float],
+        target: tuple[float, float],
+        *,
+        safe_span: float,
+        occupied: list[tuple[tuple[float, float], tuple[float, float], int]],
+        edge_index: int,
+        edge_total: int,
+        forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
+        progress: ProgressCallback | None = None,
+    ) -> list[tuple[float, float]]:
+        distance = _distance(source, target)
+        dx = target[0] - source[0]
+        dy = target[1] - source[1]
+        norm = distance or 1.0
+        perp = (-dy / norm, dx / norm)
+    
+        # Start far enough off the main combinator row to clear a horizontal 2x1 combinator.
+        # Alternate sides first, then try more distant lanes. edge_index rotates the ordering so
+        # consecutive long connections do not all prefer the same routing lane.
+        max_offset_step = int((safe_span - 0.25) * 4)
+        base_offsets = [
+            direction * step / 4 for step in range(5, max_offset_step + 1) for direction in (1, -1)
+        ]
+        rotate = (edge_index - 1) % len(base_offsets)
+        offsets = [0.0, *base_offsets[rotate:], *base_offsets[:rotate]]
+    
+        for offset in offsets:
+            abs_offset = abs(offset)
+            if abs_offset >= safe_span - 0.25:
+                continue
+    
+            # The first and last segments travel both along the edge and out to the parallel lane.
+            # Pick enough segments that those diagonal segments still fit comfortably inside reach.
+            longitudinal_budget = sqrt(max(0.25, safe_span * safe_span - abs_offset * abs_offset))
+            minimum_segments = max(2, ceil(distance / longitudinal_budget))
+    
+            # Trying a few denser subdivisions also shifts relay positions along the lane and often
+            # resolves an otherwise accidental collision with another relay.
+            for segments in range(minimum_segments, minimum_segments + 5):
+                candidates = []
+                for relay_index in range(1, segments):
+                    fraction = relay_index / segments
+                    candidates.append(
+                        (
+                            source[0] + dx * fraction + perp[0] * offset,
+                            source[1] + dy * fraction + perp[1] * offset,
+                        )
+                    )
+    
+                if not _chain_is_in_reach(source, candidates, target, safe_span):
+                    continue
+                if _relay_candidates_are_clear(candidates, occupied, forbidden_areas=forbidden_areas):
+                    return candidates
+    
+        fallback = _find_grid_relay_positions(
+            source,
+            target,
+            safe_span=safe_span,
+            occupied=occupied,
+            edge_index=edge_index,
+            edge_total=edge_total,
+            forbidden_areas=forbidden_areas,
+            progress=progress,
+        )
+        if fallback is not None:
+            return fallback
+    
+>       raise ValueError(
+            "could not route a collision-free circuit wire within the configured reach; "
+            "parallel lanes and grid search were both exhausted"
+        )
+E       ValueError: could not route a collision-free circuit wire within the configured reach; parallel lanes and grid search were both exhausted
+
+src/factorio_circuit/blueprint/routing.py:260: ValueError
+
+The above exception was the direct cause of the following exception:
+
+    def test_composed_worker_device_has_legal_wire_reach_and_no_entity_overlap() -> None:
+>       composed = build_anchored_worker_device(
+            modules=("productivity-module-3",) * 4,
+        ).blueprint
+
+tests/examples/autonomous_mall/test_anchored_worker.py:116: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+examples/autonomous_mall/anchored_worker.py:222: in build_anchored_worker_device
+    worker = worker_as_anchored_blueprint()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+examples/autonomous_mall/anchored_worker.py:191: in worker_as_anchored_blueprint
+    compiled = result or compile_assembler_worker()
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+examples/autonomous_mall/anchored_worker.py:158: in compile_assembler_worker
+    return compile_module(
+src/factorio_circuit/synthesis/interface.py:132: in compile_module
+    result = compile_circuit(
+src/factorio_circuit/compiler.py:211: in compile_circuit
+    naive_physical = _synthesize(
+src/factorio_circuit/compiler.py:103: in _synthesize
+    return synthesize_vector_layout(
+src/factorio_circuit/synthesis/open_vector.py:240: in synthesize_vector_layout
+    ).synthesize()
+      ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = VectorPhysicalSynthesizer(circuit=AbstractPhysicalCircuit(name='anchored_assembler_worker', signals=[AbstractSignal(id...16, corridor_width=2.0, target_fill=0.6, iterations=0, random_seed=0, restarts=3, retry_fill_scale=0.9), progress=None)
+
+    def synthesize(self) -> Layout:
+        report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
+        self.circuit.validate()
+    
+        report_progress(self.progress, "synthesis", detail="assigning red/green net colors")
+        net_colors = self._assign_net_colors()
+        net_groups = self._coalesce_shared_connector_nets(net_colors)
+    
+        report_progress(self.progress, "synthesis", detail="allocating concrete signals")
+        signal_allocation = self._allocate_signals(net_groups)
+    
+        report_progress(self.progress, "synthesis", detail="materializing physical combinators")
+        physical = self._materialize_circuit(signal_allocation, net_colors)
+    
+        selected = self.placement_options or PlacementOptions()
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
+            if selected.anchors:
+                raise ValueError(
+                    f"{strategy} does not yet support fixed placement anchors; "
+                    "use the net-aware layout for anchored synthesis"
+                )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+    
+            report_progress(
+                self.progress,
+                "safe-folded-layout",
+                detail="using row-local folded bus geometry; routing search disabled",
+            )
+            return build_safe_folded_crossbar_layout(
+                self.circuit,
+                physical,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation=signal_allocation,
+                safe_wire_span=self.safe_wire_span,
+                progress=self.progress,
+            )
+    
+        selected.validate()
+        attempts = _placement_attempt_count(selected)
+    
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = _placement_attempt_options(selected, restart)
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart,
+                total=attempts,
+                detail=(
+                    f"strategy={attempt_options.strategy}; "
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
+                ),
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart + 1,
+                total=attempts,
+                detail=f"placed {len(positions)} entities",
+            )
+    
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+                routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
+                    progress=self.progress,
+                )
+            except ValueError as exc:
+                if "parallel lanes and grid search were both exhausted" not in str(exc):
+                    raise
+                last_routing_error = exc
+                if restart + 1 < attempts:
+                    next_options = _placement_attempt_options(selected, restart + 1)
+                    report_progress(
+                        self.progress,
+                        "retry",
+                        completed=restart + 1,
+                        total=attempts,
+                        detail=(
+                            "routing failed; rebuilding with more space: "
+                            f"fill={next_options.target_fill:.3f}; "
+                            f"corridor={next_options.corridor_width:.2f}"
+                        ),
+                    )
+                continue
+    
+            final_positions = routed_positions(physical, positions, routing)
+            report_progress(
+                self.progress,
+                "synthesis",
+                detail=(
+                    f"physical layout complete; combinators={physical.combinator_count}; "
+                    f"relays={len(routing.relays)}"
+                ),
+            )
+            return Layout(
+                circuit=physical,
+                positions=final_positions,
+                relays=tuple(
+                    LayoutRelay(relay.entity_id, relay.position, relay.description)
+                    for relay in routing.relays
+                ),
+                wires=tuple(
+                    LayoutWire(
+                        wire.source_entity,
+                        wire.source_connector_id,
+                        wire.target_entity,
+                        wire.target_connector_id,
+                        wire.color,
+                    )
+                    for wire in routing.wires
+                ),
+                signal_allocation=tuple(sorted(signal_allocation.items())),
+                net_colors=tuple(sorted(net_colors.items())),
+                net_groups=tuple(sorted(net_groups.items())),
+            )
+    
+        assert last_routing_error is not None
+>       raise ValueError(
+            f"physical synthesis exhausted {attempts} deterministic placement attempt(s) "
+            "without finding a collision-free, reach-safe route that keeps reserved "
+            "corridors clear of relay entities"
+        ) from last_routing_error
+E       ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+
+src/factorio_circuit/synthesis/open_vector.py:201: ValueError
+__________ test_probe_seeds_stock_recipe_controls_and_active_provider __________
+
+self = VectorPhysicalSynthesizer(circuit=AbstractPhysicalCircuit(name='anchored_assembler_worker', signals=[AbstractSignal(id...16, corridor_width=2.0, target_fill=0.6, iterations=0, random_seed=0, restarts=3, retry_fill_scale=0.9), progress=None)
+
+    def synthesize(self) -> Layout:
+        report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
+        self.circuit.validate()
+    
+        report_progress(self.progress, "synthesis", detail="assigning red/green net colors")
+        net_colors = self._assign_net_colors()
+        net_groups = self._coalesce_shared_connector_nets(net_colors)
+    
+        report_progress(self.progress, "synthesis", detail="allocating concrete signals")
+        signal_allocation = self._allocate_signals(net_groups)
+    
+        report_progress(self.progress, "synthesis", detail="materializing physical combinators")
+        physical = self._materialize_circuit(signal_allocation, net_colors)
+    
+        selected = self.placement_options or PlacementOptions()
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
+            if selected.anchors:
+                raise ValueError(
+                    f"{strategy} does not yet support fixed placement anchors; "
+                    "use the net-aware layout for anchored synthesis"
+                )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+    
+            report_progress(
+                self.progress,
+                "safe-folded-layout",
+                detail="using row-local folded bus geometry; routing search disabled",
+            )
+            return build_safe_folded_crossbar_layout(
+                self.circuit,
+                physical,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation=signal_allocation,
+                safe_wire_span=self.safe_wire_span,
+                progress=self.progress,
+            )
+    
+        selected.validate()
+        attempts = _placement_attempt_count(selected)
+    
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = _placement_attempt_options(selected, restart)
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart,
+                total=attempts,
+                detail=(
+                    f"strategy={attempt_options.strategy}; "
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
+                ),
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart + 1,
+                total=attempts,
+                detail=f"placed {len(positions)} entities",
+            )
+    
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+>               routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
+                    progress=self.progress,
+                )
+
+src/factorio_circuit/synthesis/open_vector.py:143: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/factorio_circuit/blueprint/routing.py:126: in route_wires
+    relay_positions = _find_relay_positions(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = (12.0, 21.469135802469136), target = (8.0, 27.469135802469136)
+safe_span = 7.0
+occupied = [((19.5, 44.0), (0.5, 0.5), 1), ((4.0, 3.0), (0.5, 0.5), 2), ((11.0, 3.0), (0.5, 0.5), 3), ((18.0, 3.0), (0.5, 0.5), 4), ((10.5, 44.0), (0.5, 0.5), 5), ((13.5, 44.0), (0.5, 0.5), 6), ...]
+edge_index = 194, edge_total = 237
+forbidden_areas = ((15.23456790123457, 17.23456790123457, 15.73456790123457, 17.73456790123457),)
+progress = None
+
+    def _find_relay_positions(
+        source: tuple[float, float],
+        target: tuple[float, float],
+        *,
+        safe_span: float,
+        occupied: list[tuple[tuple[float, float], tuple[float, float], int]],
+        edge_index: int,
+        edge_total: int,
+        forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
+        progress: ProgressCallback | None = None,
+    ) -> list[tuple[float, float]]:
+        distance = _distance(source, target)
+        dx = target[0] - source[0]
+        dy = target[1] - source[1]
+        norm = distance or 1.0
+        perp = (-dy / norm, dx / norm)
+    
+        # Start far enough off the main combinator row to clear a horizontal 2x1 combinator.
+        # Alternate sides first, then try more distant lanes. edge_index rotates the ordering so
+        # consecutive long connections do not all prefer the same routing lane.
+        max_offset_step = int((safe_span - 0.25) * 4)
+        base_offsets = [
+            direction * step / 4 for step in range(5, max_offset_step + 1) for direction in (1, -1)
+        ]
+        rotate = (edge_index - 1) % len(base_offsets)
+        offsets = [0.0, *base_offsets[rotate:], *base_offsets[:rotate]]
+    
+        for offset in offsets:
+            abs_offset = abs(offset)
+            if abs_offset >= safe_span - 0.25:
+                continue
+    
+            # The first and last segments travel both along the edge and out to the parallel lane.
+            # Pick enough segments that those diagonal segments still fit comfortably inside reach.
+            longitudinal_budget = sqrt(max(0.25, safe_span * safe_span - abs_offset * abs_offset))
+            minimum_segments = max(2, ceil(distance / longitudinal_budget))
+    
+            # Trying a few denser subdivisions also shifts relay positions along the lane and often
+            # resolves an otherwise accidental collision with another relay.
+            for segments in range(minimum_segments, minimum_segments + 5):
+                candidates = []
+                for relay_index in range(1, segments):
+                    fraction = relay_index / segments
+                    candidates.append(
+                        (
+                            source[0] + dx * fraction + perp[0] * offset,
+                            source[1] + dy * fraction + perp[1] * offset,
+                        )
+                    )
+    
+                if not _chain_is_in_reach(source, candidates, target, safe_span):
+                    continue
+                if _relay_candidates_are_clear(candidates, occupied, forbidden_areas=forbidden_areas):
+                    return candidates
+    
+        fallback = _find_grid_relay_positions(
+            source,
+            target,
+            safe_span=safe_span,
+            occupied=occupied,
+            edge_index=edge_index,
+            edge_total=edge_total,
+            forbidden_areas=forbidden_areas,
+            progress=progress,
+        )
+        if fallback is not None:
+            return fallback
+    
+>       raise ValueError(
+            "could not route a collision-free circuit wire within the configured reach; "
+            "parallel lanes and grid search were both exhausted"
+        )
+E       ValueError: could not route a collision-free circuit wire within the configured reach; parallel lanes and grid search were both exhausted
+
+src/factorio_circuit/blueprint/routing.py:260: ValueError
+
+The above exception was the direct cause of the following exception:
+
+    def test_probe_seeds_stock_recipe_controls_and_active_provider() -> None:
+>       blueprint = build_probe_blueprint()
+                    ^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/examples/autonomous_mall/test_anchored_worker.py:156: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+examples/autonomous_mall/anchored_worker_probe.py:55: in build_probe_blueprint
+    result = compile_assembler_worker()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+examples/autonomous_mall/anchored_worker.py:158: in compile_assembler_worker
+    return compile_module(
+src/factorio_circuit/synthesis/interface.py:132: in compile_module
+    result = compile_circuit(
+src/factorio_circuit/compiler.py:211: in compile_circuit
+    naive_physical = _synthesize(
+src/factorio_circuit/compiler.py:103: in _synthesize
+    return synthesize_vector_layout(
+src/factorio_circuit/synthesis/open_vector.py:240: in synthesize_vector_layout
+    ).synthesize()
+      ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = VectorPhysicalSynthesizer(circuit=AbstractPhysicalCircuit(name='anchored_assembler_worker', signals=[AbstractSignal(id...16, corridor_width=2.0, target_fill=0.6, iterations=0, random_seed=0, restarts=3, retry_fill_scale=0.9), progress=None)
+
+    def synthesize(self) -> Layout:
+        report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
+        self.circuit.validate()
+    
+        report_progress(self.progress, "synthesis", detail="assigning red/green net colors")
+        net_colors = self._assign_net_colors()
+        net_groups = self._coalesce_shared_connector_nets(net_colors)
+    
+        report_progress(self.progress, "synthesis", detail="allocating concrete signals")
+        signal_allocation = self._allocate_signals(net_groups)
+    
+        report_progress(self.progress, "synthesis", detail="materializing physical combinators")
+        physical = self._materialize_circuit(signal_allocation, net_colors)
+    
+        selected = self.placement_options or PlacementOptions()
+        strategy = str(selected.strategy)
+        if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
+            if selected.anchors:
+                raise ValueError(
+                    f"{strategy} does not yet support fixed placement anchors; "
+                    "use the net-aware layout for anchored synthesis"
+                )
+            if strategy == "safe-crossbar":
+                report_progress(
+                    self.progress,
+                    "safe-layout",
+                    detail="using canonical linear bus/feeder geometry; routing search disabled",
+                )
+                return build_safe_crossbar_layout(
+                    self.circuit,
+                    physical,
+                    net_colors=net_colors,
+                    net_groups=net_groups,
+                    signal_allocation=signal_allocation,
+                    safe_wire_span=self.safe_wire_span,
+                    progress=self.progress,
+                )
+    
+            report_progress(
+                self.progress,
+                "safe-folded-layout",
+                detail="using row-local folded bus geometry; routing search disabled",
+            )
+            return build_safe_folded_crossbar_layout(
+                self.circuit,
+                physical,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation=signal_allocation,
+                safe_wire_span=self.safe_wire_span,
+                progress=self.progress,
+            )
+    
+        selected.validate()
+        attempts = _placement_attempt_count(selected)
+    
+        last_routing_error: ValueError | None = None
+        for restart in range(attempts):
+            attempt_options = _placement_attempt_options(selected, restart)
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart,
+                total=attempts,
+                detail=(
+                    f"strategy={attempt_options.strategy}; "
+                    f"iterations={attempt_options.iterations}; "
+                    f"fill={attempt_options.target_fill:.3f}; "
+                    f"corridor={attempt_options.corridor_width:.2f}"
+                ),
+            )
+            placement = plan_physical_circuit(
+                physical,
+                self.circuit,
+                net_groups,
+                safe_wire_span=self.safe_wire_span,
+                options=attempt_options,
+            )
+            positions = placement.positions
+            report_progress(
+                self.progress,
+                "placement",
+                completed=restart + 1,
+                total=attempts,
+                detail=f"placed {len(positions)} entities",
+            )
+    
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            try:
+                routing = route_wires(
+                    physical,
+                    positions,
+                    safe_span=self.safe_wire_span,
+                    relay_forbidden_areas=placement.relay_forbidden_areas,
+                    progress=self.progress,
+                )
+            except ValueError as exc:
+                if "parallel lanes and grid search were both exhausted" not in str(exc):
+                    raise
+                last_routing_error = exc
+                if restart + 1 < attempts:
+                    next_options = _placement_attempt_options(selected, restart + 1)
+                    report_progress(
+                        self.progress,
+                        "retry",
+                        completed=restart + 1,
+                        total=attempts,
+                        detail=(
+                            "routing failed; rebuilding with more space: "
+                            f"fill={next_options.target_fill:.3f}; "
+                            f"corridor={next_options.corridor_width:.2f}"
+                        ),
+                    )
+                continue
+    
+            final_positions = routed_positions(physical, positions, routing)
+            report_progress(
+                self.progress,
+                "synthesis",
+                detail=(
+                    f"physical layout complete; combinators={physical.combinator_count}; "
+                    f"relays={len(routing.relays)}"
+                ),
+            )
+            return Layout(
+                circuit=physical,
+                positions=final_positions,
+                relays=tuple(
+                    LayoutRelay(relay.entity_id, relay.position, relay.description)
+                    for relay in routing.relays
+                ),
+                wires=tuple(
+                    LayoutWire(
+                        wire.source_entity,
+                        wire.source_connector_id,
+                        wire.target_entity,
+                        wire.target_connector_id,
+                        wire.color,
+                    )
+                    for wire in routing.wires
+                ),
+                signal_allocation=tuple(sorted(signal_allocation.items())),
+                net_colors=tuple(sorted(net_colors.items())),
+                net_groups=tuple(sorted(net_groups.items())),
+            )
+    
+        assert last_routing_error is not None
+>       raise ValueError(
+            f"physical synthesis exhausted {attempts} deterministic placement attempt(s) "
+            "without finding a collision-free, reach-safe route that keeps reserved "
+            "corridors clear of relay entities"
+        ) from last_routing_error
+E       ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+
+src/factorio_circuit/synthesis/open_vector.py:201: ValueError
+=========================== short test summary info ============================
+FAILED tests/examples/autonomous_mall/test_anchored_worker.py::test_compiled_worker_binds_six_device_ports_by_exact_overlap - ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+FAILED tests/examples/autonomous_mall/test_anchored_worker.py::test_composed_worker_device_has_legal_wire_reach_and_no_entity_overlap - ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+FAILED tests/examples/autonomous_mall/test_anchored_worker.py::test_probe_seeds_stock_recipe_controls_and_active_provider - ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+3 failed, 396 passed, 25 deselected in 228.13s (0:03:48)
+exit_code=1
+
+===== ruff check =====
+I001 [*] Import block is un-sorted or un-formatted
+  --> examples/assembler_device_anchor_probe.py:9:1
+   |
+ 7 |   """
+ 8 |
+ 9 | / from __future__ import annotations
+10 | |
+11 | | from factorio_circuit.devices import (
+12 | |     AnchorBinding,
+13 | |     AnchorSpec,
+14 | |     AnchoredBlueprint,
+15 | |     AssemblerDevice,
+16 | |     BoundAnchor,
+17 | |     compose_anchored_blueprints,
+18 | |     device_as_anchored_blueprint,
+19 | | )
+20 | | from factorio_circuit.devices._blueprint import Blueprint, encode_blueprint
+21 | | from factorio_circuit.devices.protocol import DevicePortDirection
+22 | | from factorio_circuit.ir.physical import SignalId, WireColor
+23 | | from factorio_circuit.ir.semantic import PayloadShape, TemporalModality
+   | |_______________________________________________________________________^
+24 |
+25 |   IRON_GEAR = SignalId("item", "iron-gear-wheel")
+   |
+help: Organize imports
+   |
+12 |     AnchorBinding,
+13 +     AnchoredBlueprint,
+14 |     AnchorSpec,
+   -     AnchoredBlueprint,
+15 |     AssemblerDevice,
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> examples/autonomous_mall/anchored_worker_probe.py:3:1
+   |
+ 1 |   """Standalone in-game probe for the compiled anchored AssemblerWorker."""
+ 2 |
+ 3 | / from __future__ import annotations
+ 4 | |
+ 5 | | from copy import deepcopy
+ 6 | |
+ 7 | | from factorio_circuit.devices._blueprint import encode_blueprint
+ 8 | | from factorio_circuit.ir.physical import SignalId
+ 9 | |
+10 | | from examples.autonomous_mall.anchored_worker import (
+11 | |     DISPATCH,
+12 | |     LAUNCH,
+13 | |     build_anchored_worker_device,
+14 | |     compile_assembler_worker,
+15 | |     worker_as_anchored_blueprint,
+16 | | )
+   | |_^
+17 |
+18 |   IRON_PLATE = SignalId("item", "iron-plate")
+   |
+help: Organize imports
+   |
+6  |
+   - from factorio_circuit.devices._blueprint import encode_blueprint
+   - from factorio_circuit.ir.physical import SignalId
+   -
+7  | from examples.autonomous_mall.anchored_worker import (
+--------------------------------------------------------------------------------
+13 | )
+14 + from factorio_circuit.devices._blueprint import encode_blueprint
+15 + from factorio_circuit.ir.physical import SignalId
+16 |
+   |
+
+F401 [*] `examples.autonomous_mall.anchored_worker.build_anchored_worker_device` imported but unused
+  --> examples/autonomous_mall/anchored_worker_probe.py:13:5
+   |
+11 |     DISPATCH,
+12 |     LAUNCH,
+13 |     build_anchored_worker_device,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+14 |     compile_assembler_worker,
+15 |     worker_as_anchored_blueprint,
+   |
+help: Remove unused import: `examples.autonomous_mall.anchored_worker.build_anchored_worker_device`
+   |
+12 |     LAUNCH,
+   -     build_anchored_worker_device,
+13 |     compile_assembler_worker,
+   |
+
+E501 Line too long (102 > 100)
+  --> examples/autonomous_mall/anchored_worker_probe.py:59:101
+   |
+57 |     assert isinstance(blueprint, dict)
+58 |     entities_raw = blueprint.get("entities", [])
+59 |     if not isinstance(entities_raw, list) or not all(isinstance(item, dict) for item in entities_raw):
+   |                                                                                                     ^^
+60 |         raise ValueError("worker blueprint entities must be dictionaries")
+61 |     entities: list[dict[str, object]] = entities_raw  # type: ignore[assignment]
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> examples/autonomous_mall/anchored_worker_probe.py:81:5
+   |
+79 |       worker = worker_as_anchored_blueprint(result)
+80 |       # Reuse the canonical composition builder for the same physical device/module configuration.
+81 | /     from factorio_circuit.devices import AnchorBinding, AssemblerDevice, compose_anchored_blueprints, socketize_assembler_device
+82 | |     from examples.autonomous_mall.anchored_worker import DEVICE_OFFSET
+   | |______________________________________________________________________^
+83 |
+84 |       device = socketize_assembler_device(
+   |
+help: Organize imports
+   |
+80 |     # Reuse the canonical composition builder for the same physical device/module configuration.
+   -     from factorio_circuit.devices import AnchorBinding, AssemblerDevice, compose_anchored_blueprints, socketize_assembler_device
+81 |     from examples.autonomous_mall.anchored_worker import DEVICE_OFFSET
+82 +     from factorio_circuit.devices import (
+83 +         AnchorBinding,
+84 +         AssemblerDevice,
+85 +         compose_anchored_blueprints,
+86 +         socketize_assembler_device,
+87 +     )
+88 |
+   |
+
+E501 Line too long (128 > 100)
+  --> examples/autonomous_mall/anchored_worker_probe.py:81:101
+   |
+79 |     worker = worker_as_anchored_blueprint(result)
+80 |     # Reuse the canonical composition builder for the same physical device/module configuration.
+81 |     from factorio_circuit.devices import AnchorBinding, AssemblerDevice, compose_anchored_blueprints, socketize_assembler_device
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+82 |     from examples.autonomous_mall.anchored_worker import DEVICE_OFFSET
+   |
+
+E501 Line too long (106 > 100)
+  --> examples/autonomous_mall/anchored_worker_probe.py:90:101
+   |
+88 |         ).build()
+89 |     ).anchored()
+90 |     bound_names = ("recipe", "enable", "requester_demand", "ingredients", "requester_contents", "working")
+   |                                                                                                     ^^^^^^
+91 |     composed = compose_anchored_blueprints(
+92 |         worker,
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> examples/autonomous_mall/complete_controller.py:3:1
+   |
+ 1 |   """Generate complete tileable autonomous-mall worker cells and the standard five-worker row."""
+ 2 |
+ 3 | / from __future__ import annotations
+ 4 | |
+ 5 | | from copy import deepcopy
+ 6 | | from math import hypot
+ 7 | | from typing import Callable, cast
+ 8 | |
+ 9 | | from factorio_circuit import ModuleInterface, SignalId, compile_module
+10 | |
+11 | | from examples.autonomous_mall.device_tiles import build_complete_book
+12 | | from examples.autonomous_mall.manual_controller import (
+13 | |     ASSEMBLER_DOCKS,
+14 | |     HEAD_DOCKS,
+15 | |     RECYCLER_DOCKS,
+16 | |     CompiledTile,
+17 | |     DockSpec,
+18 | |     TILE_HEIGHT,
+19 | |     TILE_WIDTH,
+20 | |     _compose_controller,
+21 | |     _decorate_tile,
+22 | |     _placement,
+23 | |     build_assembler_tile,
+24 | |     build_head_tile,
+25 | |     build_recycler_tile,
+26 | | )
+   | |_^
+27 |
+28 |   DISPATCH = SignalId("virtual", "signal-D")
+   |
+help: Organize imports
+   |
+8  |
+   - from factorio_circuit import ModuleInterface, SignalId, compile_module
+   -
+9  | from examples.autonomous_mall.device_tiles import build_complete_book
+--------------------------------------------------------------------------------
+13 |     RECYCLER_DOCKS,
+   -     CompiledTile,
+   -     DockSpec,
+14 |     TILE_HEIGHT,
+15 |     TILE_WIDTH,
+16 +     CompiledTile,
+17 +     DockSpec,
+18 |     _compose_controller,
+--------------------------------------------------------------------------------
+24 | )
+25 + from factorio_circuit import ModuleInterface, SignalId, compile_module
+26 |
+   |
+
+UP035 [*] Import from `collections.abc` instead: `Callable`
+ --> examples/autonomous_mall/complete_controller.py:7:1
+  |
+5 | from copy import deepcopy
+6 | from math import hypot
+7 | from typing import Callable, cast
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+8 |
+9 | from factorio_circuit import ModuleInterface, SignalId, compile_module
+  |
+help: Import from `collections.abc`
+  |
+6 | from math import hypot
+  - from typing import Callable, cast
+7 + from typing import cast
+8 + from collections.abc import Callable
+9 |
+  |
+
+E501 Line too long (101 > 100)
+  --> examples/autonomous_mall/complete_controller.py:41:101
+   |
+39 | }
+40 |
+41 | # Complete cells place configuration ports next to the machine bay. The transaction circuit itself is
+   |                                                                                                     ^
+42 | # unchanged; only these complete-cell physical interfaces differ from the controller-only prototype.
+43 | COMPLETE_HEAD_INTERFACE = ModuleInterface(
+   |
+
+E501 Line too long (102 > 100)
+ --> examples/autonomous_mall/device_tiles.py:4:101
+  |
+3 | This module deliberately lives under ``examples/``. The compiler produces the controller circuit;
+4 | this layer appends ordinary Factorio machines, logistic chests, inserters, and a small device harness.
+  |                                                                                                     ^^
+5 | The only public electrical ABI that remains between independently pasted cells is the horizontal
+6 | available/control bus already exposed by ``manual_controller.py``.
+  |
+
+E501 Line too long (104 > 100)
+  --> examples/autonomous_mall/device_tiles.py:9:101
+   |
+ 8 | The generated v1 cells support solid-ingredient recipes only. The feeder computes
+ 9 | ``positive(requester_demand - machine_contents)`` and feeds one item at a time until the machine starts.
+   |                                                                                                     ^^^^
+10 | Recipes where one item is simultaneously an ingredient and a product remain out of scope because the
+11 | machine contents signal does not distinguish those roles.
+   |
+
+UP035 [*] Import from `collections.abc` instead: `Iterable`, `Sequence`
+  --> examples/autonomous_mall/device_tiles.py:18:1
+   |
+16 | from copy import deepcopy
+17 | from dataclasses import dataclass
+18 | from typing import Iterable, Sequence
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+19 |
+20 | from factorio_circuit.ir.physical import SignalId
+   |
+help: Import from `collections.abc`
+   |
+17 | from dataclasses import dataclass
+   - from typing import Iterable, Sequence
+18 + from collections.abc import Iterable, Sequence
+19 |
+   |
+
+UP035 [*] Import from `collections.abc` instead: `Mapping`, `Sequence`
+  --> examples/autonomous_mall/linear.py:12:1
+   |
+10 | from dataclasses import dataclass
+11 | from fractions import Fraction
+12 | from typing import Mapping, Sequence
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: Import from `collections.abc`
+   |
+11 | from fractions import Fraction
+   - from typing import Mapping, Sequence
+12 + from collections.abc import Mapping, Sequence
+13 |
+   |
+
+E501 Line too long (102 > 100)
+ --> examples/autonomous_mall/manual_controller.py:4:101
+  |
+3 | The manually wired prototype proved the transaction semantics but exposed two physical-composition
+4 | problems: independently synthesized modules can choose different red/green colors and different scalar
+  |                                                                                                     ^^
+5 | signal allocations. These tiles therefore add an explicit physical ABI around each compiled circuit.
+  |
+
+E501 Line too long (102 > 100)
+  --> examples/autonomous_mall/manual_controller.py:10:101
+   |
+ 8 | Machine scalar docks additionally rename compiler-allocated lanes onto stable mall protocol signals.
+ 9 | Every tile uses one 48x48 absolute snapping grid. Adjacent tiles intentionally place their external
+10 | dock constant-combinators on the exact same grid coordinate; Factorio blueprint-over-existing behavior
+   |                                                                                                     ^^
+11 | then retains both modules' wires on the shared marker.
+   |
+
+UP035 [*] Import from `collections.abc` instead: `Mapping`
+  --> examples/autonomous_mall/model.py:8:1
+   |
+ 6 | from enum import Enum, IntEnum
+ 7 | from fractions import Fraction
+ 8 | from typing import Mapping
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 9 |
+10 | Amount = Fraction
+   |
+help: Import from `collections.abc`
+  |
+7 | from fractions import Fraction
+  - from typing import Mapping
+8 + from collections.abc import Mapping
+9 |
+  |
+
+UP035 [*] Import from `collections.abc` instead: `Mapping`
+ --> examples/autonomous_mall/planner.py:7:1
+  |
+5 | from dataclasses import dataclass
+6 | from fractions import Fraction
+7 | from typing import Mapping
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+8 |
+9 | from .linear import InfeasibleLinearProgram, minimize_covering
+  |
+help: Import from `collections.abc`
+  |
+6 | from fractions import Fraction
+  - from typing import Mapping
+7 + from collections.abc import Mapping
+8 |
+  |
+
+UP035 [*] Import from `collections.abc` instead: `Mapping`
+ --> examples/autonomous_mall/quality_mechanics.py:6:1
+  |
+5 | from fractions import Fraction
+6 | from typing import Mapping
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+7 |
+8 | from .model import Amount, Commodity, Quality
+  |
+help: Import from `collections.abc`
+  |
+5 | from fractions import Fraction
+  - from typing import Mapping
+6 + from collections.abc import Mapping
+7 |
+  |
+
+SIM108 Use ternary operator `probability = q / 10 ** (jump - 1) if jump == remaining_tiers else q * 9 / 10 ** jump` instead of `if`-`else`-block
+  --> examples/autonomous_mall/quality_mechanics.py:30:9
+   |
+28 |       for jump in range(1, remaining_tiers + 1):
+29 |           target = Quality(int(base) + jump)
+30 | /         if jump == remaining_tiers:
+31 | |             probability = q / (10 ** (jump - 1))
+32 | |         else:
+33 | |             probability = q * 9 / (10**jump)
+   | |____________________________________________^
+34 |           result[target] = probability
+35 |       return {quality: probability for quality, probability in result.items() if probability}
+   |
+help: Replace `if`-`else`-block with `probability = q / 10 ** (jump - 1) if jump == remaining_tiers else q * 9 / 10 ** jump`
+
+UP035 [*] Import from `collections.abc` instead: `Mapping`
+ --> examples/autonomous_mall/routes.py:7:1
+  |
+5 | from dataclasses import dataclass
+6 | from fractions import Fraction
+7 | from typing import Mapping
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+8 |
+9 | from .model import Amount, Commodity, ProductionRoute, Quality, WorkerKind
+  |
+help: Import from `collections.abc`
+  |
+6 | from fractions import Fraction
+  - from typing import Mapping
+7 + from collections.abc import Mapping
+8 |
+  |
+
+UP035 [*] Import from `collections.abc` instead: `Mapping`
+ --> examples/autonomous_mall/scheduler.py:7:1
+  |
+5 | from dataclasses import dataclass, field
+6 | from fractions import Fraction
+7 | from typing import Mapping
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+8 |
+9 | from .model import Amount, Commodity, WorkerKind
+  |
+help: Import from `collections.abc`
+  |
+6 | from fractions import Fraction
+  - from typing import Mapping
+7 + from collections.abc import Mapping
+8 |
+  |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/factorio_circuit/devices/__init__.py:3:1
+   |
+ 1 |   """Reusable protocols and generators for external Factorio devices."""
+ 2 |
+ 3 | / from factorio_circuit.devices.anchors import (
+ 4 | |     AnchorBinding,
+ 5 | |     AnchorSpec,
+ 6 | |     AnchoredBlueprint,
+ 7 | |     BoundAnchor,
+ 8 | |     ComposedAnchoredBlueprint,
+ 9 | |     compose_anchored_blueprints,
+10 | |     device_as_anchored_blueprint,
+11 | |     require_all_anchors_bound,
+12 | | )
+13 | | from factorio_circuit.devices.assembler import (
+14 | |     ASSEMBLER_DEVICE_PROTOCOL,
+15 | |     ASSEMBLER_ENABLE_SIGNAL,
+16 | |     ASSEMBLER_FINISHED_SIGNAL,
+17 | |     ASSEMBLER_WORKING_SIGNAL,
+18 | |     AssemblerDevice,
+19 | |     build_assembler_device_blueprint,
+20 | |     generate_assembler_device_blueprint_string,
+21 | | )
+22 | | from factorio_circuit.devices.assembler_socket import socketize_assembler_device
+23 | | from factorio_circuit.devices.lamp_screen import (
+24 | |     DISPLAY_VIRTUAL_SIGNAL_POOL,
+25 | |     PIXEL_SIGNALS,
+26 | |     SCREEN_HEIGHT,
+27 | |     SCREEN_WIDTH,
+28 | |     build_lamp_screen_blueprint,
+29 | |     generate_lamp_screen_blueprint_string,
+30 | |     pixel_signal,
+31 | |     rgb,
+32 | | )
+33 | | from factorio_circuit.devices.module_anchors import (
+34 | |     ModuleAnchorBinding,
+35 | |     compiled_module_as_anchored_blueprint,
+36 | | )
+37 | | from factorio_circuit.devices.player_movement_detector import (
+38 | |     DIRECTION_ORDER,
+39 | |     DIRECTION_SIGNALS,
+40 | |     build_player_movement_detector_blueprint,
+41 | |     generate_player_movement_detector_blueprint_string,
+42 | | )
+43 | | from factorio_circuit.devices.protocol import (
+44 | |     BoundDevicePort,
+45 | |     DeviceAttachment,
+46 | |     DeviceEndpoint,
+47 | |     DevicePortDirection,
+48 | |     DevicePortSpec,
+49 | |     DeviceProtocol,
+50 | |     DeviceSide,
+51 | |     ExternalDeviceBlueprint,
+52 | | )
+   | |_^
+53 |
+54 |   __all__ = [
+   |
+help: Organize imports
+  |
+4 |     AnchorBinding,
+5 +     AnchoredBlueprint,
+6 |     AnchorSpec,
+  -     AnchoredBlueprint,
+7 |     BoundAnchor,
+  |
+
+UP035 [*] Import from `collections.abc` instead: `Iterable`, `Mapping`, `Sequence`
+  --> src/factorio_circuit/devices/anchors.py:15:1
+   |
+13 | from copy import deepcopy
+14 | from dataclasses import dataclass
+15 | from typing import Iterable, Mapping, Sequence
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16 |
+17 | from factorio_circuit.devices._blueprint import Blueprint
+   |
+help: Import from `collections.abc`
+   |
+14 | from dataclasses import dataclass
+   - from typing import Iterable, Mapping, Sequence
+15 + from collections.abc import Iterable, Mapping, Sequence
+16 |
+   |
+
+B009 [*] Do not call `getattr` with a constant attribute value. It is not any safer than normal property access.
+   --> src/factorio_circuit/devices/anchors.py:228:16
+    |
+226 |     """Adapt an ``ExternalDeviceBlueprint``-like object to the generic anchoring API."""
+227 |
+228 |     protocol = getattr(device, "protocol")
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+229 |     blueprint = getattr(device, "blueprint")
+230 |     ports = getattr(device, "ports")
+    |
+help: Replace `getattr` with attribute access
+    |
+227 |
+    -     protocol = getattr(device, "protocol")
+228 +     protocol = device.protocol
+229 |     blueprint = getattr(device, "blueprint")
+    |
+
+B009 [*] Do not call `getattr` with a constant attribute value. It is not any safer than normal property access.
+   --> src/factorio_circuit/devices/anchors.py:229:17
+    |
+228 |     protocol = getattr(device, "protocol")
+229 |     blueprint = getattr(device, "blueprint")
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+230 |     ports = getattr(device, "ports")
+231 |     anchors: list[BoundAnchor] = []
+    |
+help: Replace `getattr` with attribute access
+    |
+228 |     protocol = getattr(device, "protocol")
+    -     blueprint = getattr(device, "blueprint")
+229 +     blueprint = device.blueprint
+230 |     ports = getattr(device, "ports")
+    |
+
+B009 [*] Do not call `getattr` with a constant attribute value. It is not any safer than normal property access.
+   --> src/factorio_circuit/devices/anchors.py:230:13
+    |
+228 |     protocol = getattr(device, "protocol")
+229 |     blueprint = getattr(device, "blueprint")
+230 |     ports = getattr(device, "ports")
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^
+231 |     anchors: list[BoundAnchor] = []
+232 |     for bound in ports:
+    |
+help: Replace `getattr` with attribute access
+    |
+229 |     blueprint = getattr(device, "blueprint")
+    -     ports = getattr(device, "ports")
+230 +     ports = device.ports
+231 |     anchors: list[BoundAnchor] = []
+    |
+
+E501 Line too long (104 > 100)
+   --> src/factorio_circuit/devices/anchors.py:262:101
+    |
+260 |     bound = set(bound_names)
+261 |     missing = [
+262 |         anchor.name for anchor in component.anchors if anchor.spec.required and anchor.name not in bound
+    |                                                                                                     ^^^^
+263 |     ]
+264 |     if missing:
+    |
+
+E501 Line too long (101 > 100)
+   --> src/factorio_circuit/devices/anchors.py:344:101
+    |
+342 |             or (wire[2] == shared_id and wire[3] == connector)
+343 |         ]
+344 |         # If one side is a constant source it can legitimately contribute no incident wire; otherwise
+    |                                                                                                     ^
+345 |         # two component-local incident paths should survive the merge.  The local checks above already
+346 |         # prove each side independently, so at least one incident path is mandatory in the result.
+    |
+
+E501 Line too long (102 > 100)
+   --> src/factorio_circuit/devices/anchors.py:345:101
+    |
+343 |         ]
+344 |         # If one side is a constant source it can legitimately contribute no incident wire; otherwise
+345 |         # two component-local incident paths should survive the merge.  The local checks above already
+    |                                                                                                     ^^
+346 |         # prove each side independently, so at least one incident path is mandatory in the result.
+347 |         if not incident:
+    |
+
+E501 Line too long (101 > 100)
+   --> src/factorio_circuit/devices/anchors.py:352:101
+    |
+350 |             if not (_constant_emits_signals(left_entity) or _constant_emits_signals(right_entity)):
+351 |                 raise ValueError(
+352 |                     f"merged anchor {binding.left!r}/{binding.right!r} has no surviving circuit path"
+    |                                                                                                     ^
+353 |                 )
+354 |         # Defensive check that a non-anchor right-side neighbor was actually remapped into the result.
+    |
+
+E501 Line too long (102 > 100)
+   --> src/factorio_circuit/devices/anchors.py:354:101
+    |
+352 |                     f"merged anchor {binding.left!r}/{binding.right!r} has no surviving circuit path"
+353 |                 )
+354 |         # Defensive check that a non-anchor right-side neighbor was actually remapped into the result.
+    |                                                                                                     ^^
+355 |         if right_anchor.entity_number not in right_id_map:
+356 |             raise ValueError("internal anchor remap was lost")
+    |
+
+E501 Line too long (106 > 100)
+   --> src/factorio_circuit/devices/anchors.py:364:101
+    |
+362 |     target_behavior = target.get("control_behavior")
+363 |     source_behavior = source.get("control_behavior")
+364 |     if target_behavior is not None and source_behavior is not None and target_behavior != source_behavior:
+    |                                                                                                     ^^^^^^
+365 |         raise ValueError("overlapping anchors both define incompatible constant-combinator behavior")
+366 |     if target_behavior is None and source_behavior is not None:
+    |
+
+E501 Line too long (101 > 100)
+   --> src/factorio_circuit/devices/anchors.py:365:101
+    |
+363 |     source_behavior = source.get("control_behavior")
+364 |     if target_behavior is not None and source_behavior is not None and target_behavior != source_behavior:
+365 |         raise ValueError("overlapping anchors both define incompatible constant-combinator behavior")
+    |                                                                                                     ^
+366 |     if target_behavior is None and source_behavior is not None:
+367 |         target["control_behavior"] = deepcopy(source_behavior)
+    |
+
+E501 Line too long (104 > 100)
+   --> src/factorio_circuit/devices/assembler_socket.py:120:101
+    |
+120 | def _terminal(entity_number: int, position: tuple[float, float], description: str) -> dict[str, object]:
+    |                                                                                                     ^^^^
+121 |     return {
+122 |         "entity_number": entity_number,
+    |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> src/factorio_circuit/devices/module_anchors.py:10:1
+   |
+ 8 |   """
+ 9 |
+10 | / from __future__ import annotations
+11 | |
+12 | | from copy import deepcopy
+13 | | from dataclasses import dataclass
+14 | | from math import hypot
+15 | | from typing import Sequence
+16 | |
+17 | | from factorio_circuit.compiler import CompilationResult
+18 | | from factorio_circuit.devices.anchors import AnchorSpec, AnchoredBlueprint, BoundAnchor
+19 | | from factorio_circuit.devices.protocol import DevicePortDirection
+20 | | from factorio_circuit.ir.physical import InputPort, OutputPort, SignalId, WireColor
+21 | | from factorio_circuit.ir.semantic import PayloadShape
+   | |_____________________________________________________^
+22 |
+23 |   Position = tuple[float, float]
+   |
+help: Organize imports
+   |
+17 | from factorio_circuit.compiler import CompilationResult
+   - from factorio_circuit.devices.anchors import AnchorSpec, AnchoredBlueprint, BoundAnchor
+18 + from factorio_circuit.devices.anchors import AnchoredBlueprint, AnchorSpec, BoundAnchor
+19 | from factorio_circuit.devices.protocol import DevicePortDirection
+   |
+
+UP035 [*] Import from `collections.abc` instead: `Sequence`
+  --> src/factorio_circuit/devices/module_anchors.py:15:1
+   |
+13 | from dataclasses import dataclass
+14 | from math import hypot
+15 | from typing import Sequence
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16 |
+17 | from factorio_circuit.compiler import CompilationResult
+   |
+help: Import from `collections.abc`
+   |
+14 | from math import hypot
+   - from typing import Sequence
+15 + from collections.abc import Sequence
+16 |
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests/devices/test_anchors.py:1:1
+   |
+ 1 | / import pytest
+ 2 | |
+ 3 | | from factorio_circuit.devices import (
+ 4 | |     AnchorBinding,
+ 5 | |     AnchorSpec,
+ 6 | |     AnchoredBlueprint,
+ 7 | |     AssemblerDevice,
+ 8 | |     BoundAnchor,
+ 9 | |     compose_anchored_blueprints,
+10 | |     device_as_anchored_blueprint,
+11 | | )
+12 | | from factorio_circuit.devices.protocol import DevicePortDirection
+13 | | from factorio_circuit.ir.physical import SignalId, WireColor
+14 | | from factorio_circuit.ir.semantic import PayloadShape, TemporalModality
+   | |_______________________________________________________________________^
+15 |
+16 |   IRON_PLATE = SignalId("item", "iron-plate")
+   |
+help: Organize imports
+  |
+4 |     AnchorBinding,
+5 +     AnchoredBlueprint,
+6 |     AnchorSpec,
+  -     AnchoredBlueprint,
+7 |     AssemblerDevice,
+  |
+
+E501 Line too long (104 > 100)
+  --> tests/devices/test_anchors.py:61:101
+   |
+59 |             "wires": [],
+60 |         },
+61 |         (BoundAnchor(_vector_spec(name, DevicePortDirection.OUTPUT, WireColor.GREEN), 1, 2, position),),
+   |                                                                                                     ^^^^
+62 |         "source",
+63 |     )
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests/devices/test_assembler_device.py:1:1
+   |
+ 1 | / from math import hypot
+ 2 | |
+ 3 | | import pytest
+ 4 | |
+ 5 | | from factorio_circuit.devices.assembler import (
+ 6 | |     ASSEMBLER_DEVICE_PROTOCOL,
+ 7 | |     ASSEMBLER_ENABLE_SIGNAL,
+ 8 | |     ASSEMBLER_FINISHED_SIGNAL,
+ 9 | |     ASSEMBLER_WORKING_SIGNAL,
+10 | |     AssemblerDevice,
+11 | | )
+12 | | from factorio_circuit.devices._blueprint import decode_blueprint
+13 | | from factorio_circuit.devices.protocol import DevicePortDirection
+14 | | from factorio_circuit.ir.physical import WireColor
+15 | | from factorio_circuit.ir.semantic import PayloadShape, TemporalModality
+   | |_______________________________________________________________________^
+help: Organize imports
+   |
+4  |
+5  + from factorio_circuit.devices._blueprint import decode_blueprint
+6  | from factorio_circuit.devices.assembler import (
+--------------------------------------------------------------------------------
+12 | )
+   - from factorio_circuit.devices._blueprint import decode_blueprint
+13 | from factorio_circuit.devices.protocol import DevicePortDirection
+   |
+
+Found 40 errors.
+[*] 22 fixable with the `--fix` option (1 hidden fix can be enabled with the `--unsafe-fixes` option).
+exit_code=1
+
+===== ruff format =====
+unformatted: File would be reformatted
+  --> examples/assembler_device_anchor_probe.py:88:51
+   |
+87 |     demand = device.anchor("requester_demand")
+   -     recipe_entity, recipe_anchor = _output_anchor(
+   -         1, "recipe_out", recipe.position, IRON_GEAR, 1
+   -     )
+88 +     recipe_entity, recipe_anchor = _output_anchor(1, "recipe_out", recipe.position, IRON_GEAR, 1)
+89 |     demand_entity, demand_anchor = _output_anchor(
+   |
+
+unformatted: File would be reformatted
+   --> examples/autonomous_mall/anchored_worker.py:90:16
+    |
+89  |     request_missing = (ingredients - available).positive().any()
+    -     accepted = (
+    -         dispatch
+    -         * job_recipe.any()
+    -         * ingredients.any()
+    -         * request_missing.logical_not()
+    -     )
+90  +     accepted = dispatch * job_recipe.any() * ingredients.any() * request_missing.logical_not()
+91  |     remaining = available - ingredients.gate(accepted)
+--------------------------------------------------------------------------------
+111 |
+    -     start = (
+    -         launch
+    -         * accepted
+    -         * idle
+    -         * already_seen.logical_not()
+    -         * working.logical_not()
+    -     )
+112 +     start = launch * accepted * idle * already_seen.logical_not() * working.logical_not()
+113 |     # A dispatch cycle is re-armed only when D is dropped. Transient changes to accepted while a
+--------------------------------------------------------------------------------
+125 |     mode_change = start | loaded | saw_working | worker_done
+    -     next_mode = (
+    -         fill_token.gate(start)
+    -         + run_token.gate(loaded)
+    -         + wait_token.gate(saw_working)
+    -     )
+126 +     next_mode = fill_token.gate(start) + run_token.gate(loaded) + wait_token.gate(saw_working)
+127 |     mode.set(next_mode, when=mode_change)
+    |
+
+unformatted: File would be reformatted
+   --> examples/autonomous_mall/anchored_worker_probe.py:59:54
+    |
+58  |     entities_raw = blueprint.get("entities", [])
+    -     if not isinstance(entities_raw, list) or not all(isinstance(item, dict) for item in entities_raw):
+59  +     if not isinstance(entities_raw, list) or not all(
+60  +         isinstance(item, dict) for item in entities_raw
+61  +     ):
+62  |         raise ValueError("worker blueprint entities must be dictionaries")
+--------------------------------------------------------------------------------
+82  |     # Reuse the canonical composition builder for the same physical device/module configuration.
+    -     from factorio_circuit.devices import AnchorBinding, AssemblerDevice, compose_anchored_blueprints, socketize_assembler_device
+83  +     from factorio_circuit.devices import (
+84  +         AnchorBinding,
+85  +         AssemblerDevice,
+86  +         compose_anchored_blueprints,
+87  +         socketize_assembler_device,
+88  +     )
+89  |     from examples.autonomous_mall.anchored_worker import DEVICE_OFFSET
+--------------------------------------------------------------------------------
+96  |     ).anchored()
+    -     bound_names = ("recipe", "enable", "requester_demand", "ingredients", "requester_contents", "working")
+97  +     bound_names = (
+98  +         "recipe",
+99  +         "enable",
+100 +         "requester_demand",
+101 +         "ingredients",
+102 +         "requester_contents",
+103 +         "working",
+104 +     )
+105 |     composed = compose_anchored_blueprints(
+    |
+
+unformatted: File would be reformatted
+   --> examples/autonomous_mall/complete_controller.py:115:18
+    |
+114 | def _compile_complete_tiles() -> tuple[CompiledTile, CompiledTile, CompiledTile]:
+    -     specs: tuple[
+    -         tuple[str, Callable[[], object], ModuleInterface, tuple[DockSpec, ...]], ...
+    -     ] = (
+115 +     specs: tuple[tuple[str, Callable[[], object], ModuleInterface, tuple[DockSpec, ...]], ...] = (
+116 |         ("HEAD tile", build_head_tile, COMPLETE_HEAD_INTERFACE, COMPLETE_HEAD_DOCKS),
+    |
+
+unformatted: File would be reformatted
+   --> examples/autonomous_mall/manual_controller.py:91:12
+    |
+90  |
+    -     name = (
+    -         "autonomous_mall_assembler_tile"
+    -         if recipe_command
+    -         else "autonomous_mall_recycler_tile"
+    -     )
+91  +     name = "autonomous_mall_assembler_tile" if recipe_command else "autonomous_mall_recycler_tile"
+92  |     circuit = Circuit(name)
+--------------------------------------------------------------------------------
+413 |     blueprint["wires"] = [
+    -         list(item)
+    -         for item in sorted(
+    -             {tuple(int(value) for value in wire) for wire in wires}
+    -         )
+414 +         list(item) for item in sorted({tuple(int(value) for value in wire) for wire in wires})
+415 |     ]
+--------------------------------------------------------------------------------
+495 |     if vector:
+    -         arithmetic_conditions["first_signal"] = _signal_json(
+    -             SignalId("virtual", "signal-each")
+    -         )
+    -         arithmetic_conditions["output_signal"] = _signal_json(
+    -             SignalId("virtual", "signal-each")
+    -         )
+496 +         arithmetic_conditions["first_signal"] = _signal_json(SignalId("virtual", "signal-each"))
+497 +         arithmetic_conditions["output_signal"] = _signal_json(SignalId("virtual", "signal-each"))
+498 |     else:
+    |
+
+unformatted: File would be reformatted
+  --> examples/autonomous_mall/routes.py:41:51
+   |
+40 |     inputs = {
+   -         Commodity(item, quality): Fraction(amount)
+   -         for item, amount in recipe.ingredients.items()
+   -     }
+   -     outputs = {
+   -         Commodity(recipe.product, quality): Fraction(recipe.product_amount) * (1 + bonus)
+41 +         Commodity(item, quality): Fraction(amount) for item, amount in recipe.ingredients.items()
+42 |     }
+43 +     outputs = {Commodity(recipe.product, quality): Fraction(recipe.product_amount) * (1 + bonus)}
+44 |     return ProductionRoute(
+   |
+
+unformatted: File would be reformatted
+  --> examples/autonomous_mall/scheduler.py:58:40
+   |
+57 |         required = {
+   -             commodity: Fraction(amount)
+   -             for commodity, amount in inputs.items()
+   -             if amount > 0
+58 +             commodity: Fraction(amount) for commodity, amount in inputs.items() if amount > 0
+59 |         }
+   |
+
+unformatted: File would be reformatted
+   --> src/factorio_circuit/devices/anchors.py:262:20
+    |
+261 |     missing = [
+    -         anchor.name for anchor in component.anchors if anchor.spec.required and anchor.name not in bound
+262 +         anchor.name
+263 +         for anchor in component.anchors
+264 +         if anchor.spec.required and anchor.name not in bound
+265 |     ]
+--------------------------------------------------------------------------------
+365 |     source_behavior = source.get("control_behavior")
+    -     if target_behavior is not None and source_behavior is not None and target_behavior != source_behavior:
+    -         raise ValueError("overlapping anchors both define incompatible constant-combinator behavior")
+366 +     if (
+367 +         target_behavior is not None
+368 +         and source_behavior is not None
+369 +         and target_behavior != source_behavior
+370 +     ):
+371 +         raise ValueError(
+372 +             "overlapping anchors both define incompatible constant-combinator behavior"
+373 +         )
+374 |     if target_behavior is None and source_behavior is not None:
+    |
+
+unformatted: File would be reformatted
+   --> src/factorio_circuit/devices/assembler.py:248:69
+    |
+247 |                     "in_inventory": [
+    -                         {"inventory": 4, "stack": stack, "count": 1}
+    -                         for stack in stacks
+248 +                         {"inventory": 4, "stack": stack, "count": 1} for stack in stacks
+249 |                     ]
+--------------------------------------------------------------------------------
+649 |
+    -     return AssemblerDevice(
+    -         prototype=prototype, direction=direction, modules=modules, label=label
+    -     ).build().blueprint
+650 +     return (
+651 +         AssemblerDevice(prototype=prototype, direction=direction, modules=modules, label=label)
+652 +         .build()
+653 +         .blueprint
+654 +     )
+655 |
+    |
+
+unformatted: File would be reformatted
+   --> src/factorio_circuit/devices/assembler_socket.py:120:15
+    |
+119 |
+    - def _terminal(entity_number: int, position: tuple[float, float], description: str) -> dict[str, object]:
+120 + def _terminal(
+121 +     entity_number: int, position: tuple[float, float], description: str
+122 + ) -> dict[str, object]:
+123 |     return {
+    |
+
+unformatted: File would be reformatted
+   --> src/factorio_circuit/devices/protocol.py:137:79
+    |
+136 |             raise ValueError(
+    -                 f"bound device ports {sorted(actual)!r} do not match protocol "
+    -                 f"{sorted(expected)!r}"
+137 +                 f"bound device ports {sorted(actual)!r} do not match protocol {sorted(expected)!r}"
+138 |             )
+    |
+
+unformatted: File would be reformatted
+  --> tests/devices/test_anchors.py:61:10
+   |
+60 |         },
+   -         (BoundAnchor(_vector_spec(name, DevicePortDirection.OUTPUT, WireColor.GREEN), 1, 2, position),),
+61 +         (
+62 +             BoundAnchor(
+63 +                 _vector_spec(name, DevicePortDirection.OUTPUT, WireColor.GREEN), 1, 2, position
+64 +             ),
+65 +         ),
+66 |         "source",
+   |
+
+unformatted: File would be reformatted
+   --> tests/examples/autonomous_mall/test_anchored_worker.py:61:22
+    |
+60  |
+    -     enabled_ticks = [
+    -         tick for tick, record in enumerate(records) if int(record["enable"]) != 0
+    -     ]
+61  +     enabled_ticks = [tick for tick, record in enumerate(records) if int(record["enable"]) != 0]
+62  |     assert enabled_ticks
+--------------------------------------------------------------------------------
+163 |     recipe_filters = recipe["control_behavior"]["sections"]["sections"][0]["filters"]
+    -     assert [(item["name"], item["count"]) for item in recipe_filters] == [
+    -         (IRON_GEAR.name, 1)
+    -     ]
+164 +     assert [(item["name"], item["count"]) for item in recipe_filters] == [(IRON_GEAR.name, 1)]
+165 |     assert sum(entity["name"] == "active-provider-chest" for entity in entities) == 1
+    |
+
+unformatted: File would be reformatted
+  --> tests/examples/autonomous_mall/test_device_tiles.py:82:16
+   |
+81 | def _dock(entities: list[dict[str, object]], label: str) -> dict[str, object]:
+   -     matches = [
+   -         entity
+   -         for entity in entities
+   -         if entity.get("player_description") == f"DOCK {label}"
+   -     ]
+82 +     matches = [entity for entity in entities if entity.get("player_description") == f"DOCK {label}"]
+83 |     assert len(matches) == 1
+   |
+
+unformatted: File would be reformatted
+   --> tests/examples/autonomous_mall/test_manual_controller.py:90:12
+    |
+89  |
+    -     assert HEAD_INTERFACE.outputs["available_out"][1] == ASSEMBLER_INTERFACE.inputs[
+    -         "available_in"
+    -     ][1]
+90  +     assert (
+91  +         HEAD_INTERFACE.outputs["available_out"][1] == ASSEMBLER_INTERFACE.inputs["available_in"][1]
+92  +     )
+93  |     assert HEAD_INTERFACE.outputs["control_out"][1] == ASSEMBLER_INTERFACE.inputs["control_in"][1]
+    -     assert ASSEMBLER_INTERFACE.outputs["remaining_out"][1] == ASSEMBLER_INTERFACE.inputs[
+    -         "available_in"
+    -     ][1]
+    -     assert ASSEMBLER_INTERFACE.outputs["control_out"][1] == ASSEMBLER_INTERFACE.inputs[
+    -         "control_in"
+    -     ][1]
+94  +     assert (
+95  +         ASSEMBLER_INTERFACE.outputs["remaining_out"][1]
+96  +         == ASSEMBLER_INTERFACE.inputs["available_in"][1]
+97  +     )
+98  +     assert (
+99  +         ASSEMBLER_INTERFACE.outputs["control_out"][1] == ASSEMBLER_INTERFACE.inputs["control_in"][1]
+100 +     )
+101 |
+    |
+
+unformatted: File would be reformatted
+   --> tests/examples/autonomous_mall/test_planner.py:135:65
+    |
+134 |     )
+    -     plan = MaterialPlanner(book, raw_items={"iron-plate"}).plan(
+    -         targets={rare_gear: 2}, stock={}
+    -     )
+135 +     plan = MaterialPlanner(book, raw_items={"iron-plate"}).plan(targets={rare_gear: 2}, stock={})
+136 |     assert plan.raw_required == {plate: Fraction(14, 3)}
+--------------------------------------------------------------------------------
+141 |     target = c("target")
+    -     book = RecipeBook(
+    -         [route("target", WorkerKind.PRODUCTIVITY, {impossible: 1}, {target: 1})]
+    -     )
+142 +     book = RecipeBook([route("target", WorkerKind.PRODUCTIVITY, {impossible: 1}, {target: 1})])
+143 |     with pytest.raises(NoRouteError):
+    |
+
+16 files would be reformatted, 216 files already formatted
+exit_code=1
+
+===== mypy src =====
+src/factorio_circuit/devices/protocol.py:159: error: Function is missing a return type annotation  [no-untyped-def]
+src/factorio_circuit/devices/anchors.py:158: error: No overload variant of "int" matches argument type "object"  [call-overload]
+src/factorio_circuit/devices/anchors.py:158: note: Possible overload variants:
+src/factorio_circuit/devices/anchors.py:158: note:     def int(str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc = ..., /) -> int
+src/factorio_circuit/devices/anchors.py:158: note:     def int(str | bytes | bytearray, /, base: SupportsIndex) -> int
+src/factorio_circuit/devices/anchors.py:167: error: No overload variant of "int" matches argument type "object"  [call-overload]
+src/factorio_circuit/devices/anchors.py:167: note: Possible overload variants:
+src/factorio_circuit/devices/anchors.py:167: note:     def int(str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc = ..., /) -> int
+src/factorio_circuit/devices/anchors.py:167: note:     def int(str | bytes | bytearray, /, base: SupportsIndex) -> int
+src/factorio_circuit/devices/anchors.py:251: error: Argument 3 to "AnchoredBlueprint" has incompatible type "str | Any | None"; expected "str"  [arg-type]
+src/factorio_circuit/devices/anchors.py:285: error: No overload variant of "int" matches argument type "object"  [call-overload]
+src/factorio_circuit/devices/anchors.py:285: note: Possible overload variants:
+src/factorio_circuit/devices/anchors.py:285: note:     def int(str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc = ..., /) -> int
+src/factorio_circuit/devices/anchors.py:285: note:     def int(str | bytes | bytearray, /, base: SupportsIndex) -> int
+src/factorio_circuit/devices/anchors.py:399: error: Unused "type: ignore" comment  [unused-ignore]
+src/factorio_circuit/devices/anchors.py:410: error: No overload variant of "int" matches argument type "object"  [call-overload]
+src/factorio_circuit/devices/anchors.py:410: note: Possible overload variants:
+src/factorio_circuit/devices/anchors.py:410: note:     def int(str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc = ..., /) -> int
+src/factorio_circuit/devices/anchors.py:410: note:     def int(str | bytes | bytearray, /, base: SupportsIndex) -> int
+src/factorio_circuit/devices/anchors.py:441: error: No overload variant of "int" matches argument type "object"  [call-overload]
+src/factorio_circuit/devices/anchors.py:441: note: Possible overload variants:
+src/factorio_circuit/devices/anchors.py:441: note:     def int(str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc = ..., /) -> int
+src/factorio_circuit/devices/anchors.py:441: note:     def int(str | bytes | bytearray, /, base: SupportsIndex) -> int
+src/factorio_circuit/devices/assembler_socket.py:62: error: No overload variant of "int" matches argument type "object"  [call-overload]
+src/factorio_circuit/devices/assembler_socket.py:62: note: Possible overload variants:
+src/factorio_circuit/devices/assembler_socket.py:62: note:     def int(str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc = ..., /) -> int
+src/factorio_circuit/devices/assembler_socket.py:62: note:     def int(str | bytes | bytearray, /, base: SupportsIndex) -> int
+src/factorio_circuit/devices/assembler_socket.py:137: error: Unused "type: ignore" comment  [unused-ignore]
+src/factorio_circuit/devices/module_anchors.py:72: error: No overload variant of "int" matches argument type "object"  [call-overload]
+src/factorio_circuit/devices/module_anchors.py:72: note: Possible overload variants:
+src/factorio_circuit/devices/module_anchors.py:72: note:     def int(str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc = ..., /) -> int
+src/factorio_circuit/devices/module_anchors.py:72: note:     def int(str | bytes | bytearray, /, base: SupportsIndex) -> int
+src/factorio_circuit/devices/module_anchors.py:236: error: Unused "type: ignore" comment  [unused-ignore]
+src/factorio_circuit/devices/module_anchors.py:247: error: No overload variant of "int" matches argument type "object"  [call-overload]
+src/factorio_circuit/devices/module_anchors.py:247: note: Possible overload variants:
+src/factorio_circuit/devices/module_anchors.py:247: note:     def int(str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc = ..., /) -> int
+src/factorio_circuit/devices/module_anchors.py:247: note:     def int(str | bytes | bytearray, /, base: SupportsIndex) -> int
+Found 13 errors in 4 files (checked 89 source files)
+exit_code=1
+
+===== probe generation =====
+Traceback (most recent call last):
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/src/factorio_circuit/synthesis/open_vector.py", line 143, in synthesize
+    routing = route_wires(
+              ^^^^^^^^^^^^
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/src/factorio_circuit/blueprint/routing.py", line 126, in route_wires
+    relay_positions = _find_relay_positions(
+                      ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/src/factorio_circuit/blueprint/routing.py", line 260, in _find_relay_positions
+    raise ValueError(
+ValueError: could not route a collision-free circuit wire within the configured reach; parallel lanes and grid search were both exhausted
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/examples/autonomous_mall/anchored_worker_probe.py", line 114, in <module>
+    main()
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/examples/autonomous_mall/anchored_worker_probe.py", line 110, in main
+    print(generate_probe_blueprint_string())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/examples/autonomous_mall/anchored_worker_probe.py", line 106, in generate_probe_blueprint_string
+    return encode_blueprint(build_probe_blueprint())
+                            ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/examples/autonomous_mall/anchored_worker_probe.py", line 55, in build_probe_blueprint
+    result = compile_assembler_worker()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/examples/autonomous_mall/anchored_worker.py", line 158, in compile_assembler_worker
+    return compile_module(
+           ^^^^^^^^^^^^^^^
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/src/factorio_circuit/synthesis/interface.py", line 132, in compile_module
+    result = compile_circuit(
+             ^^^^^^^^^^^^^^^^
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/src/factorio_circuit/compiler.py", line 211, in compile_circuit
+    naive_physical = _synthesize(
+                     ^^^^^^^^^^^^
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/src/factorio_circuit/compiler.py", line 103, in _synthesize
+    return synthesize_vector_layout(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/src/factorio_circuit/synthesis/open_vector.py", line 240, in synthesize_vector_layout
+    ).synthesize()
+      ^^^^^^^^^^^^
+  File "/home/runner/work/factorio-circuit-compiler/factorio-circuit-compiler/src/factorio_circuit/synthesis/open_vector.py", line 201, in synthesize
+    raise ValueError(
+ValueError: physical synthesis exhausted 3 deterministic placement attempt(s) without finding a collision-free, reach-safe route that keeps reserved corridors clear of relay entities
+exit_code=1
+
+overall_exit_code=1
