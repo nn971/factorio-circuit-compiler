@@ -47,7 +47,7 @@ contents**. Wire it directly to `INPUT stock` using the color printed by the gen
 signals off this wire.
 
 For the first tests use normal iron plates and iron gears only. The one-ingredient gear recipe makes the
-one-shot feed protocol easy to verify before generalizing the external worker device.
+transaction sequence easy to verify before testing a multi-ingredient recipe.
 
 ## Assembler worker
 
@@ -67,25 +67,43 @@ runs the same recipe again.
 Install productivity modules permanently in `p*` machines and quality modules permanently in `q*`
 machines. Do not use speed beacons for the first quality test.
 
-### Input inserter gate
+### Exact input feeder
 
 The controller does **not** stop a job by removing the recipe. Factorio can begin another craft before a
 post-finish disable reacts, and changing/removing a productivity recipe can discard partial productivity
-progress. Instead, starve the machine after the first craft has begun.
+progress. Instead, the external worker feeds exactly one recipe's ingredients and then starves the
+machine.
 
-Set the input inserter's stack size to **1** and enable it only when both conditions hold:
+Set the input inserter's stack size override to **1**. For the initial iron-gear smoke test, it is enough
+to enable it only when both conditions hold:
 
 ```text
 controller OUTPUT <worker>_input_enable > 0
 machine Read-working signal = 0
 ```
 
-Use a small decider if you need to combine those two signals before the inserter. The important point is
-that the machine's own Read-working signal reaches the inserter locally, without waiting for the compiled
-controller to notice the state change.
+The machine's own Read-working signal should reach this inserter locally, without waiting for the compiled
+controller to observe it. For iron gears, the inserter moves plate 1 and plate 2; the craft starts, working
+becomes nonzero, and the feeder is blocked before a third plate can enter.
 
-For the iron-gear test, the inserter moves plate 1, then plate 2; the assembler starts immediately after
-plate 2, Read-working becomes nonzero, and the inserter is blocked before it can feed a third plate.
+For a general no-fluid multi-ingredient recipe, add one small vector feeder circuit. Configure the
+assembler to **Read contents** on a wire kept separate from its Set-recipe input. Compute
+
+```text
+missing_to_machine = positive(<worker>_requester_demand - machine_contents)
+```
+
+and use `missing_to_machine` to **Set filters** on the stack-size-1 input inserter. Enable that inserter only
+while `<worker>_input_enable > 0` and Read-working is zero.
+
+The filter therefore removes each ingredient lane as soon as the exact requested count has reached the
+machine. The final missing ingredient starts the craft, and local Read-working then closes the feeder.
+Robot over-delivery is harmless: excess items stay in the requester chest and become trash when the
+controller withdraws the request.
+
+For recipes where an ingredient is also a product/catalyst, machine Read-contents is an ambiguous feeder
+ledger. Keep those recipes out of this first physical test; the later reusable worker protocol should count
+inserter hand pulses explicitly instead. The economic planner itself has no such limitation.
 
 ### Working signal
 
@@ -121,15 +139,16 @@ can begin while any worker's completion latch is still high.
 For `r0` place:
 
 ```text
-requester chest -> stack-size-1 inserter -> recycler -> inserter/belt -> provider chest
+requester chest -> stack-size-1 inserter -> recycler -> belt/provider collection
 ```
 
 Connect `OUTPUT r0_requester_demand` to the requester's circuit-set requests. There is deliberately no
 `r0_recipe`: a recycler chooses its reverse recipe automatically from the inserted item.
 
-Gate the recycler input inserter using `OUTPUT r0_input_enable` and local Read-working exactly as for an
-assembler. Wire Read-working and the durable Read-recipe-finished latch in the same way. Install quality
-modules permanently in the recycler.
+Gate the recycler input inserter using `OUTPUT r0_input_enable` and local Read-working exactly as for the
+simple assembler feeder. A recycler job requests one item, so no multi-ingredient feeder is needed. Wire
+Read-working and the durable Read-recipe-finished latch in the same way. Install quality modules
+permanently in the recycler.
 
 ## Manual job inputs
 
@@ -209,7 +228,17 @@ fully cleared.
 Expected: most gears stay normal and occasional outputs have higher quality. Every dispatch still causes
 one physical craft; quality randomness changes the observed inventory, not the number of requested crafts.
 
-## Test 5: recycler, including zero output
+## Test 5: multi-ingredient assembler
+
+After the gear tests pass, wire the `missing_to_machine` filter circuit and choose any no-fluid recipe with
+at least two ingredient types. Set `job_request` to exactly one craft's ingredient vector and set
+`job_recipe` to that product.
+
+Watch the assembler Read-contents signals while the requester fills. Expected: each ingredient stops being
+fed exactly at its requested count; no ingredient is buffered for a second craft. When the last ingredient
+arrives, one craft starts and the local working gate closes the feeder.
+
+## Test 6: recycler, including zero output
 
 Put gears in the network and configure:
 
@@ -224,7 +253,7 @@ Expected: one gear is consumed per transaction. A recycle may return zero, one, 
 zero-output recycle completes because completion is driven by the latched recipe-finished signal rather
 than by observing an output item. With quality modules, returned plates can be upgraded.
 
-## Test 6: all five workers
+## Test 7: all five workers
 
 Give every worker an affordable candidate job and enough stock. Assert one dispatch.
 
@@ -239,9 +268,9 @@ Expected:
 ## Current boundary
 
 This validates the physical transaction contract needed by the mall: roboport snapshot input,
-requester-chest transport, fixed P/Q/R roles, same-batch reservations, ingredient-starved one-shot
-execution, productivity-progress preservation, durable completion, and multi-worker operation without
-robot-flight feedback oscillation.
+requester-chest transport, fixed P/Q/R roles, same-batch reservations, exact one-craft feeding for ordinary
+no-fluid recipes, productivity-progress preservation, durable completion, and multi-worker operation
+without robot-flight feedback oscillation.
 
 The global material-efficiency planner in `planner.py` is still the Python reference oracle. The next
 controller milestone is to realize its decision rule (or a proved approximation) in circuit logic and feed
