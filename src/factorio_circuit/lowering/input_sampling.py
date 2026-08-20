@@ -342,15 +342,19 @@ class SamplingPolicyLowerer(AlapVectorLowerer):
                     )
 
     def _can_resample_scalar(self, value: RealizedValue) -> bool:
+        """Legacy raw-source hook used by the experimental temporal-plan lowerer."""
+
         return (
             self.sampling_policy is SamplingPolicy.ALAP
-            and self._scalar_observation_window(value) is not None
+            and (value.net, value.signal) in self._external_scalar_sources
         )
 
     def _can_resample_vector(self, value: RealizedVector) -> bool:
+        """Legacy raw-source hook; general re-observation uses the observation-window proof."""
+
         return (
             self.sampling_policy is SamplingPolicy.ALAP
-            and self._vector_observation_window(value) is not None
+            and value.net in self._external_vector_nets
         )
 
     def _can_observe_scalar_at(self, value: RealizedValue, target_phase: int) -> bool:
