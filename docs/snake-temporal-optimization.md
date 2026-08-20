@@ -98,6 +98,45 @@ semantic state cone
 A CP-SAT status of `OPTIMAL` means optimal only for the explicitly modeled fixed-period state-cone
 problem, not yet for the complete compiled Snake.
 
+## Staged fixed-period success
+
+On 2026-08-20 a 30-second, 8-worker solve successfully completed the entire
+semantic -> CP-SAT -> temporal-plan abstract-lowering path at the unchanged period 65. The realized
+abstract physical census was:
+
+```text
+baseline ALAP                     temporal plan
+implementation     698            454
+phase delays       421            165
+  private scalar   403             94
+  scalar bus         0             54
+  vector             18             17
+state impl           60             60
+max lanes/net         1             32
+```
+
+The solver candidate had objective 71 and best bound 64: 54 scalar bus stages plus 17 vector delays,
+using three scalar buses. The realized circuit therefore reduced implementation combinators by 244
+(35.0%) and phase-delay combinators by 256 (60.8%) without increasing the state period.
+
+This is deliberately recorded as `temporal-delay-bus-prevalidation-v1`, not yet as an accepted
+in-game milestone. The next acceptance gate is concrete signal allocation, safe-folded layout,
+blueprint import, and full Factorio gameplay validation.
+
+Generate that candidate blueprint with the dedicated experimental runner:
+
+```bash
+uv run --with 'ortools>=9.14,<10' \
+  python -m benchmarks.snake.generate_temporal \
+  --time-limit 30 \
+  --workers 8 \
+  --census \
+  --output snake-temporal-blueprint.txt
+```
+
+The ordinary `benchmarks.snake.generate` command intentionally remains on the accepted ALAP path
+until this candidate passes the in-game acceptance checklist.
+
 ## Deliberate first-milestone boundaries
 
 The first search keeps these decisions fixed or outside the objective:
@@ -113,7 +152,7 @@ The first search keeps these decisions fixed or outside the objective:
 - physical lane incompatibility is currently an explicit solver input rather than derived
   automatically.
 
-These boundaries make the first number interpretable. The next steps are to verify that the solved
-abstract lowering predicts and realizes the same delay savings, derive bus compatibility from
-physical IR, add output/startup sinks, then search the period-slack Pareto frontier (`P`, `P+1`, ...).
-Only after that should computation cloning/rematerialization become another solver choice.
+These boundaries make the first number interpretable. After physical/in-game validation, the next
+steps are to derive bus compatibility from physical IR, add output/startup sinks, then search the
+period-slack Pareto frontier (`P`, `P+1`, ...). Only after that should computation
+cloning/rematerialization become another solver choice.
