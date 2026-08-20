@@ -108,3 +108,17 @@ the documented **driver phase** and ordering repeat every cycle and are what mat
 
 If a case fails, prefer debugging the earliest failing example in this list. Every later example
 assumes the earlier contracts.
+
+## Application prototype: autonomous mall
+
+The larger autonomous-mall work lives in `examples/autonomous_mall/`. Its Python reference model solves
+raw-material-efficient quality planning, while `manual_controller.py` compiles the first manually wired
+five-worker transaction controller:
+
+```bash
+uv run python -m examples.autonomous_mall.manual_controller \
+  > autonomous-mall-manual-blueprint.txt
+```
+
+See `examples/autonomous_mall/manual_in_game.md` for the roboport, requester-chest, assembler, recycler,
+and completion-latch wiring procedure and the staged in-game acceptance tests.
