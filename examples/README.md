@@ -111,15 +111,16 @@ assumes the earlier contracts.
 ## Application prototype: autonomous mall
 
 The larger autonomous-mall work lives in `examples/autonomous_mall/`. Its Python reference model solves
-raw-material-efficient quality planning, while `manual_controller.py` compiles four small physical
-templates that are composed by hand into the five-worker test rig:
+raw-material-efficient quality planning, while `manual_controller.py` now generates **snap-together
+physical tiles** with a stable red-wire ABI:
 
 ```bash
 uv run python -m examples.autonomous_mall.manual_controller \
   > autonomous-mall-manual-blueprint.txt
 ```
 
-The generated blueprint book contains a stock snapshot, one reservation-cell template, one
-assembler-worker template, and one recycler-worker template. Paste the reservation cell five times and
-the assembler worker four times. See `examples/autonomous_mall/manual_in_game.md` for the exact chain,
-roboport/requester wiring, completion latch, and staged in-game acceptance tests.
+The blueprint book contains a complete `[HEAD][P0][P1][Q0][Q1][R0]` controller plus reusable HEAD,
+assembler-worker, and recycler-worker tiles. Matching horizontal boundary markers overlap on the common
+48x48 snapping grid, so reservation and control buses require no manual wiring. See
+`examples/autonomous_mall/manual_in_game.md` for roboport hookup, local job configuration, stable
+machine-side dock signals, and the staged in-game acceptance tests.
