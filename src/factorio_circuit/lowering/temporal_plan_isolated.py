@@ -7,8 +7,13 @@ onto producer nets that may still feed clean-single-lane / Each-sensitive consum
 
 This experimental lowerer inserts one signal-specific one-tick ingress copy per delayed lane before
 that lane is allowed onto a shared bus. Ingress outputs are bus-private, so later coalescing is safe:
-it can no longer contaminate the original computation net. The ingress copy is also the lane's first
-exact transport tick, so consumers one tick after production can tap it directly.
+it can no longer contaminate the original computation net. Ingress copies that become available on
+the same ``(bus, phase)`` are wired onto one aggregate bus-private ingress net before the shared bus
+stage. That makes the intended physical fan-in explicit and keeps each bus stage within Factorio's
+two-wire input limit: at most one ingress net plus the previous bus trunk.
+
+The ingress copy is also the lane's first exact transport tick, so consumers one tick after
+production can tap it directly.
 """
 
 from __future__ import annotations
@@ -77,6 +82,7 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
             optimization=optimization,
         )
         self._bus_ingress_by_lane: dict[tuple[int, int], RealizedValue] = {}
+        self._bus_ingress_net_by_phase: dict[tuple[int, int], int] = {}
 
     def _bus_ingress(
         self,
@@ -85,7 +91,7 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
         value: RealizedValue,
         binding: _BusBinding,
     ) -> RealizedValue:
-        """Copy one lane through a private scalar combinator before joining the shared bus."""
+        """Copy one lane privately, then join the aggregate ingress net for its bus/phase."""
 
         key = (bus, lane.producer)
         cached = self._bus_ingress_by_lane.get(key)
@@ -112,17 +118,32 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
         )
         self.circuit.entities.append(entity)
         self._attach(value.net, Endpoint(entity.id, Connector.INPUT))
-        output_net = self._new_net(
-            (value.signal,),
-            Endpoint(entity.id, Connector.OUTPUT),
-            label=f"scalar delay bus {bus} isolated ingress",
-        )
+
+        output_phase = value.phase + latency
+        ingress_key = (bus, output_phase)
+        output_endpoint = Endpoint(entity.id, Connector.OUTPUT)
+        output_net = self._bus_ingress_net_by_phase.get(ingress_key)
+        if output_net is None:
+            output_net = self._new_net(
+                (value.signal,),
+                output_endpoint,
+                label=f"scalar delay bus {bus} isolated ingress @ {output_phase}",
+            )
+            self._bus_ingress_net_by_phase[ingress_key] = output_net
+        else:
+            # All ingress copies on the same bus/phase are already electrically isolated from their
+            # semantic producer nets and carry distinct abstract signal identities. Make that safe
+            # merge explicit here instead of asking the red/green synthesis heuristic to discover it.
+            self._attach(output_net, output_endpoint)
+            builder = self.net_builders[output_net]
+            if value.signal not in builder.signals:
+                builder.signals = tuple(sorted((*builder.signals, value.signal)))
+
         result = RealizedValue(
             signal=value.signal,
             net=output_net,
-            phase=value.phase + latency,
-            # Synthesis may later coalesce bus-private ingress outputs. Never expose this as a
-            # clean-single-lane source to an Each-sensitive implementation choice.
+            phase=output_phase,
+            # The aggregate ingress is intentionally multi-lane when several values join together.
             clean_single_lane=False,
         )
         window = self._scalar_window(value)
@@ -193,7 +214,7 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
         lane: DelayBusLane,
         value: RealizedValue,
     ) -> None:
-        """Join only a bus-private ingress/tap net, never the original producer net."""
+        """Join only a bus-private aggregate ingress net, never the original producer net."""
 
         key = (bus, lane.producer)
         if key in self._joined_bus_lanes:
