@@ -41,7 +41,7 @@ def _shared_select_control() -> Circuit:
     return c
 
 
-def test_temporal_plan_aligns_fast_select_before_bus_join() -> None:
+def test_temporal_plan_uses_modeled_select_latency_before_bus_join() -> None:
     baseline = lower_to_abstract_physical(
         _shared_select_control(),
         optimize=False,
@@ -96,8 +96,11 @@ def test_temporal_plan_aligns_fast_select_before_bus_join() -> None:
     census = census_abstract_physical(planned)
     roles = dict(census.lowering_roles)
 
-    # The semantic Select envelope reserves three data-path ticks, while the concrete two-arm
-    # decider mux can finish in one. The lowerer must align that early physical value to the solved
-    # bus-entry phase instead of rejecting the plan, then continue on the shared-bus path.
-    assert roles.get("phase-delay.scalar", 0) >= 2
+    # Optimized Select nodes must use the same three-stage arithmetic implementation whose
+    # asymmetric 3-tick data / 2-tick condition latency the temporal hypergraph models. The normal
+    # one-stage decider-mux substitution is deliberately disabled until implementation choice
+    # becomes an explicit solver variable.
+    descriptions = {entity.description or "" for entity in planned.entities}
+    assert not any(description.endswith(": true arm") for description in descriptions)
+    assert not any(description.endswith(": false arm") for description in descriptions)
     assert roles.get("phase-delay.scalar-bus", 0) > 0
