@@ -190,8 +190,16 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
             when_false = self.delay_to(when_false, data_phase)
 
         diff = self._emit_binary_from_operands("-", when_true, when_false)
-        if diff.phase != condition_phase:  # pragma: no cover - latency-model invariant
-            raise AssertionError("Select data stage disagrees with target latency model")
+        if diff.phase > condition_phase:
+            raise ValueError(
+                f"optimized Select data stage realized late at phase {diff.phase}, "
+                f"expected no later than {condition_phase}"
+            )
+        # Constant/stable arms can make the arithmetic result physically available before the
+        # nominal data stage. Preserve that settling proof and view the same value at the scheduled
+        # condition phase; dynamic arms already arrive here exactly and need no extra transport.
+        diff = self.delay_to(diff, condition_phase)
+
         gated = self._emit_binary_from_realized("*", diff, condition)
         final_input_phase = output_phase - FACTORIO_LATENCY.operation_latency(
             "scalar_binary", "select-final"
