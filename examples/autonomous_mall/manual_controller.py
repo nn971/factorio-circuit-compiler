@@ -28,7 +28,8 @@ from factorio_circuit.synthesis.placement import PlacementOptions
 
 TILE_WIDTH = 48
 TILE_HEIGHT = 48
-_LAYOUT_SHIFT = (4.0, 4.0)
+_PREFERRED_LAYOUT_SHIFT = (4.0, 4.0)
+_FIT_TOLERANCE = 1e-9
 
 MALL_DISPATCH = SignalId("virtual", "signal-D")
 MALL_LAUNCH = SignalId("virtual", "signal-L")
@@ -276,9 +277,7 @@ ASSEMBLER_DOCKS = (
     ),
 )
 
-RECYCLER_DOCKS = tuple(
-    dock for dock in ASSEMBLER_DOCKS if dock.port != "recipe"
-)
+RECYCLER_DOCKS = tuple(dock for dock in ASSEMBLER_DOCKS if dock.port != "recipe")
 
 
 def _placement() -> PlacementOptions:
@@ -291,29 +290,17 @@ def _compile_base_tiles() -> tuple[tuple[str, CompilationResult, tuple[DockSpec,
     return (
         (
             "HEAD tile",
-            compile_module(
-                build_head_tile(),
-                HEAD_INTERFACE,
-                placement=_placement(),
-            ),
+            compile_module(build_head_tile(), HEAD_INTERFACE, placement=_placement()),
             HEAD_DOCKS,
         ),
         (
             "ASSEMBLER worker tile",
-            compile_module(
-                build_assembler_tile(),
-                ASSEMBLER_INTERFACE,
-                placement=_placement(),
-            ),
+            compile_module(build_assembler_tile(), ASSEMBLER_INTERFACE, placement=_placement()),
             ASSEMBLER_DOCKS,
         ),
         (
             "RECYCLER worker tile",
-            compile_module(
-                build_recycler_tile(),
-                RECYCLER_INTERFACE,
-                placement=_placement(),
-            ),
+            compile_module(build_recycler_tile(), RECYCLER_INTERFACE, placement=_placement()),
             RECYCLER_DOCKS,
         ),
     )
@@ -323,12 +310,69 @@ def compile_manual_tiles() -> tuple[CompiledTile, ...]:
     """Compile and decorate the three reusable physical mall tiles."""
 
     return tuple(
-        CompiledTile(
-            label,
-            result,
-            _decorate_tile(label, result, docks),
-        )
+        CompiledTile(label, result, _decorate_tile(label, result, docks))
         for label, result, docks in _compile_base_tiles()
+    )
+
+
+def _entity_positions(entities: list[object]) -> list[tuple[float, float]]:
+    positions: list[tuple[float, float]] = []
+    for entity in entities:
+        assert isinstance(entity, dict)
+        position = entity["position"]
+        assert isinstance(position, dict)
+        positions.append((float(position["x"]), float(position["y"])))
+    return positions
+
+
+def _fit_axis_shift(
+    minimum: float,
+    maximum: float,
+    extent: float,
+    preferred: float,
+    *,
+    axis: str,
+) -> float:
+    """Choose a translation that fits one routed axis inside the fixed tile envelope."""
+
+    span = maximum - minimum
+    if span > extent + _FIT_TOLERANCE:
+        raise ValueError(
+            f"compiled tile routed {axis}-span {span:.3f} exceeds {extent:.3f}-tile envelope"
+        )
+
+    lower = -minimum
+    upper = extent - maximum
+    if lower > upper + _FIT_TOLERANCE:  # Defensive duplicate of the span check above.
+        raise ValueError(
+            f"compiled tile has no legal {axis}-translation inside {extent:.3f}-tile envelope"
+        )
+    return min(max(preferred, lower), upper)
+
+
+def _layout_shift(entities: list[object]) -> tuple[float, float]:
+    """Fit actual routed entities, including relays, while preferring the historical +4 inset."""
+
+    positions = _entity_positions(entities)
+    if not positions:
+        return _PREFERRED_LAYOUT_SHIFT
+    xs = [position[0] for position in positions]
+    ys = [position[1] for position in positions]
+    return (
+        _fit_axis_shift(
+            min(xs),
+            max(xs),
+            float(TILE_WIDTH),
+            _PREFERRED_LAYOUT_SHIFT[0],
+            axis="x",
+        ),
+        _fit_axis_shift(
+            min(ys),
+            max(ys),
+            float(TILE_HEIGHT),
+            _PREFERRED_LAYOUT_SHIFT[1],
+            axis="y",
+        ),
     )
 
 
@@ -337,7 +381,7 @@ def _decorate_tile(
     result: CompilationResult,
     docks: tuple[DockSpec, ...],
 ) -> dict[str, object]:
-    """Translate one compiled module inward and add fixed-color/fixed-signal ABI adapters."""
+    """Fit one compiled module into the tile and add stable external ABI adapters."""
 
     wrapper = deepcopy(result.blueprint_json)
     blueprint = wrapper["blueprint"]
@@ -352,7 +396,7 @@ def _decorate_tile(
     wires = blueprint.setdefault("wires", [])
     assert isinstance(wires, list)
 
-    shift_x, shift_y = _LAYOUT_SHIFT
+    shift_x, shift_y = _layout_shift(entities)
     for entity in entities:
         assert isinstance(entity, dict)
         position = entity["position"]
@@ -373,10 +417,7 @@ def _decorate_tile(
     blueprint["wires"] = [
         list(item)
         for item in sorted(
-            {
-                tuple(int(value) for value in wire)
-                for wire in wires
-            }
+            {tuple(int(value) for value in wire) for wire in wires}
         )
     ]
     return wrapper
@@ -566,7 +607,7 @@ def _append_wire(
 
 
 def _validate_tile_bounds(blueprint: dict[str, object]) -> None:
-    """Keep every generated entity inside the 48x48 tile envelope."""
+    """Keep every generated entity center inside the fixed tile envelope."""
 
     entities = blueprint.get("entities", [])
     assert isinstance(entities, list)
