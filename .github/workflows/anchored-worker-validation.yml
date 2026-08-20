@@ -1,0 +1,44 @@
+name: Anchored worker validation
+
+on:
+  push:
+    branches:
+      - agent/anchored-worker-validation
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Focused tests
+        run: >-
+          uv run pytest
+          tests/devices/test_anchors.py
+          tests/devices/test_assembler_device.py
+          tests/examples/autonomous_mall/test_anchored_worker.py
+      - name: Full tests
+        run: uv run pytest
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format
+        run: uv run ruff format --check .
+      - name: Mypy
+        run: uv run mypy src
+      - name: Generate in-game probe
+        run: >-
+          uv run python -m examples.autonomous_mall.anchored_worker_probe
+          > anchored-worker-probe.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anchored-worker-probe
+          path: anchored-worker-probe.txt
