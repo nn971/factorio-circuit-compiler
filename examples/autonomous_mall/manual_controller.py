@@ -1,226 +1,149 @@
-"""Manually wired transactional controller for the autonomous mall in-game prototype.
+"""Manually wired modular transaction cells for the autonomous mall prototype.
 
-This is intentionally application-specific and lives under ``examples``. The economic LP planner
-remains the oracle for choosing jobs; this circuit exercises the physical transaction layer that the
-future autonomous planner will drive.
+The original monolithic five-worker controller was a useful semantic model but it forced too many
+runtime-open vector nets through shared synthesized connectors. Factorio has only red and green wire,
+so the physical synthesizer correctly rejected that topology.
 
-A dispatch captures one roboport stock snapshot and then scans the fixed worker list one logical step
-at a time. Each accepted request is subtracted from a stored ``available_snapshot`` before the next
-worker is considered. This gives atomic reservations without constructing an ever-growing recursive
-vector expression in the compiler. No new batch starts until the scan is complete, every accepted job
-has completed, and all external completion latches have cleared.
+The in-game prototype is therefore intentionally modular:
 
-Assembler recipes remain latched between transactions. One-shot execution is enforced by starving the
-machine of ingredients: ``*_input_enable`` gates a stack-size-1 input inserter, whose local condition
-must also require the machine's Read-working signal to be zero. Keeping the recipe selected preserves
-partial productivity progress when the next transaction uses the same recipe.
+* one stock snapshot cell tracks roboport inventory while ``dispatch`` is low and freezes it while
+  ``dispatch`` is high;
+* one reservation cell is pasted five times and chained p0 -> p1 -> q0 -> q1 -> r0;
+* one assembler-worker cell is pasted four times for p0/p1/q0/q1;
+* one recycler-worker cell is used for r0.
+
+``dispatch`` freezes the stock and enables the reservation chain. After the chain settles, ``launch``
+starts the accepted workers. Both signals stay high until the batch has completed, then return low to
+re-arm the next batch. This two-phase manual handshake is deliberate for the first physical test: it
+avoids cross-blueprint clock assumptions while preserving atomic reservation semantics.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import sys
-from dataclasses import dataclass
+import zlib
+from collections.abc import Iterable
 
 from factorio_circuit import Circuit, SignalId, compile_circuit
 from factorio_circuit.compiler import CompilationResult
 
-from .model import WorkerKind
-
 MODE_START = SignalId("virtual", "signal-C")
 MODE_WAIT = SignalId("virtual", "signal-W")
-DISPATCH_SEEN = SignalId("virtual", "signal-D")
-_STAGE_SIGNALS = tuple(SignalId("virtual", f"signal-{index}") for index in range(10))
+SEEN = SignalId("virtual", "signal-S")
+FACTORIO_BLUEPRINT_VERSION = 562949955518464
 
 
-@dataclass(frozen=True, slots=True)
-class ManualWorkerSpec:
-    """One fixed physical worker in the manually wired prototype."""
+def build_stock_snapshot() -> Circuit:
+    """Track live stock while idle and freeze one scheduling snapshot during dispatch."""
 
-    name: str
-    kind: WorkerKind
-
-    @property
-    def uses_recipe_command(self) -> bool:
-        return self.kind is not WorkerKind.RECYCLER
-
-
-DEFAULT_WORKERS = (
-    ManualWorkerSpec("p0", WorkerKind.PRODUCTIVITY),
-    ManualWorkerSpec("p1", WorkerKind.PRODUCTIVITY),
-    ManualWorkerSpec("q0", WorkerKind.QUALITY),
-    ManualWorkerSpec("q1", WorkerKind.QUALITY),
-    ManualWorkerSpec("r0", WorkerKind.RECYCLER),
-)
-
-
-@dataclass(slots=True)
-class _WorkerState:
-    spec: ManualWorkerSpec
-    job_enable: object
-    job_request: object
-    job_recipe: object | None
-    working: object
-    finished: object
-    mode: object
-    held_request: object
-    held_recipe: object | None
-
-
-def build_manual_controller(
-    workers: tuple[ManualWorkerSpec, ...] = DEFAULT_WORKERS,
-) -> Circuit:
-    """Build the manually wired multi-worker transactional controller.
-
-    External ``*_finished`` inputs must be persistent completion latches, not one-tick machine
-    pulses. The controller emits ``*_ack_finished`` while consuming a completion so the external
-    latch can reset. ``dispatch`` is edge-armed: hold it high until the batch is accepted, then
-    return it to zero before requesting another batch.
-
-    Reservation is deliberately sequential. ``dispatch`` captures ``stock`` into a FreezeReg and
-    starts a cursor. One worker is considered on each later logical step. This preserves one atomic
-    stock snapshot while keeping the compiler expression graph shallow.
-    """
-
-    if not workers:
-        raise ValueError("manual mall controller requires at least one worker")
-    if len(workers) > len(_STAGE_SIGNALS):
-        raise ValueError(f"manual mall controller supports at most {len(_STAGE_SIGNALS)} workers")
-    worker_names = [worker.name for worker in workers]
-    if len(worker_names) != len(set(worker_names)):
-        raise ValueError("manual mall worker names must be unique")
-
-    circuit = Circuit("autonomous_mall_manual_controller")
+    circuit = Circuit("autonomous_mall_stock_snapshot")
     stock = circuit.signals("stock")
-    dispatch_active = circuit.input("dispatch") != 0
+    dispatch = circuit.input("dispatch") != 0
+
+    snapshot = circuit.freeze("snapshot")
+    old_snapshot = snapshot.sample()
+    snapshot.set(stock, when=dispatch.logical_not())
+
+    circuit.output("snapshot", old_snapshot)
+    circuit.output("frozen", dispatch)
+    return circuit
+
+
+def build_reservation_cell() -> Circuit:
+    """Reserve one candidate request against an upstream frozen availability vector."""
+
+    circuit = Circuit("autonomous_mall_reservation_cell")
+    active = circuit.input("active") != 0
+    enabled = circuit.input("job_enable") != 0
+    available = circuit.signals("available")
+    request = circuit.signals("job_request")
+
+    missing = (request - available).positive().any()
+    accepted = active * enabled * request.any() * missing.logical_not()
+    remaining = available - request.gate(accepted)
+
+    circuit.output("accepted", accepted)
+    circuit.output("remaining", remaining)
+    return circuit
+
+
+def build_worker_cell(*, recipe_command: bool) -> Circuit:
+    """Execute one accepted physical job exactly once during a launch phase."""
+
+    name = "autonomous_mall_assembler_worker" if recipe_command else "autonomous_mall_recycler_worker"
+    circuit = Circuit(name)
+
+    accepted = circuit.input("accepted") != 0
+    launch = circuit.input("launch") != 0
+    working = circuit.input("working") != 0
+    finished = circuit.input("finished") != 0
+    job_request = circuit.signals("job_request")
+    job_recipe = circuit.signals("job_recipe") if recipe_command else None
 
     start_token = circuit.constant_signals({MODE_START: 1})
     wait_token = circuit.constant_signals({MODE_WAIT: 1})
-    dispatch_token = circuit.constant_signals({DISPATCH_SEEN: 1})
-    stage_tokens = [
-        circuit.constant_signals({_STAGE_SIGNALS[index]: 1})
-        for index in range(len(workers))
-    ]
+    seen_token = circuit.constant_signals({SEEN: 1})
 
-    dispatch_seen = circuit.freeze("dispatch_seen")
-    dispatch_cursor = circuit.freeze("dispatch_cursor")
-    available_snapshot = circuit.freeze("available_snapshot")
+    mode = circuit.freeze("mode")
+    seen = circuit.freeze("seen")
+    held_request = circuit.freeze("held_request")
+    held_recipe = circuit.freeze("held_recipe") if recipe_command else None
 
-    old_dispatch_seen = dispatch_seen.sample()
-    old_cursor = dispatch_cursor.sample()
-    old_available = available_snapshot.sample()
+    old_mode = mode.sample()
+    old_seen = seen.sample()
+    old_request = held_request.sample()
+    old_recipe = held_recipe.sample() if held_recipe is not None else None
 
-    dispatch_is_seen = old_dispatch_seen.signal(DISPATCH_SEEN) != 0
-    cursor_active = old_cursor.any()
-    cursor_idle = cursor_active.logical_not()
+    starting = old_mode.signal(MODE_START) != 0
+    waiting = old_mode.signal(MODE_WAIT) != 0
+    idle = old_mode.any().logical_not()
+    already_seen = old_seen.signal(SEEN) != 0
 
-    states: list[_WorkerState] = []
-    for spec in workers:
-        job_enable = circuit.input(f"{spec.name}_job_enable") != 0
-        job_request = circuit.signals(f"{spec.name}_job_request")
-        job_recipe = (
-            circuit.signals(f"{spec.name}_job_recipe") if spec.uses_recipe_command else None
-        )
-        working = circuit.input(f"{spec.name}_working") != 0
-        finished = circuit.input(f"{spec.name}_finished") != 0
-        mode = circuit.freeze(f"{spec.name}_mode")
-        held_request = circuit.freeze(f"{spec.name}_request")
-        held_recipe = (
-            circuit.freeze(f"{spec.name}_recipe") if spec.uses_recipe_command else None
-        )
-        states.append(
-            _WorkerState(
-                spec=spec,
-                job_enable=job_enable,
-                job_request=job_request,
-                job_recipe=job_recipe,
-                working=working,
-                finished=finished,
-                mode=mode,
-                held_request=held_request,
-                held_recipe=held_recipe,
-            )
-        )
+    start = launch * accepted * idle * already_seen.logical_not()
+    clear_seen = already_seen * accepted.logical_not()
+    seen_change = start | clear_seen
+    seen.set(seen_token.gate(start), when=seen_change)
 
-    old_modes = {state.spec.name: state.mode.sample() for state in states}
-    old_requests = {state.spec.name: state.held_request.sample() for state in states}
-    old_recipes = {
-        state.spec.name: state.held_recipe.sample()
-        for state in states
-        if state.held_recipe is not None
-    }
+    worker_started = starting * working
+    worker_done = waiting * finished
+    mode_change = start | worker_started | worker_done
+    next_mode = start_token.gate(start) + wait_token.gate(worker_started)
+    mode.set(next_mode, when=mode_change)
 
-    batch_ready = dispatch_is_seen.logical_not() * cursor_idle
-    for state in states:
-        idle = old_modes[state.spec.name].any().logical_not()
-        batch_ready = (
-            batch_ready * idle * state.working.logical_not() * state.finished.logical_not()
-        )
+    held_request.set(job_request, when=start)
+    if held_recipe is not None and job_recipe is not None:
+        held_recipe.set(job_recipe, when=start)
 
-    dispatch_fire = dispatch_active * batch_ready
-    rearm_dispatch = dispatch_is_seen * dispatch_active.logical_not()
-    dispatch_change = dispatch_fire | rearm_dispatch
-    dispatch_seen.set(dispatch_token.gate(dispatch_fire), when=dispatch_change)
-
-    stage_active = [old_cursor.signal(_STAGE_SIGNALS[index]) != 0 for index in range(len(states))]
-
-    accepts: list[object] = []
-    reserved_now = circuit.constant_signals({})
-
-    for index, state in enumerate(states):
-        mode = old_modes[state.spec.name]
-        starting = mode.signal(MODE_START) != 0
-        waiting = mode.signal(MODE_WAIT) != 0
-
-        candidate = stage_active[index] * state.job_enable * state.job_request.any()
-        if state.job_recipe is not None:
-            candidate = candidate * state.job_recipe.any()
-
-        request_missing = (state.job_request - old_available).positive().any()
-        accept = candidate * request_missing.logical_not()
-        accepts.append(accept)
-        reserved_now = reserved_now + state.job_request.gate(accept)
-
-        worker_started = starting * state.working
-        worker_done = waiting * state.finished
-        mode_change = accept | worker_started | worker_done
-        next_mode = start_token.gate(accept) + wait_token.gate(worker_started)
-        state.mode.set(next_mode, when=mode_change)
-
-        state.held_request.set(state.job_request, when=accept)
-        if state.held_recipe is not None and state.job_recipe is not None:
-            state.held_recipe.set(state.job_recipe, when=accept)
-
-        requester_demand = old_requests[state.spec.name].gate(starting)
-        circuit.output(f"{state.spec.name}_requester_demand", requester_demand)
-        circuit.output(f"{state.spec.name}_input_enable", starting)
-        if state.held_recipe is not None:
-            circuit.output(f"{state.spec.name}_recipe", old_recipes[state.spec.name])
-        circuit.output(f"{state.spec.name}_accepted", accept)
-        circuit.output(f"{state.spec.name}_busy", starting | waiting)
-        circuit.output(f"{state.spec.name}_waiting_finished", waiting)
-        circuit.output(f"{state.spec.name}_ack_finished", worker_done)
-
-    scan_advance = cursor_active
-    snapshot_change = dispatch_fire | scan_advance
-    next_available = stock.gate(dispatch_fire) + (old_available - reserved_now).gate(scan_advance)
-    available_snapshot.set(next_available, when=snapshot_change)
-
-    next_cursor = stage_tokens[0].gate(dispatch_fire)
-    for index in range(len(stage_tokens) - 1):
-        next_cursor = next_cursor + stage_tokens[index + 1].gate(stage_active[index])
-    cursor_change = dispatch_fire | scan_advance
-    dispatch_cursor.set(next_cursor, when=cursor_change)
-
-    any_accepted = accepts[0]
-    for accept in accepts[1:]:
-        any_accepted = any_accepted | accept
-
-    circuit.output("batch_ready", batch_ready)
-    circuit.output("dispatch_armed", dispatch_is_seen.logical_not())
-    circuit.output("dispatch_scanning", cursor_active)
-    circuit.output("any_accepted", any_accepted)
-    circuit.output("remaining_snapshot", old_available)
+    circuit.output("requester_demand", old_request.gate(starting))
+    circuit.output("input_enable", starting)
+    if old_recipe is not None:
+        circuit.output("recipe", old_recipe)
+    circuit.output("busy", starting | waiting)
+    circuit.output("waiting_finished", waiting)
+    circuit.output("ack_finished", worker_done)
+    circuit.output("armed", already_seen.logical_not())
     return circuit
+
+
+def build_assembler_worker() -> Circuit:
+    return build_worker_cell(recipe_command=True)
+
+
+def build_recycler_worker() -> Circuit:
+    return build_worker_cell(recipe_command=False)
+
+
+def compile_manual_cells() -> tuple[tuple[str, CompilationResult], ...]:
+    """Compile the four reusable templates used by the manually wired five-worker mall."""
+
+    return (
+        ("stock snapshot", compile_circuit(build_stock_snapshot())),
+        ("reservation cell - paste 5 copies", compile_circuit(build_reservation_cell())),
+        ("assembler worker - paste 4 copies", compile_circuit(build_assembler_worker())),
+        ("recycler worker", compile_circuit(build_recycler_worker())),
+    )
 
 
 def _port_colors(result: CompilationResult, marker_entity: int) -> str:
@@ -236,33 +159,53 @@ def _signal_name(signal: SignalId | None) -> str:
     return "VECTOR" if signal is None else f"{signal.kind}:{signal.name}"
 
 
-def print_manual_wiring_map(result: CompilationResult) -> None:
-    """Print concrete signal and wire assignments for hand-wiring the prototype."""
+def print_manual_wiring_map(label: str, result: CompilationResult) -> None:
+    """Print one compiled template's concrete signals and wire colors."""
 
-    print("=== AUTONOMOUS MALL MANUAL WIRING MAP ===", file=sys.stderr)
+    print(f"=== {label.upper()} ===", file=sys.stderr)
     print("Inputs:", file=sys.stderr)
     for port in result.physical_circuit.inputs:
         print(
-            f"  {port.name:<28} {_signal_name(port.signal):<32} "
+            f"  {port.name:<20} {_signal_name(port.signal):<32} "
             f"wire={_port_colors(result, port.marker_entity)}",
             file=sys.stderr,
         )
-
     print("Outputs:", file=sys.stderr)
     for port in result.physical_circuit.outputs:
         print(
-            f"  {port.name:<28} {_signal_name(port.signal):<32} "
+            f"  {port.name:<20} {_signal_name(port.signal):<32} "
             f"wire={_port_colors(result, port.marker_entity)} phase={port.phase}",
             file=sys.stderr,
         )
+    print(file=sys.stderr)
 
-    print("\nBlueprint string follows on stdout.", file=sys.stderr)
+
+def _blueprint_book(results: Iterable[tuple[str, CompilationResult]]) -> str:
+    entries: list[dict[str, object]] = []
+    for index, (label, result) in enumerate(results):
+        blueprint = dict(result.blueprint_json["blueprint"])
+        blueprint["label"] = label
+        entries.append({"index": index, "blueprint": blueprint})
+
+    payload = {
+        "blueprint_book": {
+            "item": "blueprint-book",
+            "label": "Autonomous mall manual cells",
+            "active_index": 0,
+            "version": FACTORIO_BLUEPRINT_VERSION,
+            "blueprints": entries,
+        }
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    return "0" + base64.b64encode(zlib.compress(raw, level=9)).decode("ascii")
 
 
 def main() -> None:
-    result = compile_circuit(build_manual_controller())
-    print_manual_wiring_map(result)
-    print(result.blueprint_string)
+    results = compile_manual_cells()
+    for label, result in results:
+        print_manual_wiring_map(label, result)
+    print("Blueprint book string follows on stdout.", file=sys.stderr)
+    print(_blueprint_book(results))
 
 
 if __name__ == "__main__":
