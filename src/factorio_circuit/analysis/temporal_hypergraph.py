@@ -1,14 +1,14 @@
 """Temporal computation hypergraph for global physical phase placement.
 
-ASAP/ALAP are useful extremal schedules, but neither minimizes physical transport in general.  This
-module exposes the periodic Level computation as a target-timed hypergraph before phase-delay
-combinators are emitted.  Computation nodes have legal mobility windows, state-update boundaries are
+ASAP/ALAP are useful extremal schedules, but neither minimizes physical transport in general. This
+module exposes the periodic Level state cone as a target-timed hypergraph before phase-delay
+combinators are emitted. Computation nodes have legal mobility windows, state-update boundaries are
 fixed sinks, and one produced value may feed many consumers through one hyperedge/lifetime.
 
 The first milestone deliberately treats ``VectorSignal`` as a zero-cost view of its underlying whole
-vector.  Moving a lane read therefore moves the observation of that vector rather than inventing a
-scalar computation node.  Scalar computations are marked as delay-bus candidates; whole-vector
-transport remains an ordinary cost until a vector-bus design is added.
+vector. Moving a lane read therefore moves the observation of that vector rather than inventing a
+scalar computation node. Whole-vector transport remains ordinary cost until a vector-bus design is
+added.
 """
 
 from __future__ import annotations
@@ -38,7 +38,6 @@ from factorio_circuit.ir.semantic import (
     VectorScalarOp,
     VectorSelect,
     VectorSignal,
-    VectorValue,
     is_vector_value,
     reject_event_module,
     validate_canonical_module,
@@ -89,7 +88,8 @@ class TemporalComputation:
     @property
     def delay_bus_eligible(self) -> bool:
         return self.shape is PayloadShape.SCALAR and isinstance(
-            self.semantic, (BinaryOp, Compare, Select)
+            self.semantic,
+            (BinaryOp, Compare, Select),
         )
 
 
@@ -105,10 +105,9 @@ class TemporalSink:
 class TemporalArc:
     """One producer use.
 
-    For a computation consumer, ``latency`` is the physical latency from that consumer's input tick
-    to its output tick.  Therefore the producer must be available by
-    ``phase(consumer) - latency``.  A sink consumes directly at its fixed ``phase`` and uses latency
-    zero.
+    For a computation consumer, ``latency`` is that consumer's physical input-to-output latency.
+    The producer must therefore be available by ``phase(consumer) - latency``. A fixed sink consumes
+    directly at its ``phase`` and uses latency zero.
     """
 
     producer: int
@@ -187,14 +186,6 @@ class TemporalHypergraph:
     def computation_ids(self) -> frozenset[int]:
         return frozenset(item.id for item in self.computations)
 
-    @property
-    def source_ids(self) -> frozenset[int]:
-        return frozenset(item.id for item in self.sources)
-
-    @property
-    def sink_ids(self) -> frozenset[int]:
-        return frozenset(item.id for item in self.sinks)
-
     def asap_placement(self) -> TemporalPlacement:
         placement = TemporalPlacement(
             tuple((item.id, item.earliest_phase) for item in self.computations)
@@ -203,14 +194,19 @@ class TemporalHypergraph:
         return placement
 
     def alap_placement(self) -> TemporalPlacement:
-        placement = TemporalPlacement(tuple((item.id, item.latest_phase) for item in self.computations))
+        placement = TemporalPlacement(
+            tuple((item.id, item.latest_phase) for item in self.computations)
+        )
         self.validate_placement(placement)
         return placement
 
     def validate_placement(self, placement: TemporalPlacement) -> None:
         phases = dict(placement.phases)
-        if set(phases) != set(self.computation_ids):
-            raise TemporalPlacementError("placement must assign exactly one phase to every computation")
+        expected = set(self.computation_ids)
+        if set(phases) != expected:
+            raise TemporalPlacementError(
+                "placement must assign exactly one phase to every computation"
+            )
         if len(phases) != len(placement.phases):
             raise TemporalPlacementError("placement contains duplicate computation assignments")
 
@@ -242,23 +238,21 @@ class TemporalHypergraph:
                 raise TemporalPlacementError(
                     f"source {source.label!r} is not available by phase {consumer_input}"
                 )
-            # A LIVE/STABLE source can be observed directly anywhere in its certified window.  An
-            # observation beyond that window is still semantically realizable by exact transport,
-            # so the window end is a transport-cost boundary rather than a legality boundary.
 
-    def transport_intervals(self, placement: TemporalPlacement) -> tuple[TransportInterval, ...]:
-        """Return one lifetime interval for every transported produced value.
+    def transport_intervals(
+        self,
+        placement: TemporalPlacement,
+    ) -> tuple[TransportInterval, ...]:
+        """Return structural producer lifetimes for one placement.
 
-        A produced computation value is available at its placed output phase and must survive until
-        its latest consumer input phase.  Fanout therefore creates one hyperedge lifetime rather
-        than independent point-to-point delays.  Exact leaves are also reported, but are not marked
-        delay-bus-eligible in this first scalar-bus milestone.
+        This is a deliberately simple serial upper-bound diagnostic: every computation lifetime is
+        counted even when settling persistence could later make it free. The exact optimizer applies
+        that persistence classification before forming its objective.
         """
 
         self.validate_placement(placement)
         phases = dict(placement.phases)
         computations = {item.id: item for item in self.computations}
-        sources = {item.id: item for item in self.sources}
         sinks = {item.id: item for item in self.sinks}
         outgoing: dict[int, list[TemporalArc]] = {}
         for arc in self.arcs:
@@ -320,6 +314,8 @@ class TemporalHypergraph:
         )
 
     def transport_cost(self, placement: TemporalPlacement) -> TemporalTransportCost:
+        """Return the structural serial-lifetime upper bound for a placement."""
+
         intervals = self.transport_intervals(placement)
         scalar = sum(item.length for item in intervals if item.shape is PayloadShape.SCALAR)
         vector = sum(item.length for item in intervals if item.shape is PayloadShape.VECTOR)
@@ -412,20 +408,18 @@ class _TemporalHypergraphBuilder:
             start = read_timing.physical_phase
             end = start + register_timing.period
         elif isinstance(value, (FlowInputSample, InputSample)):
-            offset = value.offset
-            start = offset * self.period
+            start = value.offset * self.period
             mode = (
                 TemporalSourceMode.LIVE
-                if offset == 0 and self.sampling_policy is SamplingPolicy.ALAP
+                if value.offset == 0 and self.sampling_policy is SamplingPolicy.ALAP
                 else TemporalSourceMode.EXACT
             )
             end = self.period if mode is TemporalSourceMode.LIVE else start + 1
         elif isinstance(value, (FlowVectorInputSample, VectorInputSample)):
-            offset = value.offset
-            start = offset * self.period
+            start = value.offset * self.period
             mode = (
                 TemporalSourceMode.LIVE
-                if offset == 0 and self.sampling_policy is SamplingPolicy.ALAP
+                if value.offset == 0 and self.sampling_policy is SamplingPolicy.ALAP
                 else TemporalSourceMode.EXACT
             )
             end = self.period if mode is TemporalSourceMode.LIVE else start + 1
@@ -475,10 +469,11 @@ class _TemporalHypergraphBuilder:
             latency = FACTORIO_LATENCY.operation_latency("compare", value.op)
             return ((value.left, latency), (value.right, latency))
         if isinstance(value, Select):
-            # Match the conservative ALAP envelope: the actual lowerer may fuse a one-stage mux,
-            # but a schedule legal for the generic data path is legal for either realization.
             latency = FACTORIO_LATENCY.operation_latency("select_data", value.name)
-            return tuple((item, latency) for item in (value.condition, value.when_true, value.when_false))
+            return tuple(
+                (item, latency)
+                for item in (value.condition, value.when_true, value.when_false)
+            )
         if isinstance(value, VectorBinaryOp):
             latency = FACTORIO_LATENCY.operation_latency("vector_binary", value.op)
             return ((value.left, latency), (value.right, latency))
@@ -491,7 +486,13 @@ class _TemporalHypergraphBuilder:
             return ((value.vector, latency),)
         raise TypeError(value)
 
-    def _add_arc(self, producer: int, consumer: int, latency: int, shape: PayloadShape) -> None:
+    def _add_arc(
+        self,
+        producer: int,
+        consumer: int,
+        latency: int,
+        shape: PayloadShape,
+    ) -> None:
         key = (producer, consumer, latency, shape)
         if key in self.arc_keys:
             return
@@ -499,8 +500,6 @@ class _TemporalHypergraphBuilder:
         self.arcs.append(TemporalArc(producer, consumer, latency, shape))
 
     def _visit(self, value: object) -> int:
-        # A scalar lane selection is an electrical view, not a physical combinator.  Transporting
-        # that value means transporting/observing the underlying vector at the consumer phase.
         if isinstance(value, VectorSignal):
             return self._visit(value.vector)
 
@@ -542,7 +541,14 @@ class _TemporalHypergraphBuilder:
         self.computation_topology.append(seed.id)
         return seed.id
 
-    def _add_sink(self, value: object, *, label: str, phase: int, shape: PayloadShape) -> None:
+    def _add_sink(
+        self,
+        value: object,
+        *,
+        label: str,
+        phase: int,
+        shape: PayloadShape,
+    ) -> None:
         if phase < 0:
             raise TemporalPlacementError(f"sink {label!r} has negative physical phase {phase}")
         sink = TemporalSink(self._take_id(), label, shape, phase)
@@ -561,14 +567,20 @@ class _TemporalHypergraphBuilder:
             if transition.value is not None:
                 self._add_sink(
                     transition.value,
-                    label=f"state:{transition.register.name}:{transition.kind}:value:{transition.order}",
+                    label=(
+                        f"state:{transition.register.name}:{transition.kind}:"
+                        f"value:{transition.order}"
+                    ),
                     phase=target,
                     shape=PayloadShape.VECTOR,
                 )
             if transition.when is not None:
                 self._add_sink(
                     transition.when,
-                    label=f"state:{transition.register.name}:{transition.kind}:control:{transition.order}",
+                    label=(
+                        f"state:{transition.register.name}:{transition.kind}:"
+                        f"control:{transition.order}"
+                    ),
                     phase=target - commit_latency,
                     shape=PayloadShape.SCALAR,
                 )
@@ -584,26 +596,30 @@ class _TemporalHypergraphBuilder:
         for node_id in self.computation_topology:
             lower = 0
             for arc in incoming.get(node_id, ()):
-                if arc.producer in seeds:
-                    ready = earliest[arc.producer]
-                else:
-                    ready = sources[arc.producer].start_phase
+                ready = (
+                    earliest[arc.producer]
+                    if arc.producer in seeds
+                    else sources[arc.producer].start_phase
+                )
                 lower = max(lower, ready + arc.latency)
             earliest[node_id] = lower
 
         horizon = max((sink.phase for sink in self.sinks), default=max(self.period - 1, 0))
         latest = {node_id: horizon for node_id in seeds}
         for arc in self.arcs:
-            if arc.producer not in seeds or arc.consumer not in sinks:
-                continue
-            latest[arc.producer] = min(latest[arc.producer], sinks[arc.consumer].phase)
+            if arc.producer in seeds and arc.consumer in sinks:
+                latest[arc.producer] = min(
+                    latest[arc.producer],
+                    sinks[arc.consumer].phase,
+                )
 
         for consumer_id in reversed(self.computation_topology):
             consumer_latest = latest[consumer_id]
             for arc in incoming.get(consumer_id, ()):
                 if arc.producer in seeds:
                     latest[arc.producer] = min(
-                        latest[arc.producer], consumer_latest - arc.latency
+                        latest[arc.producer],
+                        consumer_latest - arc.latency,
                     )
 
         computations: list[TemporalComputation] = []
@@ -652,7 +668,7 @@ def build_temporal_hypergraph(
 
 
 def format_temporal_hypergraph(graph: TemporalHypergraph) -> str:
-    """Render mobility and transport statistics for the two extremal placements."""
+    """Render mobility and structural-lifetime statistics for the two extreme placements."""
 
     source_modes = Counter(item.mode.value for item in graph.sources)
     scalar = sum(item.shape is PayloadShape.SCALAR for item in graph.computations)
@@ -662,28 +678,34 @@ def format_temporal_hypergraph(graph: TemporalHypergraph) -> str:
     asap = graph.transport_cost(graph.asap_placement())
     alap = graph.transport_cost(graph.alap_placement())
 
-    modes = ", ".join(f"{name}={count}" for name, count in sorted(source_modes.items())) or "none"
+    modes = ", ".join(
+        f"{name}={count}" for name, count in sorted(source_modes.items())
+    ) or "none"
     return "\n".join(
         [
-            "temporal computation hypergraph",
+            "temporal computation hypergraph (periodic state cone)",
             (
                 f"  period={graph.period}; computations={len(graph.computations)} "
-                f"(scalar={scalar}, vector={vector}); sinks={len(graph.sinks)}; arcs={len(graph.arcs)}"
+                f"(scalar={scalar}, vector={vector}); sinks={len(graph.sinks)}; "
+                f"arcs={len(graph.arcs)}"
             ),
             f"  sources: total={len(graph.sources)}; {modes}",
             (
-                f"  mobility: movable={len(movable)}; total_slack={sum(item.mobility for item in movable)}; "
+                f"  mobility: movable={len(movable)}; "
+                f"total_slack={sum(item.mobility for item in movable)}; "
                 f"max_slack={max((item.mobility for item in movable), default=0)}"
             ),
-            f"  scalar delay-bus candidates={bus_candidates}",
+            f"  scalar delay-bus candidates before settling filter={bus_candidates}",
             (
-                "  ASAP transport if every value owns its delays: "
-                f"scalar={asap.scalar_serial}; vector={asap.vector_serial}; total={asap.total_serial}; "
+                "  ASAP structural serial-lifetime upper bound: "
+                f"scalar={asap.scalar_serial}; vector={asap.vector_serial}; "
+                f"total={asap.total_serial}; "
                 f"bus_candidate_scalar={asap.bus_eligible_scalar_serial}"
             ),
             (
-                "  ALAP transport if every value owns its delays: "
-                f"scalar={alap.scalar_serial}; vector={alap.vector_serial}; total={alap.total_serial}; "
+                "  ALAP structural serial-lifetime upper bound: "
+                f"scalar={alap.scalar_serial}; vector={alap.vector_serial}; "
+                f"total={alap.total_serial}; "
                 f"bus_candidate_scalar={alap.bus_eligible_scalar_serial}"
             ),
         ]
