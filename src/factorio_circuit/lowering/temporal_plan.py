@@ -140,12 +140,50 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         binding = self._bus_binding_by_semantic.get(id(value))
         if binding is not None:
             _bus, lane = binding
-            if result.phase != lane.start_phase:
-                raise ValueError(
-                    f"optimized producer {lane.label!r} realized at phase {result.phase}, "
-                    f"expected {lane.start_phase}"
-                )
+            result = self._align_bus_origin_to_schedule(result, lane)
+            # ``super().realize`` memoized the raw physical implementation. Replace that memo entry
+            # with the scheduled representation so every later use sees one coherent semantic
+            # producer phase. This matters when a conservative semantic Select latency is realized
+            # by the faster one-stage decider-mux implementation.
+            self.memo[id(value)] = result
             self._bus_origin[(result.net, result.signal)] = binding
+        return result
+
+    def _align_bus_origin_to_schedule(
+        self,
+        value: RealizedValue,
+        lane: DelayBusLane,
+    ) -> RealizedValue:
+        """Return the producer exactly at its solved semantic bus-entry phase.
+
+        The temporal graph intentionally uses the conservative target latency model. A concrete
+        implementation may therefore finish earlier: scalar ``Select`` is the current example,
+        because a legal two-arm decider mux has one tick of physical latency while the semantic
+        fallback envelope reserves three ticks on its data path. Early availability is safe, but a
+        delay-bus lane must begin at the phase CP-SAT actually optimized. Materialize the difference
+        as an exact alignment before the value joins the bus.
+
+        A producer that finishes *later* than the solved phase is not safe and remains a hard error.
+        The resulting alignment cost is intentionally visible in the realized physical census; if
+        it is material, implementation choice belongs in a future optimizer model.
+        """
+
+        if value.phase > lane.start_phase:
+            raise ValueError(
+                f"optimized producer {lane.label!r} realized late at phase {value.phase}, "
+                f"expected no later than {lane.start_phase}"
+            )
+        if value.phase == lane.start_phase:
+            return value
+
+        previous = self._force_exact_alignment
+        self._force_exact_alignment = True
+        try:
+            result = super().delay_to(value, lane.start_phase)
+        finally:
+            self._force_exact_alignment = previous
+        if result.phase != lane.start_phase:  # pragma: no cover - exact-delay invariant
+            raise AssertionError("exact temporal-plan alignment missed the scheduled phase")
         return result
 
     def delay_to(self, value: RealizedValue, target_phase: int) -> RealizedValue:
