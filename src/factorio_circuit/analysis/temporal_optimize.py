@@ -50,6 +50,26 @@ class DelayBusPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class LiveSourceObservation:
+    """One coherent observation of a live external source in a logical occurrence.
+
+    ``phase`` is the physical tick at which every direct use agrees to observe the live wire. Uses
+    after that tick consume an exact captured copy, so ``end_phase - phase`` is the transport cost
+    required to keep that one observation alive through its latest direct consumer.
+    """
+
+    source: int
+    label: str
+    shape: PayloadShape
+    phase: int
+    end_phase: int
+
+    @property
+    def transport_stages(self) -> int:
+        return self.end_phase - self.phase
+
+
+@dataclass(frozen=True, slots=True)
 class TemporalOptimizationResult:
     status: str
     placement: TemporalPlacement
@@ -60,6 +80,7 @@ class TemporalOptimizationResult:
     objective_delays: int
     best_bound: int
     wall_time_seconds: float
+    live_source_observations: tuple[LiveSourceObservation, ...] = ()
 
     @property
     def proven_optimal(self) -> bool:
@@ -126,6 +147,11 @@ def optimize_temporal_hypergraph(
     vector computations derived entirely from held state/constants are free under the existing
     settling proof and therefore do not pay transport cost. Exact point-sampled leaves retain their
     ordinary exact transport cost.
+
+    A LIVE external source is observed exactly once per logical occurrence. The solver places that
+    coherent observation at the earliest direct-consumer input tick; later uses transport the same
+    captured token instead of silently resampling a potentially changed input. This is essential for
+    multi-lane controls and nondeterministic oracle providers such as Random Input selectors.
 
     Computation/state entity counts are fixed in this first solver, so minimizing delay stages is
     the variable part of the modeled state-cone combinator count. Output-only cones, startup-clock
@@ -215,6 +241,30 @@ def optimize_temporal_hypergraph(
         end = model.NewIntVar(0, horizon, f"end_{producer}")
         model.AddMaxEquality(end, terms)
         end_vars[producer] = end
+
+    # A live source must denote one physical observation, not a separate free resample for every
+    # consumer. The latest feasible coherent observation is the minimum direct-consumer input phase.
+    # Any later direct use therefore pays exact transport from that one observation.
+    live_observation_vars: dict[int, Any] = {}
+    for source in graph.sources:
+        if source.mode is not TemporalSourceMode.LIVE:
+            continue
+        arcs = outgoing.get(source.id, ())
+        if not arcs:
+            continue
+        terms = [consumer_inputs[(arc.producer, arc.consumer, arc.latency)] for arc in arcs]
+        upper = (
+            horizon
+            if source.end_phase_exclusive is None
+            else max(source.start_phase, source.end_phase_exclusive - 1)
+        )
+        observation = model.NewIntVar(
+            source.start_phase,
+            upper,
+            f"live_observation_{source.id}_{source.label}",
+        )
+        model.AddMinEquality(observation, terms)
+        live_observation_vars[source.id] = observation
 
     bus_candidates = [
         item
@@ -327,16 +377,21 @@ def optimize_temporal_hypergraph(
         else:
             vector_terms.append(length)
 
-    # Exact leaves are point samples and retain exact transport cost. LIVE leaves can be observed at
-    # their consumer phase, while STABLE leaves are held by the environment/state.
+    # EXACT leaves transport a point sample from their fixed phase. LIVE leaves transport one
+    # coherent ALAP observation from the earliest direct-consumer input phase. STABLE leaves remain
+    # free because the environment/state already holds them throughout their validity window.
     for source in graph.sources:
-        if source.mode is not TemporalSourceMode.EXACT:
-            continue
         end = end_vars.get(source.id)
         if end is None:
             continue
+        if source.mode is TemporalSourceMode.EXACT:
+            start: Any = model.NewConstant(source.start_phase)
+        elif source.mode is TemporalSourceMode.LIVE:
+            start = live_observation_vars[source.id]
+        else:
+            continue
         length = model.NewIntVar(0, horizon, f"source_length_{source.id}")
-        model.Add(length == end - source.start_phase)
+        model.Add(length == end - start)
         if source.shape is PayloadShape.SCALAR:
             ordinary_scalar_terms.append(length)
         else:
@@ -357,6 +412,18 @@ def optimize_temporal_hypergraph(
         tuple((item.id, int(solver.Value(phases[item.id]))) for item in graph.computations)
     )
     graph.validate_placement(placement)
+
+    live_source_observations = tuple(
+        LiveSourceObservation(
+            source=source.id,
+            label=source.label,
+            shape=source.shape,
+            phase=int(solver.Value(live_observation_vars[source.id])),
+            end_phase=int(solver.Value(end_vars[source.id])),
+        )
+        for source in graph.sources
+        if source.id in live_observation_vars
+    )
 
     buses: list[DelayBusPlan] = []
     for bus in range(max_buses):
@@ -410,6 +477,7 @@ def optimize_temporal_hypergraph(
         objective_delays=objective,
         best_bound=int(round(solver.BestObjectiveBound())),
         wall_time_seconds=float(solver.WallTime()),
+        live_source_observations=live_source_observations,
     )
 
 
@@ -432,8 +500,18 @@ def format_temporal_optimization(
             f"ordinary_scalar={result.ordinary_scalar_delays}; "
             f"vector={result.vector_delays}; bus_count={len(result.buses)}"
         ),
-        f"  buses (top {min(top_buses, len(result.buses))} by stage count):",
+        (
+            "  coherent live observations: "
+            f"count={len(result.live_source_observations)}; "
+            f"transport={sum(item.transport_stages for item in result.live_source_observations)}"
+        ),
     ]
+    for observation in result.live_source_observations:
+        lines.append(
+            f"    {observation.label}: phase={observation.phase}; "
+            f"latest_use={observation.end_phase}; shape={observation.shape.value}"
+        )
+    lines.append(f"  buses (top {min(top_buses, len(result.buses))} by stage count):")
     ordered = sorted(result.buses, key=lambda item: (-item.stages, item.start_phase, item.index))
     if not ordered:
         lines.append("    (none)")
@@ -449,6 +527,7 @@ def format_temporal_optimization(
 __all__ = [
     "DelayBusLane",
     "DelayBusPlan",
+    "LiveSourceObservation",
     "TemporalOptimizationResult",
     "format_temporal_optimization",
     "optimize_temporal_hypergraph",
