@@ -78,9 +78,7 @@ def census_phase_delays(circuit: abstract.AbstractPhysicalCircuit) -> PhaseDelay
     entities = {entity.id: entity for entity in circuit.entities}
     nets = {net.id: net for net in circuit.nets}
     delay_kind = {
-        entity.id: kind
-        for entity in circuit.entities
-        if (kind := _delay_kind(entity)) is not None
+        entity.id: kind for entity in circuit.entities if (kind := _delay_kind(entity)) is not None
     }
     delay_ids = set(delay_kind)
 
@@ -154,9 +152,7 @@ def census_phase_delays(circuit: abstract.AbstractPhysicalCircuit) -> PhaseDelay
         unseen -= member_ids
 
         roots = sorted(
-            entity_id
-            for entity_id in member_ids
-            if not (predecessors[entity_id] & member_ids)
+            entity_id for entity_id in member_ids if not (predecessors[entity_id] & member_ids)
         )
         leaves = sorted(
             entity_id for entity_id in member_ids if not (successors[entity_id] & member_ids)
@@ -263,10 +259,7 @@ def format_phase_delay_census(census: PhaseDelayCensus, *, top: int = 20) -> str
             f"branching={census.branching_components}; merging={census.merging_components}; "
             f"mixed_kind={census.mixed_kind_components}"
         ),
-        (
-            "  maxima: "
-            f"component_size={census.max_component_size}; depth={census.max_depth}"
-        ),
+        (f"  maxima: component_size={census.max_component_size}; depth={census.max_depth}"),
     ]
     _append_counts(lines, "component size histogram", census.component_size_histogram)
     _append_counts(lines, "delay-weighted source classes", census.source_classes)
@@ -281,7 +274,8 @@ def format_phase_delay_census(census: PhaseDelayCensus, *, top: int = 20) -> str
         sink = _short_context(component.sinks)
         lines.append(
             f"    {index:>2}. {component.kind:<13} size={component.delay_entities:<3} "
-            f"depth={component.max_depth:<3} roots={component.roots:<2} leaves={component.leaves:<2} "
+            f"depth={component.max_depth:<3} roots={component.roots:<2} "
+            f"leaves={component.leaves:<2} "
             f"branch={component.branch_points:<2} merge={component.merge_points:<2}"
         )
         lines.append(f"        {source} -> {sink}")
@@ -301,9 +295,7 @@ def _component_depth(
 ) -> int:
     """Return longest delay-node path length, or zero if a malformed cycle is encountered."""
 
-    indegree = {
-        entity_id: len(predecessors[entity_id] & members) for entity_id in members
-    }
+    indegree = {entity_id: len(predecessors[entity_id] & members) for entity_id in members}
     queue = deque(sorted(entity_id for entity_id, degree in indegree.items() if degree == 0))
     depths = {entity_id: 1 for entity_id in queue}
     visited = 0
@@ -334,13 +326,12 @@ def _source_labels(
         if endpoint.entity in delay_ids:
             continue
         entity = entities[endpoint.entity]
-        if endpoint.connector is abstract.Connector.OUTPUT:
-            labels.add(_entity_context(entity))
-        elif endpoint.connector is abstract.Connector.SINGLE and isinstance(
-            entity, abstract.ConstantCombinator
+        if endpoint.connector is abstract.Connector.OUTPUT or (
+            endpoint.connector is abstract.Connector.SINGLE
+            and isinstance(entity, abstract.ConstantCombinator)
+            and input_name is None
         ):
-            if input_name is None:
-                labels.add(_entity_context(entity))
+            labels.add(_entity_context(entity))
     if not labels and net.label:
         labels.add(f"net:{net.label}")
     return tuple(sorted(labels))
@@ -440,9 +431,7 @@ def _sorted_counts(counts: Counter[str]) -> tuple[tuple[str, int], ...]:
     return tuple(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
-def _append_counts(
-    lines: list[str], heading: str, counts: tuple[tuple[str, int], ...]
-) -> None:
+def _append_counts(lines: list[str], heading: str, counts: tuple[tuple[str, int], ...]) -> None:
     lines.append(f"  {heading}:")
     if not counts:
         lines.append("    (none)")

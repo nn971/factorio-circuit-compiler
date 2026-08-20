@@ -19,7 +19,8 @@ def _placement_attempt_count(options: PlacementOptions) -> int:
     """Return deterministic synthesis attempts for the requested placement policy."""
 
     # Row placement is invariant under target-fill/corridor retry parameters.  Greedy net-aware
-    # placement (iterations=0), however, *does* change when the candidate grid is made sparser, so it
+    # placement (iterations=0), however, *does* change when the candidate grid is made
+    # sparser, so it
     # should retain deterministic retries instead of being forced to a single attempt.
     return 1 if options.strategy == "row" else options.restarts
 
@@ -28,7 +29,8 @@ def _placement_attempt_options(options: PlacementOptions, restart: int) -> Place
     """Make later deterministic attempts progressively easier to route.
 
     Lower target fill supplies more unused grid slots.  When routing corridors are enabled, widen
-    them by the inverse factor as well.  This deliberately spends area after a routing failure rather
+    them by the inverse factor as well.  This deliberately spends area after a routing failure
+    rather
     than repeating nearly the same hostile geometry.
     """
 
@@ -209,7 +211,7 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
         net_colors: dict[int, WireColor],
         annotation_descriptions: dict[int, str],
     ) -> Any:
-        result = super()._materialize_entity(
+        result = super(VectorPhysicalSynthesizer, self)._materialize_entity(
             entity,
             signals,
             net_colors,

@@ -24,8 +24,13 @@ packages = ["src/factorio_circuit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not slow and not acceptance and not benchmark'"
 pythonpath = ["src", "."]
+markers = [
+  "slow: materially slower tests kept out of the default feedback loop",
+  "acceptance: scenario-level end-to-end correctness checks",
+  "benchmark: performance, scale, census, or layout-oriented checks",
+]
 
 [tool.ruff]
 target-version = "py312"

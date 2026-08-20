@@ -181,8 +181,8 @@ def compile_circuit(
     clock-aware timing and the physical Event lowerer; semantic Event optimization and packing
     remain disabled until those transforms carry explicit clock proofs.
 
-    ``progress`` receives coarse compiler phases plus bounded placement/routing updates. Callbacks are
-    observational only and do not affect deterministic compilation.
+    ``progress`` receives coarse compiler phases plus bounded placement/routing updates.
+    Callbacks are observational only and do not affect deterministic compilation.
     """
 
     lowered = lower_to_abstract_physical(source, optimize=optimize, progress=progress)

@@ -32,7 +32,6 @@ from factorio_circuit.ir.abstract_physical import (
     DeciderCombinator,
     DeciderCondition,
     Endpoint,
-    Operand,
 )
 from factorio_circuit.ir.output import OutputMaterializationPolicy, output_materializations
 from factorio_circuit.ir.physical import SignalId
@@ -193,9 +192,7 @@ class SettlingVectorLowerer(VectorLowerer):
             raise AssertionError("exact delay failed to transport the certified source tick")
         return shifted.from_phase(target_phase)
 
-    def _aligned_scalar_window(
-        self, value: RealizedValue, target_phase: int
-    ) -> ValidityWindow:
+    def _aligned_scalar_window(self, value: RealizedValue, target_phase: int) -> ValidityWindow:
         window = self._scalar_window(value)
         if window is None:
             return self._point_window(target_phase)
@@ -203,9 +200,7 @@ class SettlingVectorLowerer(VectorLowerer):
             return window.from_phase(target_phase)
         return self._window_after_exact_alignment(window, value.phase, target_phase)
 
-    def _aligned_vector_window(
-        self, value: RealizedVector, target_phase: int
-    ) -> ValidityWindow:
+    def _aligned_vector_window(self, value: RealizedVector, target_phase: int) -> ValidityWindow:
         window = self._vector_window(value)
         if window is None:
             return self._point_window(target_phase)
@@ -240,9 +235,7 @@ class SettlingVectorLowerer(VectorLowerer):
         target_phase: int | None = None,
     ) -> ValidityWindow:
         realized = tuple(
-            child
-            for item in children
-            if (child := self._scalar_child(item)) is not None
+            child for item in children if (child := self._scalar_child(item)) is not None
         )
         target = (
             max((child.phase for child in realized), default=0)
@@ -268,9 +261,7 @@ class SettlingVectorLowerer(VectorLowerer):
             else:
                 window = source_window.from_phase(result.phase)
         elif isinstance(semantic, BinaryOp):
-            target = result.phase - FACTORIO_LATENCY.operation_latency(
-                "scalar_binary", semantic.op
-            )
+            target = result.phase - FACTORIO_LATENCY.operation_latency("scalar_binary", semantic.op)
             window = self._scalar_operation_window(
                 result,
                 (semantic.left, semantic.right),
@@ -315,24 +306,20 @@ class SettlingVectorLowerer(VectorLowerer):
             left = self._vector_child(semantic.left)
             right = self._vector_child(semantic.right)
             realized = tuple(item for item in (left, right) if item is not None)
-            target = result.phase - FACTORIO_LATENCY.operation_latency(
-                "vector_binary", semantic.op
-            )
-            windows = tuple(self._aligned_vector_window(item, target) for item in realized)
-            span = self._combined_span(windows)
+            target = result.phase - FACTORIO_LATENCY.operation_latency("vector_binary", semantic.op)
+            vector_windows = tuple(self._aligned_vector_window(item, target) for item in realized)
+            span = self._combined_span(vector_windows)
             window = ValidityWindow(result.phase, _end_from_span(result.phase, span))
         elif isinstance(semantic, VectorScalarOp):
             vector = self._vector_child(semantic.vector)
             scalar = self._scalar_child(semantic.scalar)
-            target = result.phase - FACTORIO_LATENCY.operation_latency(
-                "vector_scalar", semantic.op
-            )
-            windows: list[ValidityWindow] = []
+            target = result.phase - FACTORIO_LATENCY.operation_latency("vector_scalar", semantic.op)
+            operand_windows: list[ValidityWindow] = []
             if vector is not None:
-                windows.append(self._aligned_vector_window(vector, target))
+                operand_windows.append(self._aligned_vector_window(vector, target))
             if scalar is not None:
-                windows.append(self._aligned_scalar_window(scalar, target))
-            span = self._combined_span(tuple(windows))
+                operand_windows.append(self._aligned_scalar_window(scalar, target))
+            span = self._combined_span(tuple(operand_windows))
             window = ValidityWindow(result.phase, _end_from_span(result.phase, span))
         elif isinstance(semantic, (VectorFilter, VectorSelect)):
             source = self._vector_child(semantic.vector)
@@ -354,13 +341,13 @@ class SettlingVectorLowerer(VectorLowerer):
     def _create_input_markers(self) -> None:
         super()._create_input_markers()
         for source in self.module.inputs:
-            value = self.memo.get(id(source))
-            if isinstance(value, RealizedValue):
-                self._remember_scalar(value, self._point_window(value.phase))
-        for source in self.module.vector_inputs:
-            value = self.vector_memo.get(id(source))
-            if isinstance(value, RealizedVector):
-                self._remember_vector(value, self._point_window(value.phase))
+            scalar_value = self.memo.get(id(source))
+            if isinstance(scalar_value, RealizedValue):
+                self._remember_scalar(scalar_value, self._point_window(scalar_value.phase))
+        for vector_source in self.module.vector_inputs:
+            vector_value = self.vector_memo.get(id(vector_source))
+            if isinstance(vector_value, RealizedVector):
+                self._remember_vector(vector_value, self._point_window(vector_value.phase))
 
     def _reserve_state_outputs(self) -> None:
         super()._reserve_state_outputs()
@@ -475,9 +462,7 @@ class SettlingVectorLowerer(VectorLowerer):
         if not isinstance(flow, Flow):
             return None
         matches = tuple(
-            domain
-            for domain in self.state_timing.domains
-            if domain.clock_id == flow.clock.clock_id
+            domain for domain in self.state_timing.domains if domain.clock_id == flow.clock.clock_id
         )
         if len(matches) > 1:  # pragma: no cover - StateTimingPlan invariant
             raise AssertionError("one structural clock mapped to multiple physical domains")

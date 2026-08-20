@@ -11,7 +11,7 @@ VALUE = SignalId("virtual", "signal-A")
 
 
 def _delay_count(circuit: object, description: str) -> int:
-    entities = getattr(circuit, "entities")
+    entities = circuit.entities
     return sum(
         isinstance(entity, ArithmeticCombinator) and entity.description == description
         for entity in entities

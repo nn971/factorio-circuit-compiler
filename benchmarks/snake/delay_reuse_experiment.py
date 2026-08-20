@@ -1,9 +1,10 @@
 """Project Snake's eager phase-delay hardware to synthetic temporal holds.
 
-This experiment deliberately leaves canonical lowering untouched. It first runs the existing compiler
-through Abstract Physical IR so the eager delay count is exact, then groups maximal one-token delay
-components and asks how many could be replaced by one capture/hold each inside the inferred periodic
-clock interval. No physical rewrite, synthesis, layout, or blueprint is produced.
+This experiment deliberately leaves canonical lowering untouched. It first runs the
+existing compiler through Abstract Physical IR so the eager delay count is exact, then
+groups maximal one-token delay components. It asks how many could be replaced by one
+capture/hold each inside the inferred periodic clock interval. No physical rewrite,
+synthesis, layout, or blueprint is produced.
 """
 
 from __future__ import annotations
@@ -46,14 +47,16 @@ def main() -> None:
             f"{projection.delay_count} != {census.phase_delay_entities}"
         )
 
+    projected_total = (
+        census.implementation_entities - projection.removable_delays + projection.projected_holds
+    )
     print(projection.summary())
     print(
         "  projected implementation accounting: "
         f"non_delay={census.implementation_entities - census.phase_delay_entities}; "
         f"temporal_holds={projection.projected_holds}; "
         f"unreplaced_delays={projection.remaining_delays}; "
-        f"total_if_one_entity_per_hold="
-        f"{census.implementation_entities - projection.removable_delays + projection.projected_holds}"
+        f"total_if_one_entity_per_hold={projected_total}"
     )
     print(
         "  note: total_if_one_entity_per_hold is a structural projection, not yet an executable "

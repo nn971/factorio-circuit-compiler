@@ -100,14 +100,42 @@ uv run ruff format --check .
 uv run mypy src
 ```
 
-Useful focused regressions include:
+Routine pytest automatically excludes tests marked `slow`, `acceptance`, or `benchmark`. The marker
+meanings are intentionally orthogonal:
+
+- `slow` — materially slower than the normal feedback loop;
+- `acceptance` — scenario-level end-to-end correctness;
+- `benchmark` — performance, scale, census, or layout-oriented validation.
+
+A heavyweight test may carry more than one marker. Explicit `-m` selection overrides the routine
+default, so stronger suites stay easy to invoke:
+
+```bash
+# Slow and scenario-level pytest checks.
+uv run pytest -m "slow or acceptance"
+
+# Pytest-hosted benchmark checks, when present.
+uv run pytest -m benchmark
+
+# Everything that routine pytest excludes.
+uv run pytest -m "slow or acceptance or benchmark"
+```
+
+Useful focused routine regressions include:
 
 ```bash
 uv run pytest tests/integration/test_multi_rate_event_ledger.py
 uv run pytest tests/integration/test_snake.py
 ```
 
-Heavyweight Snake validation is explicit:
+The autonomous-market controller keeps semantic-shape coverage in routine pytest while its full
+optimized/unoptimized compiler acceptance is opt-in:
+
+```bash
+uv run pytest -m acceptance tests/integration/test_autonomous_market_controller.py
+```
+
+Heavyweight Snake validation remains explicit benchmark tooling rather than pytest:
 
 ```bash
 # Full semantic framebuffer/reset acceptance; intentionally outside pytest/CI.

@@ -6,7 +6,8 @@ available and padded the early result to that boundary.  For a fanout such as ``
 this can duplicate long delay chains after the fanout.
 
 This module instead propagates state-boundary deadlines backwards through the semantic DAG.  Each
-ordinary operation is emitted as late as its earliest consumer permits.  Leaves are *not* re-sampled:
+ordinary operation is emitted as late as its earliest consumer permits.  Leaves are *not*
+re-sampled:
 when an external Level snapshot must survive until the chosen operation phase, the ordinary exact
 delay machinery transports that snapshot.  Scalar/vector delay caches can therefore share the
 transport prefix before cheap computations branch.
@@ -118,7 +119,8 @@ def build_alap_schedule(module: CircuitModule, timing: StateTimingPlan) -> AlapS
             return
 
         # Inputs, samples, constants, and state reads are leaves.  Their requested phase remains in
-        # the map for diagnostics, while physical lowering retains their existing snapshot semantics.
+        # the map for diagnostics, while physical lowering retains their existing snapshot
+        # semantics.
 
     control_latency = FACTORIO_LATENCY.state_transition_latency("commit")
     for transition in state_transitions(module):

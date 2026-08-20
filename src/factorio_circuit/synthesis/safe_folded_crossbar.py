@@ -443,9 +443,7 @@ def _plan_folded_crossbar(
             virtual_x[endpoint.entity] + _feeder_offset(endpoint.connector)
             for endpoint in endpoints
         ]
-        rough_intervals[group_color].append(
-            (min(feeder_xs), max(feeder_xs), group, len(endpoints))
-        )
+        rough_intervals[group_color].append((min(feeder_xs), max(feeder_xs), group, len(endpoints)))
 
     rough_track_counts = {
         color: _interval_track_count(rough_intervals[color])
@@ -564,11 +562,7 @@ def _plan_folded_crossbar(
         default=0,
     )
     green_tracks = max(
-        (
-            count
-            for (_row, color), count in row_track_counts.items()
-            if color is WireColor.GREEN
-        ),
+        (count for (_row, color), count in row_track_counts.items() if color is WireColor.GREEN),
         default=0,
     )
     row_pitch = _row_pitch(red_tracks, green_tracks)
@@ -801,11 +795,7 @@ def _predicted_extent(
 ) -> tuple[float, float]:
     portal_margin = _portal_outer_offset(max_portals) if entity_rows > 1 else 0.0
     width = (entities_per_row - 1) * _ENTITY_SPACING + 2 * portal_margin
-    height = (
-        (entity_rows - 1) * row_pitch
-        + _track_extent(red_tracks)
-        + _track_extent(green_tracks)
-    )
+    height = (entity_rows - 1) * row_pitch + _track_extent(red_tracks) + _track_extent(green_tracks)
     return width, height
 
 

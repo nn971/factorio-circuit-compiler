@@ -376,11 +376,11 @@ def exact_scalar_materializations(
         if value_id not in value_index:
             raise ValueError(f"source window references unknown value {value_id}")
         mask = 0
-        for start, end in windows:
-            if not (0 <= start <= end <= period):
+        for window_start, end in windows:
+            if not (0 <= window_start <= end <= period):
                 raise ValueError("source windows must lie inside one period")
-            if start < end:
-                mask |= ((1 << (end - start)) - 1) << start
+            if window_start < end:
+                mask |= ((1 << (end - window_start)) - 1) << window_start
         initial[value_index[value_id]] |= mask
 
     for demand in demands:
@@ -421,18 +421,16 @@ def exact_scalar_materializations(
         return tuple(mask & full_mask for mask in masks)
 
     def covered(state: tuple[int, ...]) -> bool:
-        return all(
-            state[value_index[demand.value]] & (1 << demand.phase) for demand in demands
-        )
+        return all(state[value_index[demand.value]] & (1 << demand.phase) for demand in demands)
 
     start = close(tuple(initial))
     if covered(start):
         return MaterializationPlan((), start, 1)
 
     queue: deque[tuple[int, ...]] = deque([start])
-    predecessor: dict[
-        tuple[int, ...], tuple[tuple[int, ...], Materialization] | None
-    ] = {start: None}
+    predecessor: dict[tuple[int, ...], tuple[tuple[int, ...], Materialization] | None] = {
+        start: None
+    }
     goal: tuple[int, ...] | None = None
 
     while queue:

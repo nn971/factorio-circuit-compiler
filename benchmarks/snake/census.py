@@ -80,9 +80,7 @@ def main() -> None:
         progress=None if args.no_progress else _Progress(),
     )
     census = census_abstract_physical(lowered.abstract_physical)
-    delay_census = (
-        census_phase_delays(lowered.abstract_physical) if args.deep_delays else None
-    )
+    delay_census = census_phase_delays(lowered.abstract_physical) if args.deep_delays else None
 
     if args.json:
         payload: dict[str, object] = census.as_dict()

@@ -13,7 +13,6 @@ from dataclasses import asdict, dataclass
 
 from factorio_circuit.ir import abstract_physical as abstract
 
-
 _STATE_DESCRIPTION = re.compile(r"^(AccumulatorReg|FreezeReg) ([^:]+): (.+)$")
 _NUMBERED_REGISTER_SUFFIX = re.compile(r"_\d+$")
 
@@ -47,9 +46,7 @@ class AbstractPhysicalCensus:
 
     @property
     def phase_delay_entities(self) -> int:
-        return sum(
-            count for role, count in self.lowering_roles if role.startswith("phase-delay.")
-        )
+        return sum(count for role, count in self.lowering_roles if role.startswith("phase-delay."))
 
     @property
     def state_implementation_entities(self) -> int:
@@ -230,9 +227,7 @@ def _sorted_counts(counts: Counter[str]) -> tuple[tuple[str, int], ...]:
     return tuple(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
-def _append_counts(
-    lines: list[str], heading: str, counts: tuple[tuple[str, int], ...]
-) -> None:
+def _append_counts(lines: list[str], heading: str, counts: tuple[tuple[str, int], ...]) -> None:
     lines.append(f"  {heading}:")
     if not counts:
         lines.append("    (none)")

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 BASELINES = Path(__file__).parents[2] / "benchmarks" / "snake" / "baselines.json"
 
 
