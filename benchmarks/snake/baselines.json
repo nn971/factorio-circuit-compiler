@@ -91,6 +91,55 @@
           "external_input": 80
         }
       }
+    },
+    {
+      "id": "random-food-alap-v1",
+      "commit": "ab51e547ee40b0c6b78d0820fb5a20fc9f556dc7",
+      "date": "2026-08-20",
+      "in_game_validated": true,
+      "notes": "Random-selector food provider, TTL body representation, and ALAP external sampling. Full Snake behavior was validated in Factorio; this is the accepted baseline for temporal hypergraph optimization.",
+      "metrics": {
+        "implementation_combinators": 698,
+        "abstract_physical_entities": 709,
+        "annotation_entities": 11,
+        "abstract_nets": 652,
+        "phase_delay_combinators": 421,
+        "phase_delay_scalar": 403,
+        "phase_delay_vector": 18,
+        "computation_combinators": 206,
+        "state_implementation_combinators": 60,
+        "max_abstract_lanes_per_net": 1,
+        "state_period_ticks": 65
+      }
+    },
+    {
+      "id": "temporal-delay-bus-prevalidation-v1",
+      "commit": "b202016d4c3a9dc87bf9011032ee0fd135c68ee5",
+      "date": "2026-08-20",
+      "in_game_validated": false,
+      "notes": "First successful CP-SAT phase placement plus realized multi-lane scalar delay buses at fixed period 65. This milestone has passed solve-to-abstract-physical realization but is deliberately staged as prevalidation until signal allocation/layout and Factorio gameplay acceptance succeed.",
+      "metrics": {
+        "implementation_combinators": 454,
+        "abstract_physical_entities": 465,
+        "annotation_entities": 11,
+        "abstract_nets": 420,
+        "phase_delay_combinators": 165,
+        "phase_delay_scalar_private": 94,
+        "phase_delay_scalar_bus": 54,
+        "phase_delay_vector": 17,
+        "computation_combinators": 218,
+        "state_implementation_combinators": 60,
+        "max_abstract_lanes_per_net": 32,
+        "signal_conflicts": 502,
+        "solver_objective_delays": 71,
+        "solver_best_bound": 64,
+        "solver_bus_count": 3,
+        "state_period_ticks": 65
+      },
+      "change_from_random_food_alap_v1": {
+        "implementation_combinator_reduction_fraction": 0.3496,
+        "phase_delay_reduction_fraction": 0.6081
+      }
     }
   ]
 }
