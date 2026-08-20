@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import cast
 
+from factorio_circuit.analysis.latency import FACTORIO_LATENCY
 from factorio_circuit.analysis.temporal_hypergraph import TemporalHypergraph
 from factorio_circuit.analysis.temporal_optimize import (
     DelayBusLane,
@@ -32,6 +33,7 @@ from factorio_circuit.ir.abstract_physical import (
 from factorio_circuit.ir.semantic import (
     CircuitModule,
     ScalarValue,
+    Select,
     Value,
     VectorBinaryOp,
     VectorConstant,
@@ -87,6 +89,7 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         )
         self.temporal_graph = graph
         self.temporal_optimization = optimization
+        self._optimized_semantic_ids = {id(item.semantic) for item in graph.computations}
 
         # Preserve the ordinary ALAP deadlines for nodes outside the first state-cone optimization
         # scope, while overriding every modeled computation with the globally chosen phase.
@@ -141,12 +144,81 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         if binding is not None:
             _bus, lane = binding
             result = self._align_bus_origin_to_schedule(result, lane)
-            # ``super().realize`` memoized the raw physical implementation. Replace that memo entry
+            # ``super().realize`` memoized the concrete implementation. Replace that memo entry
             # with the scheduled representation so every later use sees one coherent semantic
-            # producer phase. This matters when a conservative semantic Select latency is realized
-            # by the faster one-stage decider-mux implementation.
+            # producer phase.
             self.memo[id(value)] = result
             self._bus_origin[(result.net, result.signal)] = binding
+        return result
+
+    def _realize_select(self, select: Select) -> RealizedValue:
+        """Lower optimized Select nodes with the exact latency model CP-SAT solved.
+
+        Ordinary lowering is free to choose a one-tick two-arm decider mux or the conservative
+        three-stage arithmetic fallback. That implementation choice is deliberately *not* yet a
+        solver variable, so allowing the lowerer to switch representations after scheduling can
+        make a solved Select appear either earlier or later than its modeled output phase.
+
+        For this milestone, every Select inside the optimized hypergraph therefore uses the same
+        fallback assumed by ``TargetLatencyModel``: both data arms are consumed three ticks before
+        the result and the condition two ticks before it. The false arm is carried internally to the
+        final add as part of the Select implementation; that private transport is intentionally not
+        allowed to extend a semantic delay-bus lifetime beyond the Select input boundary.
+        """
+
+        if id(select) not in self._optimized_semantic_ids:
+            return super()._realize_select(select)
+
+        output_phase = self.alap_schedule.phase_for(select)
+        if output_phase is None:  # pragma: no cover - optimized-node invariant
+            raise AssertionError("optimized Select has no scheduled output phase")
+        data_phase = output_phase - FACTORIO_LATENCY.operation_latency(
+            "select_data", select.name
+        )
+        condition_phase = output_phase - FACTORIO_LATENCY.operation_latency(
+            "select_condition", select.name
+        )
+
+        condition = self.realize(select.condition)
+        when_true = self._realize_operand_value(select.when_true)
+        when_false = self._realize_operand_value(select.when_false)
+
+        condition = self.delay_to(condition, condition_phase)
+        if isinstance(when_true, RealizedValue):
+            when_true = self.delay_to(when_true, data_phase)
+        if isinstance(when_false, RealizedValue):
+            when_false = self.delay_to(when_false, data_phase)
+
+        diff = self._emit_binary_from_operands("-", when_true, when_false)
+        if diff.phase != condition_phase:  # pragma: no cover - latency-model invariant
+            raise AssertionError("Select data stage disagrees with target latency model")
+        gated = self._emit_binary_from_realized("*", diff, condition)
+        final_input_phase = output_phase - FACTORIO_LATENCY.operation_latency(
+            "scalar_binary", "select-final"
+        )
+        if gated.phase != final_input_phase:  # pragma: no cover - latency-model invariant
+            raise AssertionError("Select condition stage disagrees with target latency model")
+
+        # ``when_false`` is a second internal use of the data arm two ticks after the semantic Select
+        # input boundary. Do not ask the global bus to carry it farther than CP-SAT modeled. This is
+        # an exact propagation of the already-consumed token, so live external sources must not be
+        # resampled here.
+        final_false = when_false
+        if isinstance(final_false, RealizedValue) and final_false.phase < final_input_phase:
+            previous = self._force_exact_alignment
+            self._force_exact_alignment = True
+            try:
+                final_false = super().delay_to(final_false, final_input_phase)
+            finally:
+                self._force_exact_alignment = previous
+
+        result = self._emit_binary_from_operands(
+            "+", final_false, gated, description=select.name
+        )
+        if result.phase != output_phase:
+            raise ValueError(
+                f"optimized Select realized at phase {result.phase}, expected {output_phase}"
+            )
         return result
 
     def _align_bus_origin_to_schedule(
@@ -156,16 +228,10 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
     ) -> RealizedValue:
         """Return the producer exactly at its solved semantic bus-entry phase.
 
-        The temporal graph intentionally uses the conservative target latency model. A concrete
-        implementation may therefore finish earlier: scalar ``Select`` is the current example,
-        because a legal two-arm decider mux has one tick of physical latency while the semantic
-        fallback envelope reserves three ticks on its data path. Early availability is safe, but a
-        delay-bus lane must begin at the phase CP-SAT actually optimized. Materialize the difference
-        as an exact alignment before the value joins the bus.
-
-        A producer that finishes *later* than the solved phase is not safe and remains a hard error.
-        The resulting alignment cost is intentionally visible in the realized physical census; if
-        it is material, implementation choice belongs in a future optimizer model.
+        Most optimized computations now use the same physical latency family modeled by CP-SAT.
+        Keep a small adapter for other conservative latency envelopes that may still finish early.
+        Early availability is safe, but a delay-bus lane must begin at the phase actually optimized.
+        A producer that finishes later remains a hard error.
         """
 
         if value.phase > lane.start_phase:
