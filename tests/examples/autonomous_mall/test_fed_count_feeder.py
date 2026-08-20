@@ -48,6 +48,14 @@ def _normalized_wire(
     return left, left_connector, right, right_connector
 
 
+def _physical_feeders(entities: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        entity
+        for entity in entities
+        if "MALL DEVICE feeder —" in str(entity.get("player_description", ""))
+    ]
+
+
 @pytest.mark.slow
 @pytest.mark.acceptance
 @pytest.mark.parametrize("entry_index", [1, 2, 3])
@@ -55,7 +63,7 @@ def test_complete_worker_counts_feeder_hand_pulses(entry_index: int, complete_bo
     blueprint = _entry(complete_book, entry_index)
     entities = _entities(blueprint)
 
-    feeder_matches = _described(entities, "MALL DEVICE feeder")
+    feeder_matches = _physical_feeders(entities)
     memory_matches = _described(entities, "fed-count accumulator")
     negate_matches = _described(entities, "negate fed-count")
     old_negate_matches = _described(entities, "negate machine contents")
@@ -97,11 +105,9 @@ def test_complete_worker_counts_feeder_hand_pulses(entry_index: int, complete_bo
     negate_id = int(negate["entity_number"])
     wires = _wire_set(blueprint)
 
-    # The memory cell is a gated self-loop and feeds the repurposed -fed arithmetic stage.
     assert _normalized_wire(memory_id, 3, memory_id, 1) in wires
     assert _normalized_wire(memory_id, 3, negate_id, 1) in wires
 
-    # Feeder connector 1 is the RED hand-pulse output; connector 2 is the GREEN control input.
     assert any(
         (wire[0] == feeder_id and wire[1] == 1) or (wire[2] == feeder_id and wire[3] == 1)
         for wire in wires
