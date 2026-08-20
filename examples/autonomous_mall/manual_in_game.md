@@ -1,8 +1,8 @@
 # Complete tileable autonomous mall in-game test
 
-The physical transaction prototype now has **complete pasteable production cells**. The controller-only
-tiles remain available for diagnostics, but the normal in-game path no longer requires wiring requester
-chests, assemblers, inserters, or completion latches by hand.
+The complete-cell generator produces pasteable P/Q/R production workers. The normal test path no longer
+requires manually wiring requester chests, machines, inserters, completion latches, or duplicating recipe
+ingredients into controller constants.
 
 ## Generate and import
 
@@ -26,69 +26,110 @@ The book contains:
 1  reusable complete P productivity worker
 2  reusable complete Q quality worker
 3  reusable complete R recycler worker
-4  controller-only [HEAD][P0][P1][Q0][Q1][R0] diagnostic row
+4  controller-only diagnostic row
 5  reusable HEAD tile
 ```
 
-The complete worker cells use a 48x72 absolute snapping grid. Their upper 48 tiles are the already-tested
-controller. The lower bay contains the physical machine and all local circuit plumbing.
+The complete cells use a 48x72 absolute snapping grid. The upper region is the transaction controller;
+the lower bay contains the physical machine and its local circuit plumbing.
 
-## What a complete worker contains
+## User-facing controls
+
+There are only three kinds of editable command marker in the complete design:
+
+```text
+HEAD:  DOCK CONTROL D/L — EDIT HERE
+P/Q:   DOCK RECIPE COMMAND — EDIT HERE
+R:     DOCK RECYCLE ITEM — EDIT HERE
+```
+
+P/Q also expose:
+
+```text
+DOCK AUTO ingredients — DO NOT EDIT
+```
+
+This is an observation/debug point, not a second configuration input. The assembler is kept on the selected
+recipe before dispatch and uses Factorio's `Read ingredients` circuit mode. Its one-craft ingredient vector
+is fed automatically into the worker reservation input and therefore into the requester demand.
+
+Do **not** manually enter an ingredient list for P/Q workers.
+
+## Physical worker geometry
 
 A P or Q cell contains:
 
 ```text
-requester chest -> stack inserter -> assembling machine 3 -> stack inserter -> provider chest
+requester chest -> bulk inserter -> assembling machine 3 -> bulk inserter -> provider chest
 ```
 
-The P machine requests four `productivity-module-3`; the Q machine requests four `quality-module-3`.
-The R cell substitutes a recycler with four `quality-module-3`.
+The two bulk inserters transfer left-to-right. Their blueprint direction is the pickup-facing direction,
+so they are configured to pick up from the west and drop east. The input inserter has stack-size override 1.
 
-The generator also wires the local device protocol automatically:
+P workers request four `productivity-module-3`; Q workers request four `quality-module-3`.
 
-- requester demand drives requester-chest `Set requests`;
-- assembler recipe is isolated onto the machine's green input network;
-- machine contents, working, and recipe-finished status use its red output network;
-- the input inserter uses stack-size override 1;
-- its circuit filters are `positive(requester_demand - machine_contents)`;
-- it is enabled only while the worker is in its input phase and the machine is not working;
-- the one-tick recipe-finished signal is caught by a SET/HOLD latch;
-- the worker acknowledgement clears that latch.
+The recycler is physically different:
 
-Consequently the machine-side `signal-I/W/F/A` ABI still exists internally for debugging, but the player
-no longer wires it.
+```text
+             provider chest
+                  ^
+                  | direct recycler output
+              recycler
+                  ^
+            bulk inserter
+                  ^
+            requester chest
+```
 
-### Current recipe scope
+The recycler is north-facing, uses its native 2x4 footprint, has one south-side input bulk inserter, and
+places its output directly into the provider chest. It requests four `quality-module-3`.
 
-The generated feeder supports ordinary **solid-only, no-fluid** recipes with any number of ingredients.
-For now exclude recipes where the same item is simultaneously an ingredient and a product (catalyst-like
-recipes), because `Read contents` does not identify which semantic role an item occupies.
+## Local device protocol
 
-Productivity workers must of course use recipes that permit productivity modules.
+For P/Q workers the generated device layer does the following automatically:
 
-## What remains external
+1. `RECIPE COMMAND` drives both the worker's recipe-presence check and the assembler's Set recipe input.
+2. Set recipe is isolated on the assembler's green input network.
+3. The assembler's red output network uses `Read ingredients`, `Read working`, and `Read recipe finished`.
+4. W/F status lanes are removed from the ingredient vector before it enters `job_request` reservation.
+5. The accepted one-craft ingredient vector becomes requester-chest `Set requests`.
+6. The input bulk inserter receives item filters from the request and is enabled only in the worker input phase.
+7. The recipe-finished pulse is captured by a durable F latch and acknowledged by the worker.
 
-The generator deliberately does not guess your electric-grid layout. Paste the row under substation/pole
-coverage so every combinator, inserter, logistic chest, and machine has power.
+The old compiler-level names `job_recipe` and `job_request` still exist internally, but for a complete P/Q
+cell `job_request` is now generated from the assembler itself rather than edited by the player.
 
-There is only one external **circuit wire** required for the basic test:
+For R, `RECYCLE ITEM` remains a direct item/quality request because a recycler chooses its process from the
+inserted item rather than from a Set-recipe command.
+
+## External wiring
+
+Power the row normally with poles/substations.
+
+For the basic test there is only one external circuit wire:
 
 1. put a roboport in an isolated logistic network;
 2. enable `Read logistic network contents`;
 3. red-wire the roboport to HEAD's `DOCK roboport stock` marker.
 
-The horizontal available/control buses are already joined across every worker seam.
+The horizontal material and control buses are already joined between neighboring tiles.
 
 ## HEAD controls
 
-HEAD's editable `INPUT control` marker uses:
+Open the constant combinator labelled:
 
 ```text
-signal-D = dispatch
-signal-L = launch
+DOCK CONTROL D/L — EDIT HERE
 ```
 
-Use four manual phases for the first tests:
+It is preconfigured with two slots:
+
+```text
+signal-D = 0
+signal-L = 0
+```
+
+Change only their counts during the manual test:
 
 ```text
 IDLE:     D=0, L=0    snapshot follows live roboport stock
@@ -97,80 +138,65 @@ RUN:      D=1, L=1    accepted workers execute once
 REARM:    D=0, L=0    workers re-arm and snapshot resumes tracking
 ```
 
-Wait roughly one second in FREEZE while visually testing the prototype. The final controller can automate
-this settle/launch handshake later.
+Wait roughly one second in FREEZE while visually testing the prototype.
 
-## Configure a worker
+## Configure an assembler worker
 
-Each worker has editable controller markers rather than external job wiring.
-
-For an assembler worker set:
+Open P0's constant combinator labelled:
 
 ```text
-INPUT job_request = exact one-craft ingredient vector
-INPUT job_recipe  = recipe/product signal x1
+DOCK RECIPE COMMAND — EDIT HERE
 ```
 
-An empty `job_request` disables that worker. An assembler request with empty `job_recipe` is also rejected.
-
-For one normal iron gear:
+For the first test set exactly one recipe signal:
 
 ```text
-job_request:  normal iron plate x2
-job_recipe:   normal iron gear wheel x1
+iron gear wheel recipe = 1
 ```
 
-R0 has no recipe marker; configure only the exact-quality item to recycle in `job_request`.
+Leave P1, Q0 and Q1 recipe-command combinators empty. While D=0/L=0, wait briefly for the assembler's
+`Read ingredients` output to propagate. P0's `AUTO ingredients — DO NOT EDIT` point should then carry the
+one-craft iron-plate requirement automatically.
 
-## Test 1: complete-cell placement
+No iron-plate constant needs to be entered by hand.
 
-Paste book entry 0 under power coverage. Before changing any controls, inspect the row:
+## Test 1: visual placement
+
+Paste book entry 0 under power and inspect:
 
 ```text
 [HEAD][ P0 ][ P1 ][ Q0 ][ Q1 ][ R0 ]
 ```
 
-Every worker should already contain a requester chest, two inserters, its machine, and a provider chest.
-P0/P1 should request productivity modules; Q0/Q1 and R0 should request quality modules.
+Check these before functional testing:
 
-At each horizontal seam there should still be one shared `available bus` marker and one shared `control
-bus` marker, each with red wiring into both neighboring controllers.
+- HEAD has the clearly labelled `CONTROL D/L — EDIT HERE` constant;
+- every P/Q cell has `RECIPE COMMAND — EDIT HERE` and `AUTO ingredients — DO NOT EDIT`;
+- P/Q item flow is requester -> bulk inserter -> assembler -> bulk inserter -> provider;
+- the two P/Q inserters point left-to-right;
+- R uses a vertical north-facing recycler, one input bulk inserter, and direct output to its provider chest;
+- P workers request productivity modules; Q/R workers request quality modules.
 
-If the physical machine entities fail to import but entry 4 still imports correctly, report exactly which
-entities/settings Factorio rejected; entry 4 isolates the known-good controller from the new device layer.
+## Test 2: automatic recipe ingredients
 
-## Test 2: reservation only
+With D=0/L=0, configure only P0 for the iron-gear recipe.
 
-Leave all machines idle. Put exactly two normal iron plates in the logistic network. Configure identical
-one-gear jobs on P0 and Q0; leave P1/Q1/R0 empty.
-
-From IDLE, raise D only:
-
-```text
-D=1, L=0
-```
-
-Expected after reservation propagation:
+Expected before dispatch:
 
 ```text
-P0 accepted = 1
-Q0 accepted = 0
+assembler recipe = iron gear wheel
+AUTO ingredients = 2 normal iron plates
 ```
 
-Return to IDLE, put four plates in logistics, let HEAD observe them, then freeze again. Expected:
+The exact displayed recipe signal representation depends on Factorio's recipe-signal UI, but the important
+part is that the ingredient vector appears without manual ingredient configuration.
 
-```text
-P0 accepted = 1
-Q0 accepted = 1
-```
-
-This checks the shared horizontal material bus and left-to-right atomic reservation order.
+If the recipe is selected but `AUTO ingredients` stays empty, stop here and report that result; this isolates
+the new recipe->ingredients feedback path from reservation and machine execution.
 
 ## Test 3: one complete P0 transaction
 
-Enable only P0 with the iron-gear job and keep at least two iron plates in logistics.
-
-Run:
+Put at least two normal iron plates in the logistic network. Let HEAD observe them in IDLE, then run:
 
 ```text
 IDLE    D=0 L=0
@@ -178,91 +204,59 @@ FREEZE  D=1 L=0
 RUN     D=1 L=1
 ```
 
-Expected physical sequence:
+Expected sequence:
 
 ```text
-P0 is accepted
--> requester chest asks for two plates
--> robots deliver the plates
--> generated feeder inserts missing ingredients one at a time
--> assembler starts
--> working status blocks further feeding
--> exactly one gear craft completes
--> generated completion latch captures recipe-finished
--> worker acknowledges completion
--> latch clears and worker returns idle
+P0 accepted
+-> requester chest asks for two iron plates
+-> robots deliver
+-> input bulk inserter feeds the required plates one at a time
+-> assembler performs one iron-gear craft
+-> output bulk inserter moves the gear to the provider chest
+-> recipe-finished latch completes the transaction
+-> worker returns idle
 ```
 
-Keep `D=1, L=1` for several seconds after the gear finishes. **A second craft must not start.**
+Keep D=1/L=1 for several seconds after completion. A second craft must **not** start. Then use D=0/L=0 to
+re-arm the worker.
 
-Then set `D=0, L=0`. The worker should re-arm for another transaction.
+## Test 4: P0 + Q0 reservation/concurrency
 
-## Test 4: P0 and Q0 concurrently
+Configure the same iron-gear recipe on P0 and Q0. Give the frozen stock four iron plates.
 
-Configure the same gear job on P0 and Q0 and give the frozen snapshot four plates.
-
-Expected:
+After FREEZE, expected:
 
 ```text
 P0 accepted = 1
 Q0 accepted = 1
 ```
 
-Raise launch. Both machines should operate concurrently. Robot flight and the resulting change in live
-logistic inventory must not alter the already-frozen reservation decisions.
+After RUN, both machines should execute concurrently. Live roboport stock may fall while robots transport
+items; the frozen reservation decisions must not change.
 
-P0 should use productivity modules and Q0 quality modules without either worker changing role.
+Repeat with only two plates. Expected:
 
-## Test 5: productivity persistence
+```text
+P0 accepted = 1
+Q0 accepted = 0
+```
 
-Run repeated one-craft P0 batches without changing the recipe.
+This checks the left-to-right atomic reservation order without manually duplicating ingredient vectors.
 
-Expected: partial productivity-bar progress survives between transactions and eventually yields the
-productivity bonus. The worker stops a transaction by starving the machine, not by clearing its recipe.
+## Later tests
 
-## Test 6: quality
+After the above succeeds:
 
-Run repeated Q0 batches from normal ingredients.
+- repeated P0 batches should preserve partial productivity-bar progress;
+- repeated Q batches should perform one quality attempt per accepted transaction;
+- R0 should consume exactly the configured item/quality from `RECYCLE ITEM — EDIT HERE`, including
+  zero-output recycler attempts completing through recipe-finished;
+- all five workers should retain priority P0, P1, Q0, Q1, R0 while accepted workers execute concurrently;
+- holding launch high must never retrigger a worker; returning D/L to zero re-arms the row.
 
-Expected: each accepted transaction still performs one attempt, while output quality follows the game's
-quality randomness. Actual outputs return to logistic stock and are observed by later replanning/snapshots;
-the controller never assumes expected quality output physically exists.
+## Scope
 
-## Test 7: recycler
-
-Configure R0 to request one exact-quality recyclable item and launch it through the same batch protocol.
-The recycler selects its reverse process from the inserted item; it has no Set-recipe connection.
-
-Expected: exactly one item is consumed per accepted launch. Even a recycle attempt that yields no physical
-output still completes because completion is based on the machine's recipe-finished pulse, not on detected
-output items.
-
-## Test 8: all five workers
-
-Give all five workers affordable jobs, freeze stock, wait for reservation propagation, then launch.
-
-Expected:
-
-- priority is P0, P1, Q0, Q1, R0;
-- each worker sees upstream reservations already subtracted;
-- all accepted workers can run concurrently;
-- holding launch high never starts a second transaction;
-- returning D and L to zero re-arms the complete row.
-
-## What this milestone validates
-
-This version validates the full physical transaction layer rather than only its controller:
-
-- named compiler I/O anchors and snap-compatible module geometry;
-- fixed-red horizontal whole-vector ABI;
-- frozen roboport inventory and atomic left-to-right reservations;
-- integrated reservation and one-shot worker FSM;
-- generated requester-chest transport;
-- generated general solid-ingredient feeder;
-- persistent assembler recipes;
-- fixed productivity/quality physical roles;
-- generated durable completion latch;
-- complete P/Q/R cells that can be stamped as reusable 48x72 units.
-
-The economic planner is still the Python oracle. Job selection and the D/L batch handshake remain manual;
-those are the next controller-side automation layers once these complete physical cells pass in-game tests.
+The complete generated cells currently target ordinary no-fluid assembler recipes and one-item recycler
+transactions. The economic planner is still the Python oracle; automatic job selection and automatic D/L
+batch scheduling are later controller layers. This milestone is specifically validating that physical workers
+are now pasteable, self-wired, and recipe-driven rather than requiring duplicate manual configuration.
