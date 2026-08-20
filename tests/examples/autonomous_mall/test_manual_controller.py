@@ -28,7 +28,7 @@ def _expected_vector_inputs() -> set[str]:
 
 
 def _expected_state_names() -> set[str]:
-    result = {"dispatch_seen"}
+    result = {"dispatch_seen", "dispatch_cursor", "available_snapshot"}
     for worker in DEFAULT_WORKERS:
         result.update({f"{worker.name}_mode", f"{worker.name}_request"})
         if worker.uses_recipe_command:
@@ -37,7 +37,13 @@ def _expected_state_names() -> set[str]:
 
 
 def _expected_outputs() -> set[str]:
-    result = {"batch_ready", "dispatch_armed", "any_accepted", "remaining_snapshot"}
+    result = {
+        "batch_ready",
+        "dispatch_armed",
+        "dispatch_scanning",
+        "any_accepted",
+        "remaining_snapshot",
+    }
     for worker in DEFAULT_WORKERS:
         result.update(
             {
