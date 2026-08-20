@@ -131,6 +131,59 @@ def test_temporal_lowerer_transports_one_coherent_live_observation() -> None:
     )
 
 
+def test_explicit_observation_and_exact_transport_have_distinct_meanings() -> None:
+    baseline = lower_to_abstract_physical(
+        _two_phase_live_scalar(),
+        optimize=False,
+        sampling_policy=SamplingPolicy.ALAP,
+    )
+    graph = build_temporal_hypergraph(
+        baseline.optimized_ir,
+        baseline.state_timing,
+        sampling_policy=SamplingPolicy.ALAP,
+    )
+    source = next(
+        item
+        for item in graph.sources
+        if item.mode is TemporalSourceMode.LIVE and item.shape is PayloadShape.SCALAR
+    )
+    placement = graph.alap_placement()
+    observation = _observation_for_source(graph, placement, source)
+    assert observation.phase > 0
+
+    optimization = TemporalOptimizationResult(
+        status="FEASIBLE",
+        placement=placement,
+        buses=(),
+        bus_stages=0,
+        ordinary_scalar_delays=0,
+        vector_delays=0,
+        objective_delays=0,
+        best_bound=0,
+        wall_time_seconds=0.0,
+    )
+    lowerer = TemporalPlanLowerer(
+        baseline.optimized_ir,
+        state_timing=baseline.state_timing,
+        sampling_policy=SamplingPolicy.ALAP,
+        graph=graph,
+        optimization=optimization,
+    )
+    lowerer._create_input_markers()
+    raw = lowerer.realize(cast(Value, source.semantic))
+
+    observed = lowerer.observe_scalar_at(raw, observation.phase)
+    before_exact = len(lowerer.circuit.entities)
+    transported = lowerer.exact_delay_to(raw, observation.phase)
+
+    assert observed.net == raw.net
+    assert observed.signal == raw.signal
+    assert observed.phase == observation.phase
+    assert transported.net != raw.net
+    assert transported.phase == observation.phase
+    assert len(lowerer.circuit.entities) - before_exact == observation.phase - raw.phase
+
+
 @pytest.mark.skipif(find_spec("ortools") is None, reason="OR-Tools is an optional dependency")
 def test_optimizer_chooses_one_live_observation_for_all_consumers() -> None:
     source = TemporalSource(
