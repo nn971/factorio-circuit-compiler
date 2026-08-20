@@ -21,6 +21,8 @@ from benchmarks.snake.generate import _TerminalProgress
 from benchmarks.snake.random_model import FOOD_CANDIDATE_ORACLE, build_random_snake_circuit
 from factorio_circuit import RandomSignalOracleProvider, SamplingPolicy, lower_to_abstract_physical
 from factorio_circuit.analysis import (
+    TemporalHypergraph,
+    TemporalOptimizationResult,
     build_temporal_hypergraph,
     census_abstract_physical,
     format_abstract_physical_census,
@@ -59,7 +61,7 @@ def _marker_wire_color(layout: object, marker_entity: int) -> WireColor:
     return next(iter(colors))
 
 
-def _pin_graph_to_alap(graph: object) -> object:
+def _pin_graph_to_alap(graph: TemporalHypergraph) -> TemporalHypergraph:
     """Return the same temporal graph with every computation mobility window fixed at ALAP."""
 
     placement = graph.alap_placement()
@@ -77,7 +79,9 @@ def _pin_graph_to_alap(graph: object) -> object:
     )
 
 
-def _restore_accepted_live_sampling(optimization: object) -> object:
+def _restore_accepted_live_sampling(
+    optimization: TemporalOptimizationResult,
+) -> TemporalOptimizationResult:
     """Remove experimental coherent-LIVE transport from a fixed-ALAP validation plan.
 
     The accepted Snake baseline uses ``SamplingPolicy.ALAP`` exactly as implemented by the ordinary
@@ -98,11 +102,13 @@ def _restore_accepted_live_sampling(optimization: object) -> object:
         for item in optimization.live_source_observations
         if item.shape.value == "vector"
     )
+    live_transport = scalar_transport + vector_transport
     return replace(
         optimization,
         ordinary_scalar_delays=optimization.ordinary_scalar_delays - scalar_transport,
         vector_delays=optimization.vector_delays - vector_transport,
-        objective_delays=optimization.objective_delays - scalar_transport - vector_transport,
+        objective_delays=optimization.objective_delays - live_transport,
+        best_bound=optimization.best_bound - live_transport,
         live_source_observations=(),
     )
 
@@ -152,7 +158,10 @@ def main() -> None:
         workers=args.workers,
     )
     optimization = _restore_accepted_live_sampling(optimization)
-    print("temporal generator mode: validated ALAP placement + shared scalar delay buses", file=sys.stderr)
+    print(
+        "temporal generator mode: validated ALAP placement + shared scalar delay buses",
+        file=sys.stderr,
+    )
     print(format_temporal_optimization(optimization), file=sys.stderr)
 
     planned = lower_normalized_vectors_with_temporal_plan(
