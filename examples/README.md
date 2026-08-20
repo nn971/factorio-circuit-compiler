@@ -111,16 +111,19 @@ assumes the earlier contracts.
 ## Application prototype: autonomous mall
 
 The larger autonomous-mall work lives in `examples/autonomous_mall/`. Its Python reference model solves
-raw-material-efficient quality planning, while `manual_controller.py` now generates **snap-together
-physical tiles** with a stable red-wire ABI:
+raw-material-efficient quality planning. The convenient physical generator now emits complete tileable
+production cells rather than controller-only modules:
 
 ```bash
-uv run python -m examples.autonomous_mall.manual_controller \
-  > autonomous-mall-manual-blueprint.txt
+uv run python -m examples.autonomous_mall.complete_controller \
+  > autonomous-mall-complete-blueprint.txt
 ```
 
-The blueprint book contains a complete `[HEAD][P0][P1][Q0][Q1][R0]` controller plus reusable HEAD,
-assembler-worker, and recycler-worker tiles. Matching horizontal boundary markers overlap on the common
-48x48 snapping grid, so reservation and control buses require no manual wiring. See
-`examples/autonomous_mall/manual_in_game.md` for roboport hookup, local job configuration, stable
-machine-side dock signals, and the staged in-game acceptance tests.
+The book's first entry is a complete `[HEAD][P0][P1][Q0][Q1][R0]` row. P workers include fixed
+productivity-module assemblers, Q workers include fixed quality-module assemblers, and R includes a
+quality-module recycler. Requester chests, exact-one-attempt feeders, output chests, working feedback,
+and durable completion latches are generated and wired locally. The only circuit hookup needed for the
+basic in-game test is roboport stock into HEAD; ordinary electric coverage is still external.
+
+The older `manual_controller.py` generator remains as a controller-only diagnostic. See
+`examples/autonomous_mall/manual_in_game.md` for the complete staged acceptance procedure.
