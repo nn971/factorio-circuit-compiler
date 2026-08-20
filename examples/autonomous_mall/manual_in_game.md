@@ -1,9 +1,8 @@
 # Manual in-game autonomous mall test
 
-This test exercises the physical transaction layer before the final circuit-side economic planner is
-wired in. The controller takes manually configured candidate jobs, atomically reserves one roboport
-stock snapshot, drives fixed productivity/quality/recycler workers, and waits for durable completion
-latches.
+The first physical prototype is deliberately modular. The previous monolithic controller lowered to an
+abstract topology whose runtime-open vector nets could not be assigned to only Factorio's two wire colors.
+The new version compiles four small templates and composes them by manual wires in game.
 
 The physical worker pool is:
 
@@ -15,263 +14,374 @@ r0      quality recycler
 
 The module roles are fixed. Do not swap modules dynamically.
 
-## Generate the controller
+## Generate the blueprint book
 
 From the repository root:
 
 ```bash
 uv sync --extra dev
+uv run pytest tests/examples/autonomous_mall/test_manual_controller.py
+uv run pytest -m acceptance tests/examples/autonomous_mall/test_manual_controller.py
 uv run python -m examples.autonomous_mall.manual_controller \
   > autonomous-mall-manual-blueprint.txt
 ```
 
-The blueprint string is written to stdout. The terminal wiring map is written to stderr and gives every
-compiled scalar signal plus the required red/green wire for every input/output marker.
+The last command prints one importable blueprint-book string to stdout and a wiring map to stderr. The
+book contains four templates:
 
-Cheap source-level check:
-
-```bash
-uv run pytest tests/examples/autonomous_mall/test_manual_controller.py
+```text
+stock snapshot                    paste 1
+reservation cell                  paste 5
+assembler worker                  paste 4
+recycler worker                   paste 1
 ```
 
-Opt-in full physical compile:
+Use the printed wire colors for every compiled input/output marker.
 
-```bash
-uv run pytest -m acceptance tests/examples/autonomous_mall/test_manual_controller.py
+## Two manual batch controls
+
+The prototype uses two persistent scalar controls:
+
+```text
+dispatch = 0/1
+launch   = 0/1
 ```
 
-## Shared stock input
+A batch has four phases:
 
-Place one roboport in an otherwise isolated logistic network and enable **Read logistic network
-contents**. Wire it directly to `INPUT stock` using the color printed by the generator. Keep job-control
-signals off this wire.
+```text
+IDLE:     dispatch=0, launch=0
+FREEZE:   dispatch=1, launch=0
+RUN:      dispatch=1, launch=1
+REARM:    dispatch=0, launch=0
+```
 
-For the first tests use normal iron plates and iron gears only. The one-ingredient gear recipe makes the
-transaction sequence easy to verify before testing a multi-ingredient recipe.
+Keep `dispatch=0` for a while before a batch. The stock-snapshot cell continuously tracks the roboport
+while dispatch is low. Raising dispatch freezes that snapshot and activates the reservation chain.
 
-## Assembler worker
+Do not raise launch immediately. Wait until the five reservation cells have visibly settled; one second is
+ample for this first manual test. Then raise launch. Each worker cell starts at most once while its
+`accepted` signal remains high. After all accepted workers finish and their completion latches clear,
+return launch and dispatch to zero. The worker cells then re-arm for the next batch and the stock snapshot
+resumes tracking live inventory.
 
-For each of `p0`, `p1`, `q0`, and `q1` place:
+This two-phase handshake is intentionally manual. It avoids making any assumption about clock phase across
+independently compiled blueprints. A later external-device protocol can automate it.
+
+## Stock snapshot
+
+Place one roboport in an isolated logistic network and enable **Read logistic network contents**.
+
+Wire:
+
+```text
+roboport contents -> snapshot INPUT stock
+dispatch          -> snapshot INPUT dispatch
+```
+
+The cell exposes:
+
+```text
+OUTPUT snapshot
+OUTPUT frozen
+```
+
+Use `OUTPUT snapshot`, not the live roboport wire, as the input of the first reservation cell.
+
+## Reservation chain
+
+Paste five copies of the reservation-cell template and label them:
+
+```text
+p0 -> p1 -> q0 -> q1 -> r0
+```
+
+Every cell has:
+
+```text
+INPUT active
+INPUT job_enable
+INPUT available
+INPUT job_request
+
+OUTPUT accepted
+OUTPUT remaining
+```
+
+Wire the chain:
+
+```text
+stock snapshot OUTPUT snapshot -> p0 INPUT available
+p0 OUTPUT remaining            -> p1 INPUT available
+p1 OUTPUT remaining            -> q0 INPUT available
+q0 OUTPUT remaining            -> q1 INPUT available
+q1 OUTPUT remaining            -> r0 INPUT available
+```
+
+Wire the same `dispatch` signal to every `INPUT active`.
+
+For each worker, one constant-combinator job definition drives both its reservation cell and its worker
+cell:
+
+```text
+job_enable  scalar 1 when this candidate is enabled
+job_request exact ingredients/items for one physical attempt
+job_recipe  assembler product/recipe signal; worker cell only
+```
+
+The reservation cell computes:
+
+```text
+accepted = active
+           AND job_enable
+           AND request is nonempty
+           AND job_request <= available lane-by-lane
+
+remaining = available - job_request   if accepted
+            available                 otherwise
+```
+
+Because the five cells are physically chained, `q0` cannot spend material already reserved by p0 or p1.
+The chain is evaluated against the frozen stock snapshot, so later roboport changes caused by flying robots
+cannot create a duplicate reservation.
+
+## Worker cells
+
+Paste four assembler-worker cells and one recycler-worker cell.
+
+Every worker cell receives:
+
+```text
+INPUT accepted    from its reservation cell
+INPUT launch      shared manual launch signal
+INPUT working     machine Read-working signal
+INPUT finished    durable completion latch
+INPUT job_request same request vector used by its reservation cell
+```
+
+Assembler workers also receive:
+
+```text
+INPUT job_recipe
+```
+
+Outputs are:
+
+```text
+OUTPUT requester_demand
+OUTPUT input_enable
+OUTPUT busy
+OUTPUT waiting_finished
+OUTPUT ack_finished
+OUTPUT armed
+```
+
+Assembler workers additionally expose:
+
+```text
+OUTPUT recipe
+```
+
+The worker latches its request/recipe only when `launch=1`, `accepted=1`, it is idle, and it has not
+already consumed this accepted batch. Keeping accepted and launch high cannot retrigger the job. The worker
+re-arms only after accepted returns to zero, which happens when dispatch returns low.
+
+## Assembler external device
+
+For p0, p1, q0, q1 build:
 
 ```text
 requester chest -> stack-size-1 inserter -> assembling machine 3 -> inserter -> provider chest
 ```
 
-Configure the requester chest to **Set requests** from the circuit network and enable **Trash
-unrequested items**. Connect `OUTPUT <worker>_requester_demand` to it.
-
-Connect `OUTPUT <worker>_recipe` to the assembler and enable **Set recipe**. The recipe signal is
-intentionally persistent between jobs. This preserves partial productivity-bar progress when a P worker
-runs the same recipe again.
-
-Install productivity modules permanently in `p*` machines and quality modules permanently in `q*`
-machines. Do not use speed beacons for the first quality test.
-
-### Exact input feeder
-
-The controller does **not** stop a job by removing the recipe. Factorio can begin another craft before a
-post-finish disable reacts, and changing/removing a productivity recipe can discard partial productivity
-progress. Instead, the external worker feeds exactly one recipe's ingredients and then starves the
-machine.
-
-Set the input inserter's stack size override to **1**. For the initial iron-gear smoke test, it is enough
-to enable it only when both conditions hold:
+Connect:
 
 ```text
-controller OUTPUT <worker>_input_enable > 0
-machine Read-working signal = 0
+worker OUTPUT requester_demand -> requester chest Set requests
+worker OUTPUT recipe           -> assembler Set recipe
+assembler Read working         -> worker INPUT working
+completion latch               -> worker INPUT finished
+worker OUTPUT ack_finished     -> completion-latch reset
 ```
 
-The machine's own Read-working signal should reach this inserter locally, without waiting for the compiled
-controller to observe it. For iron gears, the inserter moves plate 1 and plate 2; the craft starts, working
-becomes nonzero, and the feeder is blocked before a third plate can enter.
+Install productivity modules permanently in p0/p1 and quality modules permanently in q0/q1.
 
-For a general no-fluid multi-ingredient recipe, add one small vector feeder circuit. Configure the
-assembler to **Read contents** on a wire kept separate from its Set-recipe input. Compute
+The recipe output intentionally stays latched between transactions. This preserves partial productivity
+progress when the same productivity worker repeats the same recipe.
+
+### Exact one-craft input feeder
+
+Do not stop a job by removing its recipe. Instead, starve the assembler after one craft begins.
+
+For the iron-gear smoke test, set the input inserter stack-size override to 1 and enable it only when:
 
 ```text
-missing_to_machine = positive(<worker>_requester_demand - machine_contents)
+worker OUTPUT input_enable > 0
+AND
+assembler Read working = 0
 ```
 
-and use `missing_to_machine` to **Set filters** on the stack-size-1 input inserter. Enable that inserter only
-while `<worker>_input_enable > 0` and Read-working is zero.
+The assembler's working signal should reach this inserter locally, without passing through another
+compiled controller first.
 
-The filter therefore removes each ingredient lane as soon as the exact requested count has reached the
-machine. The final missing ingredient starts the craft, and local Read-working then closes the feeder.
-Robot over-delivery is harmless: excess items stay in the requester chest and become trash when the
-controller withdraws the request.
+For a general no-fluid multi-ingredient recipe, configure the assembler to **Read contents** on a separate
+wire and build:
 
-For recipes where an ingredient is also a product/catalyst, machine Read-contents is an ambiguous feeder
-ledger. Keep those recipes out of this first physical test; the later reusable worker protocol should count
-inserter hand pulses explicitly instead. The economic planner itself has no such limitation.
+```text
+missing_to_machine = positive(worker requester_demand - machine_contents)
+```
 
-### Working signal
+Use `missing_to_machine` to Set filters on the stack-size-1 input inserter. Keep the same enable condition
+`input_enable > 0 AND working = 0`.
 
-Configure **Read working** on the assembler to the concrete scalar signal printed for
-`INPUT <worker>_working` and connect it directly to that input marker.
+This prevents one ingredient from buffering several crafts while another ingredient is still in transit.
+Keep catalyst-style recipes out of this first test because machine contents is ambiguous when an item is
+both an ingredient and product; a later reusable worker protocol should count inserter hand pulses instead.
 
-### Durable completion latch
+## Durable completion latch
 
-Do not wire the one-tick **Read recipe finished** pulse directly to `INPUT <worker>_finished`; the
-controller's logical period may be longer than one game tick.
+Do not connect a one-tick Read-recipe-finished pulse directly to `INPUT finished`.
 
 Let:
 
-- `S` be any private virtual signal emitted by the machine's Read-recipe-finished option;
-- `L` be the scalar signal printed for `INPUT <worker>_finished`;
-- `A` be the scalar signal carried by `OUTPUT <worker>_ack_finished`.
-
-Use two decider combinators on a private network:
-
 ```text
-SET:   if S > 0              -> output L = 1
-HOLD:  if L > 0 AND A = 0    -> output L = 1
+S = machine Read recipe finished pulse
+L = concrete scalar used by worker INPUT finished
+A = concrete scalar used by worker OUTPUT ack_finished
 ```
 
-Feed HOLD back to itself and feed SET into HOLD. Connect the resulting `L` to
-`INPUT <worker>_finished`; connect `OUTPUT <worker>_ack_finished` to the HOLD condition network.
-
-The finish pulse sets `L`, HOLD preserves it, and the controller acknowledgement clears it. No new batch
-can begin while any worker's completion latch is still high.
-
-## Recycler worker
-
-For `r0` place:
+Use two deciders:
 
 ```text
-requester chest -> stack-size-1 inserter -> recycler -> belt/provider collection
+SET:   if S > 0           -> L = 1
+HOLD:  if L > 0 AND A = 0 -> L = 1
 ```
 
-Connect `OUTPUT r0_requester_demand` to the requester's circuit-set requests. There is deliberately no
-`r0_recipe`: a recycler chooses its reverse recipe automatically from the inserted item.
+Feed HOLD back to itself, feed SET into HOLD, connect HOLD to worker `INPUT finished`, and connect worker
+`OUTPUT ack_finished` to the HOLD condition network.
 
-Gate the recycler input inserter using `OUTPUT r0_input_enable` and local Read-working exactly as for the
-simple assembler feeder. A recycler job requests one item, so no multi-ingredient feeder is needed. Wire
-Read-working and the durable Read-recipe-finished latch in the same way. Install quality modules
-permanently in the recycler.
+A recycler also uses this latch. A recycle may produce zero output, so completion must be driven by the
+machine-finished signal rather than by observing an output item.
 
-## Manual job inputs
+## Recycler external device
 
-Supply each candidate job with constant combinators:
+For r0 build:
 
 ```text
-<worker>_job_enable   scalar 1 to make this candidate active
-<worker>_job_request  exact ingredients/item for one physical attempt
-<worker>_job_recipe   one recipe/product signal for assembler workers only
+requester chest -> stack-size-1 inserter -> recycler -> output collection
 ```
 
-Use exact item quality on recipe and ingredient signals. The recycler has no `job_recipe`; its request is
-the item to recycle.
+Connect `requester_demand`, `input_enable`, Read-working, the completion latch, and ack exactly as above.
+There is no recipe signal for the recycler. Install quality modules permanently.
 
-The controller samples one scheduling epoch when `dispatch` is asserted while `batch_ready=1`.
-`dispatch` is edge-armed: after a batch fires, return it to zero before requesting another batch.
-Leaving it high cannot repeat the same jobs.
+## Test 1: compile all four templates
 
-## Test 1: one-shot assembler
+Run:
 
-Enable only `p0`:
+```bash
+uv run pytest -m acceptance tests/examples/autonomous_mall/test_manual_controller.py
+```
+
+Expected: four passing parametrized compile cases. This is the regression for the previous wire-color
+failure.
+
+## Test 2: one-shot p0
+
+Configure only p0:
 
 ```text
-p0_job_enable  = 1
-p0_job_recipe  = normal iron gear wheel, count 1
-p0_job_request = normal iron plate, count 2
+job_enable  = 1
+job_request = normal iron plate x2
+job_recipe  = normal iron gear wheel x1
 ```
 
-Put at least two normal plates in the network and assert `dispatch`.
+Put at least two normal plates in logistics.
 
-Expected sequence:
+1. Keep dispatch=0 and launch=0 until snapshot follows the roboport.
+2. Set dispatch=1.
+3. Wait for the chain to settle; p0 accepted should be 1.
+4. Set launch=1.
 
-1. `p0_accepted` pulses and `p0_busy` rises.
-2. `p0_requester_demand` requests two plates; `p0_recipe` selects iron gear wheel.
-3. The stack-size-1 feeder inserts exactly two plates.
-4. Read-working rises; the local inserter gate stops feeding immediately.
-5. The requester demand disappears after the controller observes working, but the recipe remains selected.
-6. Exactly one gear craft finishes.
-7. The completion latch rises, `p0_ack_finished` clears it, and `p0_busy` returns to zero.
+Expected: p0 requests two plates, feeds exactly one craft, starts, finishes exactly once, and acknowledges
+the completion latch. Keeping dispatch and launch high must not start a second craft.
 
-Return `dispatch` to zero. Once the worker/latch are clear, `batch_ready` and `dispatch_armed` return high.
+After completion set launch=0 and dispatch=0. `accepted` drops and `armed` returns high.
 
-## Test 2: atomic reservation and parallel workers
+## Test 3: atomic reservation
 
-Put exactly **two** normal plates in the network. Configure both `p0` and `q0` as one iron-gear craft,
-each requesting two plates, and enable both.
+Configure p0 and q0 as identical one-gear jobs, each requesting two plates.
 
-Assert `dispatch` once.
-
-Expected: `p0` is accepted and `q0` is not. Allocation order is deterministic, so `p0` subtracts its two
-plates from the batch snapshot before `q0` is evaluated.
-
-Repeat with **four** plates. Expected: both workers are accepted in the same batch and run concurrently.
-The later roboport decrease while robots fly cannot trigger duplicate work because the scheduling epoch is
-already closed.
-
-## Test 3: productivity progress survives transactions
-
-Keep `p0` on iron gears and install four normal productivity module 3s. Repeatedly run one-craft batches
-without changing the `p0_job_recipe` signal.
-
-Expected: the productivity bar survives across transactions. With +40% total productivity, it should
-accumulate across crafts and periodically produce an extra gear instead of resetting to zero after every
-job. This is the acceptance test for persistent recipe selection.
-
-If you deliberately change `p0_job_recipe`, losing the old recipe's partial productivity progress is
-expected and should later become part of the planner's recipe-switching cost.
-
-## Test 4: quality production
-
-Configure `q0` for one normal iron-gear craft and install four quality modules. Higher-quality modules make
-upgrades easier to observe.
-
-Run repeated single-craft batches, toggling `dispatch` low/high only after the previous transaction has
-fully cleared.
-
-Expected: most gears stay normal and occasional outputs have higher quality. Every dispatch still causes
-one physical craft; quality randomness changes the observed inventory, not the number of requested crafts.
-
-## Test 5: multi-ingredient assembler
-
-After the gear tests pass, wire the `missing_to_machine` filter circuit and choose any no-fluid recipe with
-at least two ingredient types. Set `job_request` to exactly one craft's ingredient vector and set
-`job_recipe` to that product.
-
-Watch the assembler Read-contents signals while the requester fills. Expected: each ingredient stops being
-fed exactly at its requested count; no ingredient is buffered for a second craft. When the last ingredient
-arrives, one craft starts and the local working gate closes the feeder.
-
-## Test 6: recycler, including zero output
-
-Put gears in the network and configure:
+With exactly two plates in the frozen stock snapshot:
 
 ```text
-r0_job_enable  = 1
-r0_job_request = one iron gear wheel at the exact quality to recycle
+p0 accepted = 1
+q0 accepted = 0
 ```
 
-Disable assembler jobs and dispatch one batch at a time.
+With four plates:
 
-Expected: one gear is consumed per transaction. A recycle may return zero, one, or more plates. Even a
-zero-output recycle completes because completion is driven by the latched recipe-finished signal rather
-than by observing an output item. With quality modules, returned plates can be upgraded.
+```text
+p0 accepted = 1
+q0 accepted = 1
+```
 
-## Test 7: all five workers
+Do not raise launch until these accepted values have settled. With four plates, raising launch should let
+p0 and q0 run concurrently.
 
-Give every worker an affordable candidate job and enough stock. Assert one dispatch.
+This is the primary multi-worker reservation and anti-oscillation test.
+
+## Test 4: productivity persistence
+
+Keep p0 on iron gears with productivity modules. Run repeated batches without changing job_recipe.
+
+Expected: partial productivity-bar progress survives between transactions and eventually produces bonus
+output. If it resets every batch, the assembler recipe wiring is wrong.
+
+## Test 5: quality production
+
+Configure q0 for one normal iron-gear craft with quality modules. Run repeated batches.
+
+Expected: each accepted batch causes exactly one craft; quality varies stochastically in real inventory.
+
+## Test 6: multi-ingredient recipe
+
+Add the `missing_to_machine` feeder circuit and choose a no-fluid recipe with at least two ingredient
+types. Set job_request to exactly one craft's ingredient vector.
+
+Expected: each ingredient lane stops being fed at its requested count, and only one craft starts.
+
+## Test 7: recycler
+
+Configure r0:
+
+```text
+job_enable  = 1
+job_request = one gear at the exact quality to recycle
+```
+
+Expected: one item is consumed per launched accepted batch. Zero-output recycle attempts still finish and
+acknowledge correctly.
+
+## Test 8: all five workers
+
+Give every worker an affordable request. Freeze the stock with dispatch, wait for the full chain to settle,
+then raise launch.
 
 Expected:
 
-- candidates are considered in `p0, p1, q0, q1, r0` order;
-- all affordable workers may execute concurrently;
-- no later candidate can spend stock already reserved earlier in the same batch;
-- no second scheduling epoch occurs until every worker is idle, every finish latch is clear, and
-  `dispatch` has gone low once.
+- reservation priority is p0, p1, q0, q1, r0;
+- each downstream cell sees upstream reservations already subtracted;
+- all accepted workers may run concurrently after launch;
+- holding launch high cannot repeat a worker;
+- lowering dispatch re-arms every worker for the next batch.
 
 ## Current boundary
 
-This validates the physical transaction contract needed by the mall: roboport snapshot input,
-requester-chest transport, fixed P/Q/R roles, same-batch reservations, exact one-craft feeding for ordinary
+This validates the physical transaction contract: frozen roboport stock, atomic chained reservations,
+requester-chest transport, fixed productivity/quality/recycler roles, exact one-craft feeding for ordinary
 no-fluid recipes, productivity-progress preservation, durable completion, and multi-worker operation
 without robot-flight feedback oscillation.
 
-The global material-efficiency planner in `planner.py` is still the Python reference oracle. The next
-controller milestone is to realize its decision rule (or a proved approximation) in circuit logic and feed
-these job ports automatically. The manual constants stand in for that planner in this acceptance test.
+The material-efficiency LP in `planner.py` is still the Python oracle. Job constant combinators stand in for
+the future circuit-side economic planner. The next milestone is to automate job selection and the
+`dispatch -> settle -> launch` handshake without reintroducing physically impossible open-vector fan-in.
