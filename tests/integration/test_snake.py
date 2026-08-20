@@ -141,6 +141,36 @@ def test_snake_stops_on_wall_collision() -> None:
     assert rows[8]["dead"] == 1
 
 
+def test_snake_detects_self_collision_with_packed_ttl_body() -> None:
+    def straight(direction: str, steps: int) -> list[dict[object, int]]:
+        return [_movement(**{direction: 1}), *({} for _ in range(steps - 1))]
+
+    # Visit the first four deterministic food cells, yielding a length-five snake. The final
+    # south/east/north hook attempts to enter a non-tail body pixel; the head therefore stays put
+    # and death latches. This exercises TTL aging, growth retention, tail expiry, and membership.
+    movements = [
+        *straight("E", 3),
+        *straight("S", 5),
+        *straight("W", 7),
+        *straight("N", 12),
+        *straight("E", 9),
+        *straight("S", 5),
+        *straight("W", 7),
+        _movement(S=1),
+        _movement(E=1),
+        _movement(N=1),
+    ]
+    rows = _simulate(movements)
+
+    assert (rows[47]["head_x"], rows[47]["head_y"]) == (6, 6)
+    assert rows[47]["score"] == 4
+    assert rows[47]["length"] == 5
+    assert rows[49]["dead"] == 0
+    assert (rows[49]["head_x"], rows[49]["head_y"]) == (7, 7)
+    assert rows[50]["dead"] == 1
+    assert (rows[50]["head_x"], rows[50]["head_y"]) == (7, 7)
+
+
 def test_reset_wins_over_movement_restores_initial_state_and_rearms_game() -> None:
     movements = [
         _movement(E=1),
@@ -211,17 +241,18 @@ def test_framebuffer_decoder_and_color_composition_are_cheaply_covered() -> None
     }
 
 
-def test_full_snake_build_contains_reset_framebuffer_and_pixel_history() -> None:
+def test_full_snake_build_contains_reset_framebuffer_and_packed_body_state() -> None:
     module = build_snake_circuit(render_framebuffer=True).build()
 
     assert [item.name for item in module.inputs] == ["reset"]
     assert [item.name for item in module.vector_inputs] == ["movement"]
     assert module.output.names[0] == "framebuffer"
     assert is_vector_value(module.output.values[0])
-    assert len(module.state_registers) == 37
-    assert {register.name for register in module.state_registers} >= {
-        f"body_pixel_{index}" for index in range(15)
-    }
+    assert len(module.state_registers) == 9
+    register_names = {register.name for register in module.state_registers}
+    assert {"body_ttl", "body_mask"} <= register_names
+    assert not any(name.startswith("body_pos_") for name in register_names)
+    assert not any(name.startswith("body_pixel_") for name in register_names)
     assert len(set(module.state_registers)) == len(module.state_registers)
 
 
