@@ -2,9 +2,9 @@
 
 The solver owns target timing: semantic operations do not arrive with precomputed physical latency
 windows. Each selected implementation candidate contributes its own input/output phase equations.
-The first milestone supports finite local candidates, free source reuse/observation, prefix-shared
-private exact transport, and a deliberately narrow zero-delay wire-sum candidate. Shared delay buses
-and other parameterized resource families are intentionally deferred.
+The current milestone supports finite local candidates, free source reuse/observation, prefix-shared
+private exact transport, a conservative zero-delay wire-sum candidate, and an optional shared scalar
+delay-bus resource whose membership and span are solved together with candidate phases.
 """
 
 from __future__ import annotations
@@ -13,7 +13,11 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any
 
+from factorio_circuit.ir.semantic import PayloadShape
+
 from .plan import (
+    DelayBusLane,
+    DelayBusResource,
     DeliveryKind,
     ExactLifetime,
     PlannedDelivery,
@@ -42,6 +46,26 @@ class MappingOptimizationResult:
         return self.status.upper() == "OPTIMAL"
 
 
+@dataclass(frozen=True, slots=True)
+class _LifetimeModel:
+    producer: int
+    shape: PayloadShape
+    start: Any
+    end: Any
+    length: Any
+    uses: tuple[MappingUse, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _DelayBusModel:
+    assignments: dict[tuple[int, int], Any]
+    active: tuple[Any, ...]
+    starts: tuple[Any, ...]
+    ends: tuple[Any, ...]
+    lifetimes: dict[int, _LifetimeModel]
+    transport_needed: dict[MappingUse, Any]
+
+
 def _load_cp_model() -> Any:
     try:
         return import_module("ortools.sat.python.cp_model")
@@ -56,20 +80,31 @@ def solve_mapping_problem(
     problem: MappingProblem,
     *,
     candidates: tuple[ImplementationCandidate, ...] | None = None,
+    max_delay_buses: int = 0,
+    delay_bus_capacity: int = 256,
     time_limit_seconds: float = 30.0,
     workers: int = 1,
 ) -> MappingOptimizationResult:
-    """Choose implementations and physical phases in one CP-SAT model.
+    """Choose implementations, phases, and optional shared delay buses in one CP-SAT model.
 
-    The objective is abstract implementation entities plus private exact-transport stages. Source
-    ``STABLE``/``OBSERVABLE`` windows are free through their last valid phase; later uses begin one
-    exact lifetime at that boundary. Operation outputs are conservatively EXACT in this milestone.
+    ``max_delay_buses=0`` preserves the original private-prefix objective. When buses are enabled,
+    scalar exact lifetimes of at least three ticks may be assigned to one isolated shared bus. Bus
+    membership, bus span, and computation phases are all variables in the same solve; there is no
+    fixed-placement transport optimization pass in front of this model.
     """
 
     if time_limit_seconds <= 0:
         raise ValueError("time_limit_seconds must be positive")
     if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
         raise ValueError("workers must be a positive integer")
+    if isinstance(max_delay_buses, bool) or not isinstance(max_delay_buses, int):
+        raise ValueError("max_delay_buses must be a non-negative integer")
+    if max_delay_buses < 0:
+        raise ValueError("max_delay_buses must be a non-negative integer")
+    if isinstance(delay_bus_capacity, bool) or not isinstance(delay_bus_capacity, int):
+        raise ValueError("delay_bus_capacity must be a positive integer")
+    if delay_bus_capacity < 1:
+        raise ValueError("delay_bus_capacity must be a positive integer")
 
     selected_candidates = candidates if candidates is not None else ordinary_candidates(problem)
     _validate_candidate_set(problem, selected_candidates)
@@ -121,10 +156,6 @@ def solve_mapping_problem(
                 model.Add(constraint).OnlyEnforceIf(choose[candidate.id])
 
             if candidate.kind is ImplementationKind.WIRE_SUM:
-                # The first physical wire-sum realization is deliberately strict: both producer
-                # output connectors themselves drive the same carrier on the same physical tick.
-                # Later contribution-port/resource modeling may allow a preceding transport stage
-                # to join the aggregation network instead.
                 for producer in operation.operands:
                     if producer not in operations:
                         raise MappingProblemError(
@@ -134,41 +165,35 @@ def solve_mapping_problem(
                         choose[candidate.id]
                     )
 
-    outgoing: dict[int, list[Any]] = {item: [] for item in problem.value_ids}
+    outgoing: dict[int, list[MappingUse]] = {item: [] for item in problem.value_ids}
     for use in problem.uses():
         phase = use_phase[use]
-        outgoing[use.producer].append(phase)
+        outgoing[use.producer].append(use)
         if use.producer in operations:
             model.Add(phase >= output_phase[use.producer])
         else:
             model.Add(phase >= sources[use.producer].start_phase)
 
-    lifetime_lengths: list[Any] = []
-    for operation in problem.operations:
-        uses = outgoing[operation.id]
-        end = model.NewIntVar(0, problem.horizon, f"mapping_exact_end_{operation.id}")
-        model.AddMaxEquality(end, [output_phase[operation.id], *uses])
-        length = model.NewIntVar(0, problem.horizon, f"mapping_exact_length_{operation.id}")
-        model.Add(length == end - output_phase[operation.id])
-        lifetime_lengths.append(length)
-
-    for source in problem.sources:
-        anchor = transport_anchor(source)
-        if anchor is None:
-            continue
-        uses = outgoing[source.id]
-        if not uses:
-            continue
-        end = model.NewIntVar(anchor, problem.horizon, f"mapping_source_end_{source.id}")
-        model.AddMaxEquality(end, [model.NewConstant(anchor), *uses])
-        length = model.NewIntVar(0, problem.horizon, f"mapping_source_length_{source.id}")
-        model.Add(length == end - anchor)
-        lifetime_lengths.append(length)
+    lifetimes = _build_lifetime_models(
+        model,
+        problem,
+        output_phase,
+        use_phase,
+        outgoing,
+    )
+    bus_model, transport_terms = _add_delay_bus_model(
+        model,
+        problem,
+        lifetimes,
+        use_phase,
+        max_delay_buses=max_delay_buses,
+        delay_bus_capacity=delay_bus_capacity,
+    )
 
     entity_terms = [
         candidate.entity_cost * choose[candidate.id] for candidate in selected_candidates
     ]
-    model.Minimize(sum(entity_terms) + sum(lifetime_lengths))
+    model.Minimize(sum(entity_terms) + sum(transport_terms))
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(time_limit_seconds)
@@ -184,6 +209,7 @@ def solve_mapping_problem(
         choose,
         output_phase,
         use_phase,
+        bus_model,
         solver,
     )
     validate_realization_plan(problem, selected_candidates, plan)
@@ -192,6 +218,178 @@ def solve_mapping_problem(
         plan=plan,
         wall_time_seconds=float(solver.WallTime()),
     )
+
+
+def _build_lifetime_models(
+    model: Any,
+    problem: MappingProblem,
+    output_phase: dict[int, Any],
+    use_phase: dict[MappingUse, Any],
+    outgoing: dict[int, list[MappingUse]],
+) -> dict[int, _LifetimeModel]:
+    lifetimes: dict[int, _LifetimeModel] = {}
+
+    for operation in problem.operations:
+        uses = tuple(outgoing[operation.id])
+        end = model.NewIntVar(0, problem.horizon, f"mapping_exact_end_{operation.id}")
+        model.AddMaxEquality(
+            end,
+            [output_phase[operation.id], *(use_phase[use] for use in uses)],
+        )
+        length = model.NewIntVar(0, problem.horizon, f"mapping_exact_length_{operation.id}")
+        model.Add(length == end - output_phase[operation.id])
+        lifetimes[operation.id] = _LifetimeModel(
+            producer=operation.id,
+            shape=operation.shape,
+            start=output_phase[operation.id],
+            end=end,
+            length=length,
+            uses=uses,
+        )
+
+    for source in problem.sources:
+        anchor = transport_anchor(source)
+        uses = tuple(outgoing[source.id])
+        if anchor is None or not uses:
+            continue
+        end = model.NewIntVar(anchor, problem.horizon, f"mapping_source_end_{source.id}")
+        model.AddMaxEquality(end, [model.NewConstant(anchor), *(use_phase[use] for use in uses)])
+        length = model.NewIntVar(0, problem.horizon, f"mapping_source_length_{source.id}")
+        model.Add(length == end - anchor)
+        lifetimes[source.id] = _LifetimeModel(
+            producer=source.id,
+            shape=source.shape,
+            start=model.NewConstant(anchor),
+            end=end,
+            length=length,
+            uses=uses,
+        )
+
+    return lifetimes
+
+
+def _add_delay_bus_model(
+    model: Any,
+    problem: MappingProblem,
+    lifetimes: dict[int, _LifetimeModel],
+    use_phase: dict[MappingUse, Any],
+    *,
+    max_delay_buses: int,
+    delay_bus_capacity: int,
+) -> tuple[_DelayBusModel | None, list[Any]]:
+    scalar = tuple(
+        lifetime for lifetime in lifetimes.values() if lifetime.shape is PayloadShape.SCALAR
+    )
+    bus_count = min(max_delay_buses, len(scalar) // 2)
+    if bus_count == 0:
+        return None, [lifetime.length for lifetime in lifetimes.values()]
+
+    transport_needed: dict[MappingUse, Any] = {}
+    for lifetime in lifetimes.values():
+        for use in lifetime.uses:
+            needed = model.NewBoolVar(
+                f"mapping_transport_needed_{use.producer}_{use.consumer}_{use.operand_index}"
+            )
+            model.Add(use_phase[use] >= lifetime.start + 1).OnlyEnforceIf(needed)
+            model.Add(use_phase[use] <= lifetime.start).OnlyEnforceIf(needed.Not())
+            transport_needed[use] = needed
+
+    assignments: dict[tuple[int, int], Any] = {}
+    private_costs: list[Any] = []
+    interface_terms: list[Any] = []
+
+    for lifetime in scalar:
+        private = model.NewBoolVar(f"mapping_private_{lifetime.producer}")
+        row = []
+        for bus in range(bus_count):
+            assigned = model.NewBoolVar(f"mapping_bus_{bus}_producer_{lifetime.producer}")
+            assignments[(lifetime.producer, bus)] = assigned
+            row.append(assigned)
+            model.Add(lifetime.length >= 3).OnlyEnforceIf(assigned)
+            interface_terms.append(assigned)
+            for use in lifetime.uses:
+                both = model.NewBoolVar(
+                    f"mapping_bus_{bus}_use_{use.producer}_{use.consumer}_{use.operand_index}"
+                )
+                model.AddMultiplicationEquality(
+                    both,
+                    [assigned, transport_needed[use]],
+                )
+                interface_terms.append(both)
+        model.Add(private + sum(row) == 1)
+        private_cost = model.NewIntVar(
+            0,
+            problem.horizon,
+            f"mapping_private_cost_{lifetime.producer}",
+        )
+        model.Add(private_cost == lifetime.length).OnlyEnforceIf(private)
+        model.Add(private_cost == 0).OnlyEnforceIf(private.Not())
+        private_costs.append(private_cost)
+
+    active_vars: list[Any] = []
+    start_vars: list[Any] = []
+    end_vars: list[Any] = []
+    span_vars: list[Any] = []
+    sentinel = problem.horizon + 1
+
+    for bus in range(bus_count):
+        column = [assignments[(lifetime.producer, bus)] for lifetime in scalar]
+        active = model.NewBoolVar(f"mapping_bus_{bus}_active")
+        model.AddMaxEquality(active, column)
+        model.Add(sum(column) >= 2).OnlyEnforceIf(active)
+        model.Add(sum(column) == 0).OnlyEnforceIf(active.Not())
+        model.Add(sum(column) <= delay_bus_capacity)
+        active_vars.append(active)
+
+        start_candidates = []
+        end_candidates = []
+        for lifetime in scalar:
+            assigned = assignments[(lifetime.producer, bus)]
+            start_candidate = model.NewIntVar(
+                0,
+                sentinel,
+                f"mapping_bus_{bus}_start_{lifetime.producer}",
+            )
+            end_candidate = model.NewIntVar(
+                0,
+                problem.horizon,
+                f"mapping_bus_{bus}_end_{lifetime.producer}",
+            )
+            model.Add(start_candidate == lifetime.start + 1).OnlyEnforceIf(assigned)
+            model.Add(start_candidate == sentinel).OnlyEnforceIf(assigned.Not())
+            model.Add(end_candidate == lifetime.end - 1).OnlyEnforceIf(assigned)
+            model.Add(end_candidate == 0).OnlyEnforceIf(assigned.Not())
+            start_candidates.append(start_candidate)
+            end_candidates.append(end_candidate)
+
+        start = model.NewIntVar(0, sentinel, f"mapping_bus_{bus}_start")
+        end = model.NewIntVar(0, problem.horizon, f"mapping_bus_{bus}_end")
+        span = model.NewIntVar(0, problem.horizon, f"mapping_bus_{bus}_span")
+        model.AddMinEquality(start, start_candidates)
+        model.AddMaxEquality(end, end_candidates)
+        model.Add(span == end - start).OnlyEnforceIf(active)
+        model.Add(span == 0).OnlyEnforceIf(active.Not())
+        start_vars.append(start)
+        end_vars.append(end)
+        span_vars.append(span)
+
+    for bus in range(bus_count - 1):
+        model.Add(active_vars[bus] >= active_vars[bus + 1])
+
+    non_scalar_terms = [
+        lifetime.length
+        for lifetime in lifetimes.values()
+        if lifetime.shape is not PayloadShape.SCALAR
+    ]
+    model_data = _DelayBusModel(
+        assignments=assignments,
+        active=tuple(active_vars),
+        starts=tuple(start_vars),
+        ends=tuple(end_vars),
+        lifetimes=lifetimes,
+        transport_needed=transport_needed,
+    )
+    return model_data, [*private_costs, *interface_terms, *span_vars, *non_scalar_terms]
 
 
 def _validate_candidate_set(
@@ -240,6 +438,7 @@ def _extract_plan(
     choose: dict[int, Any],
     output_phase: dict[int, Any],
     use_phase: dict[MappingUse, Any],
+    bus_model: _DelayBusModel | None,
     solver: Any,
 ) -> RealizationPlan:
     realizations: list[SelectedRealization] = []
@@ -264,6 +463,12 @@ def _extract_plan(
             )
         )
 
+    assigned_bus: dict[int, int] = {}
+    if bus_model is not None:
+        for (producer, bus), variable in bus_model.assignments.items():
+            if solver.BooleanValue(variable):
+                assigned_bus[producer] = bus
+
     operations = {item.id: item for item in problem.operations}
     sources = {item.id: item for item in problem.sources}
     deliveries: list[PlannedDelivery] = []
@@ -281,6 +486,9 @@ def _extract_plan(
                 transport_start = start
         else:
             kind, transport_start = source_delivery_kind(sources[use.producer], phase)
+
+        if transport_start is not None and use.producer in assigned_bus:
+            kind = DeliveryKind.BUS_TRANSPORT
 
         deliveries.append(
             PlannedDelivery(
@@ -320,8 +528,49 @@ def _extract_plan(
         for operation in problem.operations
         if selected_by_operation[operation.id].kind is ImplementationKind.WIRE_SUM
     )
+
+    delay_buses: list[DelayBusResource] = []
+    if bus_model is not None:
+        for bus, active in enumerate(bus_model.active):
+            if not solver.BooleanValue(active):
+                continue
+            lanes = []
+            for producer, assigned in sorted(assigned_bus.items()):
+                if assigned != bus:
+                    continue
+                lifetime = bus_model.lifetimes[producer]
+                delivery_phases = tuple(
+                    delivery.phase
+                    for delivery in deliveries
+                    if delivery.producer == producer
+                    and delivery.kind is DeliveryKind.BUS_TRANSPORT
+                )
+                lanes.append(
+                    DelayBusLane(
+                        producer=producer,
+                        start_phase=int(solver.Value(lifetime.start)),
+                        end_phase=int(solver.Value(lifetime.end)),
+                        delivery_phases=delivery_phases,
+                    )
+                )
+            delay_buses.append(
+                DelayBusResource(
+                    index=bus,
+                    middle_start_phase=int(solver.Value(bus_model.starts[bus])),
+                    middle_end_phase=int(solver.Value(bus_model.ends[bus])),
+                    lanes=tuple(lanes),
+                )
+            )
+
     entity_cost = sum(item.entity_cost for item in realizations)
-    transport_cost = sum(item.length for item in exact_lifetimes)
+    bus_producers = set(assigned_bus)
+    private_transport_cost = sum(
+        item.length for item in exact_lifetimes if item.producer not in bus_producers
+    )
+    bus_transport_cost = sum(
+        bus.middle_stages + bus.interface_combinators for bus in delay_buses
+    )
+    transport_cost = private_transport_cost + bus_transport_cost
     return RealizationPlan(
         realizations=tuple(sorted(realizations, key=lambda item: item.operation)),
         deliveries=tuple(
@@ -338,4 +587,5 @@ def _extract_plan(
         wire_sums=wire_sums,
         entity_cost=entity_cost,
         transport_cost=transport_cost,
+        delay_buses=tuple(delay_buses),
     )
