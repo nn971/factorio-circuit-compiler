@@ -25,6 +25,7 @@ check. Full framebuffer/state semantic simulation is an explicit benchmark accep
 - `semantic_acceptance.py` — opt-in full framebuffer/state semantic acceptance checks.
 - `generate.py` — heavyweight compile/blueprint runner with selectable layout strategies.
 - `census.py` — pre-synthesis Abstract Physical IR census runner, including residual delay-graph analysis.
+- `analyze_mapping.py` — implementation-neutral periodic output-cone technology-mapping diagnostic.
 - `baselines.json` — machine-readable, in-game-validated milestone measurements.
 - `README.md` — benchmark contract and manual acceptance procedure.
 
@@ -54,6 +55,23 @@ For lowering/synthesis changes, use the census before paying for placement/routi
 ```bash
 uv run python -m benchmarks.snake.census --deep-delays
 ```
+
+For temporal-technology-mapping work, the post-update output cone can be analyzed without changing
+the production compiler path. Supply the logical period explicitly. The current accepted benchmark
+period is 60 ticks, so this is the canonical comparison command:
+
+```bash
+uv run --with 'ortools>=9.14,<10' \
+  python -m benchmarks.snake.analyze_mapping \
+  --period 60 \
+  --compare-private
+```
+
+`analyze_mapping` does not call the established state-timing analyzer. The supplied period is a
+throughput constraint only: offset-one state reads become stable sources on `[60, 120)`, outputs are
+demanded at tick 119, and the joint mapper chooses all combinational phases itself. It currently maps
+only the post-update output/rendering cone, not state-transition hardware, so its result is diagnostic
+rather than an accepted replacement blueprint.
 
 Only use the full blueprint build when the change needs whole-compiler/layout acceptance:
 
