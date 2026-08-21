@@ -1,7 +1,7 @@
 """Target implementation candidates for the joint temporal technology mapper.
 
-The implementation-neutral problem deliberately carries no Factorio latency.  Candidate templates
-own the timing equations and implementation cost.  The first milestone registers only the ordinary
+The implementation-neutral problem deliberately carries no Factorio latency. Candidate templates
+own the timing equations and implementation cost. The first milestone registers only the ordinary
 Factorio implementations; later milestones can add zero-delay wire aggregation, fusion,
 rematerialization, buses, and reusable functional units without changing semantic causality.
 """
@@ -20,6 +20,7 @@ from factorio_circuit.ir.semantic import (
     VectorFilter,
     VectorScalarOp,
     VectorSelect,
+    VectorSignal,
 )
 
 from .problem import MappingOperation, MappingProblem, MappingProblemError
@@ -28,7 +29,7 @@ from .problem import MappingOperation, MappingProblem, MappingProblemError
 class CandidateOutputMode(StrEnum):
     """Availability exported by one selected physical realization.
 
-    The initial ordinary implementation family is conservatively EXACT.  Keeping the contract on
+    The initial ordinary implementation family is conservatively EXACT. Keeping the contract on
     the candidate makes later observability-preserving or stable implementations an implementation
     choice rather than an upstream timing assumption.
     """
@@ -43,7 +44,7 @@ class ImplementationCandidate:
     """One finite implementation alternative for one semantic operation.
 
     ``input_phase_offsets[i]`` is added to the chosen output phase to obtain the required physical
-    phase of semantic operand ``i``.  Ordinary Factorio combinators therefore use negative offsets;
+    phase of semantic operand ``i``. Ordinary Factorio combinators therefore use negative offsets;
     a future zero-delay wire aggregation candidate will use zero offsets.
     """
 
@@ -57,11 +58,18 @@ class ImplementationCandidate:
     def __post_init__(self) -> None:
         if isinstance(self.id, bool) or not isinstance(self.id, int) or self.id <= 0:
             raise MappingProblemError("candidate id must be a positive integer")
-        if isinstance(self.operation, bool) or not isinstance(self.operation, int) or self.operation <= 0:
+        if (
+            isinstance(self.operation, bool)
+            or not isinstance(self.operation, int)
+            or self.operation <= 0
+        ):
             raise MappingProblemError("candidate operation id must be a positive integer")
         if not self.name:
             raise MappingProblemError("candidate name must be non-empty")
-        if any(isinstance(item, bool) or not isinstance(item, int) for item in self.input_phase_offsets):
+        if any(
+            isinstance(item, bool) or not isinstance(item, int)
+            for item in self.input_phase_offsets
+        ):
             raise MappingProblemError("candidate input phase offsets must be integers")
         if any(item > 0 for item in self.input_phase_offsets):
             raise MappingProblemError("candidate cannot require an input after its output phase")
@@ -73,12 +81,17 @@ class ImplementationCandidate:
             raise MappingProblemError("candidate output mode must be a CandidateOutputMode")
 
 
-def ordinary_candidate(operation: MappingOperation, *, candidate_id: int) -> ImplementationCandidate:
+def ordinary_candidate(
+    operation: MappingOperation,
+    *,
+    candidate_id: int,
+) -> ImplementationCandidate:
     """Return the current ordinary Factorio realization of one semantic operation."""
 
     semantic = operation.semantic
     offsets: tuple[int, ...]
     name: str
+    entity_cost = 1
 
     if isinstance(semantic, BinaryOp):
         latency = FACTORIO_LATENCY.operation_latency("scalar_binary", semantic.op)
@@ -89,10 +102,17 @@ def ordinary_candidate(operation: MappingOperation, *, candidate_id: int) -> Imp
         offsets = (-latency, -latency)
         name = f"ordinary compare {semantic.op}"
     elif isinstance(semantic, Select):
-        condition_latency = FACTORIO_LATENCY.operation_latency("select_condition", semantic.name)
+        condition_latency = FACTORIO_LATENCY.operation_latency(
+            "select_condition",
+            semantic.name,
+        )
         data_latency = FACTORIO_LATENCY.operation_latency("select_data", semantic.name)
         offsets = (-condition_latency, -data_latency, -data_latency)
         name = "ordinary select"
+    elif isinstance(semantic, VectorSignal):
+        offsets = (0,)
+        name = "ordinary vector lane view"
+        entity_cost = 0
     elif isinstance(semantic, VectorBinaryOp):
         latency = FACTORIO_LATENCY.operation_latency("vector_binary", semantic.op)
         offsets = (-latency, -latency)
@@ -124,7 +144,7 @@ def ordinary_candidate(operation: MappingOperation, *, candidate_id: int) -> Imp
         operation=operation.id,
         name=name,
         input_phase_offsets=offsets,
-        entity_cost=1,
+        entity_cost=entity_cost,
     )
 
 
