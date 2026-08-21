@@ -1,12 +1,10 @@
 # Temporal technology mapping
 
 This document defines the architectural boundary for target-aware temporal implementation choices.
-It is intentionally separate from the canonical compiler pipeline while the new mapper is being
-validated against the established Level/Snake lowering path.
+The new mapper remains separate from the canonical compiler route while it is validated against the
+established Level/Snake lowering path.
 
 ## Boundary
-
-The mapper sits after canonical semantic IR and before Abstract Physical IR:
 
 ```text
 canonical CircuitModule
@@ -18,69 +16,111 @@ canonical CircuitModule
     -> signal/wire/layout synthesis
 ```
 
-The semantic IR answers **what the circuit means**. The mapper answers **which Factorio mechanisms,
-physical phases, and shared resources implement that meaning**. Abstract Physical IR records the
-chosen combinator/connectivity topology while still leaving concrete signal identities, red/green
-wire assignment, placement, and routing unresolved.
+Semantic IR answers **what the circuit means**. The mapper answers **which Factorio mechanisms,
+physical phases, and shared resources implement it**. Abstract Physical IR records chosen target
+topology while still leaving concrete signal identities, red/green assignment, placement, and
+routing unresolved.
 
 ### Hard upstream rule
 
-No implementation-dependent latency may be promoted into the implementation-neutral problem.
-Upstream constraints may express logical occurrence order, structural clocks, state boundaries,
-external availability contracts, and other facts true for every legal implementation. They may not
-say that a semantic `BinaryOp`, `Select`, or other recipe necessarily takes the latency of the
-current ordinary lowerer.
+No implementation-dependent latency may become an unconditional mapping constraint.
 
-Candidate timing is conditional on the selected implementation. A one-stage arithmetic candidate
-may require operands at `p-1`; a zero-delay wire aggregation candidate may require its contributors
-at `p`; a future fused candidate may eliminate an intermediate physical value entirely.
+Upstream information may contain logical occurrence order, structural clocks, externally prescribed
+throughput/period constraints, and source contracts that are true independently of a chosen target
+implementation. It may not assert that a semantic `BinaryOp`, `Select`, state register, or other
+recipe necessarily has the latency/phase of the current ordinary lowerer.
+
+Candidate timing is conditional on implementation selection. For example:
+
+```text
+ordinary arithmetic     requires operands at p-1, produces at p
+zero-delay wire sum     requires contributors at p, produces at p
+future fused candidate  may eliminate an intermediate physical value
+future state cell       owns its read/write port phases relative to occurrences
+```
 
 ## Mapping problem
 
-`mapping/problem.py` contains semantic recipes and demands:
+`mapping/problem.py` contains implementation-neutral records:
 
 ```text
 MappingSource
-    semantic leaf + source availability contract
+    fixed semantic leaf + externally valid availability contract
+
+MappingStateRead
+    register identity + logical occurrence; physical read phase unresolved
 
 MappingOperation
     semantic recipe + operand value ids
 
 MappingSink
-    fixed external demand for one semantic value
+    externally fixed demand for one semantic value
+
+MappingStateTransition
+    register/kind/occurrence + value/control ids; physical write phase unresolved
 
 MappingUse
-    producer/consumer relation before delivery is chosen
+    physically timed producer/consumer relation for the currently supported solver subset
 ```
 
-`MappingProblem` contains no Factorio combinator latency. `MappingSource.semantic` and
-`MappingOperation.semantic` retain provenance back to canonical IR so deterministic physical
-lowering never has to reconstruct semantic identity from labels.
+`MappingSource.semantic`, `MappingStateRead.semantic`, `MappingOperation.semantic`, and
+`MappingStateTransition.semantic` preserve canonical-IR provenance. No concrete Factorio signal,
+wire color, placement, or route appears here.
+
+### Stateless extraction
 
 `build_stateless_level_mapping_problem` handles one stateless Level occurrence with caller-supplied
-output phases. It does not import periodic state windows from the established state-timing pass,
-because those windows already reflect one physical implementation family.
+output phases. Target operation latency is not inferred during extraction; ordinary latency first
+appears when implementation candidates are generated.
 
-`build_periodic_level_mapping_problem` is the first state-aware neutral extension. The caller supplies
-a logical period `P` as a throughput/occurrence contract. A register read at logical offset `k` is a
-stable semantic source on
+### Periodic output-cone diagnostic
+
+`build_periodic_level_mapping_problem` is deliberately a **boundary abstraction**, not the final
+recurrence IR. The caller supplies a logical period `P`. A register occurrence at logical offset `k`
+is externalized as a stable source on
 
 ```text
 [kP, (k+1)P)
 ```
 
-and a sampled external Level occurrence uses the corresponding window. This does **not** import
-`StateTimingPlan.state_phase`, `transition_input_phase`, or old ordinary-combinator depth. Target
-latency still first appears in implementation candidates.
+and the extractor walks only values reachable from module outputs. State-transition value/control
+cones are not pulled in merely because they exist.
 
-The first periodic extractor intentionally walks only values reachable from module outputs. Merely
-having a state transition in the module does not pull its value/control cone into the mapping problem.
-Consequently it can already represent post-update rendering/output cones, including Snake's
-post-`Circuit.step(1)` output cone, while treating each logical register occurrence as a semantic
-boundary source. Physical state-transition/storage implementation remains a later mapping milestone.
+This is useful for questions such as:
 
-Negative logical offsets are not normalized yet; the first periodic extractor requires non-negative
-register/input-sample offsets.
+> Given an already prescribed logical cadence, how should the post-update rendering/output cone be
+> scheduled and transported?
+
+It is especially useful for Snake's outputs after `Circuit.step(1)`. It does **not** claim that every
+possible physical state-cell implementation exposes its read port exactly at `kP`; that assumption is
+only part of this diagnostic boundary abstraction.
+
+### Full periodic recurrence extraction
+
+`build_periodic_state_mapping_problem` is the phase-neutral recurrence representation. It traverses
+both module outputs and every canonical periodic `StateTransition` value/control cone.
+
+Register occurrences become `MappingStateRead` records containing register identity and logical
+offset but **no** `start_phase` or availability window. State transitions become
+`MappingStateTransition` records containing their semantic update obligation but **no** physical
+consume/write phase.
+
+Therefore this full problem does not import any of:
+
+```text
+StateTimingPlan.state_phase
+StateTimingPlan.transition_input_phase
+ordinary state-lowering combinator depth
+```
+
+A future state-cell candidate must provide those physical port timing equations. Until that exists,
+`MappingProblem.uses()` intentionally rejects a problem containing unresolved state reads or state
+transitions. The current joint solver consequently fails loudly instead of silently inventing a state
+ABI.
+
+The first periodic extractors still require non-negative sampled-input offsets when they must map an
+external observation onto a non-negative physical horizon. Phase-neutral `MappingStateRead` itself
+preserves the canonical logical offset without assigning a physical phase.
 
 ## Finite implementation candidates
 
@@ -89,24 +129,23 @@ register/input-sample offsets.
 ```text
 semantic operation covered
 implementation kind
-input phase offsets relative to its output
+input phase offsets relative to output
 abstract implementation entity cost
 output availability mode
 ```
 
-Exactly one finite candidate is selected for each first-milestone semantic operation. This
-one-operation/one-realization restriction is temporary: future fusion and rematerialization will
-allow one candidate to cover several semantic recipes or several physical realizations of one
-semantic recipe.
+Ordinary candidates deliberately own `FACTORIO_LATENCY`. This is the boundary test: target latency
+first appears when an implementation alternative is introduced, not while semantic causality is
+extracted.
 
-The ordinary candidates deliberately own `FACTORIO_LATENCY`. This is the key boundary test: target
-latency first appears when an implementation alternative is introduced, not when semantic causality
-is extracted.
+Exactly one finite candidate is currently selected for each mapped semantic operation. This is a
+milestone restriction; fusion/rematerialization will eventually allow one candidate to cover several
+semantic recipes or multiple physical realizations of one semantic recipe.
 
 ## Joint solver
 
-`mapping/solver.py` chooses finite candidates, physical phases, exact lifetimes, and optional shared
-delay-bus membership in one CP-SAT model. With buses disabled, the objective is:
+`mapping/solver.py` jointly chooses finite candidates, physical phases, exact lifetimes, and optional
+shared delay-bus membership. With buses disabled, the objective is:
 
 ```text
 selected implementation entity cost
@@ -114,20 +153,21 @@ selected implementation entity cost
 ```
 
 Sources may be `STABLE`, `OBSERVABLE`, or `EXACT`. A free source use remains a delivery decision in
-the same solve; only the residual part after the last free phase becomes exact transport.
+the same solve; only the residual interval after its last free phase becomes exact transport.
 
-There is deliberately no global ASAP or ALAP mode. ASAP, ALAP, and interior placements are all
-possible solutions of the same model.
+There is no global ASAP or ALAP policy. ASAP, ALAP, and interior placements are all possible optima of
+the same model.
 
-### Joint delay-bus resource
+Full stateful mapping is intentionally not accepted by the current solver. Its read/write phases are
+unresolved until state-cell candidates are introduced.
+
+## Joint delay-bus resource
 
 `solve_mapping_problem(..., max_delay_buses=N)` enables the first parameterized shared-resource
-family. Unlike the established `analysis/transport_optimize.py` path, this bus is **not** optimized
-after a fixed placement. Its lane starts, ends, membership, and shared middle span are expressions of
-the same phase variables used by candidate selection.
+family. Unlike the established fixed-placement transport optimizer, bus membership and bus span are
+variables in the same solve as computation phases.
 
-For a selected scalar exact lifetime `s -> t`, the first model uses the already validated isolated
-Factorio topology:
+For one selected scalar exact lifetime:
 
 ```text
 semantic producer
@@ -136,20 +176,14 @@ semantic producer
     -> signal-specific +0 egress           one per transported semantic use
 ```
 
-A lane can join a bus only when its exact lifetime has length at least three ticks. A bus must have at
-least two lanes. The bus middle is continuous from
+A lane may join a bus only when its exact lifetime has length at least three ticks. A selected bus has
+at least two lanes. Its continuous middle is
 
 ```text
-min(lane.start + 1)
+[min(lane.start + 1), max(lane.end - 1))
 ```
 
-to
-
-```text
-max(lane.end - 1)
-```
-
-and its objective cost is
+and its charged cost is
 
 ```text
 continuous middle stages
@@ -157,74 +191,59 @@ continuous middle stages
 + one isolated interface per transported semantic use
 ```
 
-The first joint model deliberately charges one egress/interface per semantic use even when two uses
-happen at the same phase. This keeps CP-SAT cost and emitted hardware exactly one-to-one. Equal-phase
-egress coalescing is a future explicit sharing optimization rather than an accidental discrepancy
-between plan and lowering.
-
-`max_delay_buses=0` remains the default, so introducing the resource family does not change existing
-mapping results unless it is explicitly enabled. `delay_bus_capacity` bounds the number of scalar
-lanes on each bus.
+`max_delay_buses=0` remains the default, preserving prior mapper behavior unless shared buses are
+explicitly enabled. `delay_bus_capacity` conservatively bounds persistent scalar lanes on a bus.
 
 ### Fixed-placement parity checkpoint
 
-`tests/mapping/test_delay_bus_parity.py` projects controlled exact lifetimes into both the joint mapper
-and the established fixed-placement `optimize_exact_transports` model. With fixed source/sink phases
-and unique physical tap phases, the two optimizers must agree on:
+`tests/mapping/test_delay_bus_parity.py` projects controlled fixed exact lifetimes into both:
 
 ```text
-objective combinator cost
-bus/private partition
-continuous bus middle span
-assigned producer lanes
+new joint mapper
+established analysis/transport_optimize.py model
 ```
 
-The tests include a mixed case where a short exact lifetime remains private while longer lifetimes
-share a bus, and a staggered-start case.
+For cases with unique physical tap phases, they must agree on objective combinator cost, bus/private
+partition, middle span, and assigned producer lanes. The tests include a short lifetime that remains
+private and a staggered-start case.
 
-There is one deliberately documented non-parity case. The established fixed-placement optimizer
-coalesces multiple semantic consumers on the same physical tap phase, whereas the first joint mapper
-charges/lowers one isolated interface per semantic use. A dedicated regression records that cost
-difference so it cannot be mistaken for a solver error. Joint equal-phase egress coalescing should be
-introduced as an explicit resource-sharing feature later.
+One difference is currently deliberate. The old fixed-placement optimizer coalesces multiple
+consumers on the same physical tap phase; the joint mapper charges/lowers one isolated interface per
+semantic use. A dedicated regression records this mismatch. Equal-phase egress coalescing should be
+added later as an explicit sharing mechanism rather than hidden in extraction.
 
 ## Realization plan
 
-`mapping/plan.py` is the target-aware boundary immediately before mapped physical lowering. It
-records:
+`mapping/plan.py` is the target-aware boundary immediately before mapped physical lowering:
 
 ```text
 SelectedRealization
-    candidate + output phase for one selected implementation
+    candidate + output phase
 
 PlannedDelivery
     reuse / observe-at / private exact transport / bus exact transport
 
 ExactLifetime
-    one semantic exact token lifetime before its physical transport is chosen
+    semantic exact-token lifetime before transport realization
 
 WireSumResource
-    one selected intentional same-carrier aggregation network
+    intentional same-carrier aggregation network
 
 DelayBusResource
-    one continuous shared Each trunk plus its isolated scalar lanes
+    continuous shared Each trunk + isolated scalar lanes
 ```
 
 A plan does not assign concrete Factorio signal names, red/green colors, entity coordinates, or wire
-routes. Those remain synthesis/layout decisions.
+routes.
 
 `mapping/validate.py` independently rechecks semantic coverage, candidate timing equations,
-availability/delivery classification, exact lifetimes, explicit shared-resource contracts, and plan
-costs. For buses it verifies that lane spans reproduce exact lifetimes, every `BUS_TRANSPORT` use
-belongs to exactly one lane, the selected middle span agrees with its lanes, and reported transport
-cost equals private lifetime cost plus bus middle/interface cost.
+availability/delivery classification, exact lifetimes, shared-resource contracts, and costs. For buses
+it verifies lane/lifetime agreement, `BUS_TRANSPORT` ownership, middle span, and private+bus transport
+cost.
 
-Physical lowering must consume a validated plan rather than silently repairing it.
+## Zero-delay wire sum
 
-## First non-ordinary implementation: zero-delay wire sum
-
-Factorio circuit networks add contributions carrying the same signal on one electrical network. The
-first `WIRE_SUM` candidate uses that target behavior for a semantic scalar addition:
+The first non-ordinary finite candidate uses Factorio network summation:
 
 ```text
 producer A output: S = a --\
@@ -232,21 +251,19 @@ producer A output: S = a --\
 producer B output: S = b --/
 ```
 
-No arithmetic combinator represents the semantic `+`, so it adds no combinator phase delay.
+No arithmetic combinator represents the semantic `+`, so the candidate adds zero combinator latency
+and zero entity cost.
 
-The initial candidate is intentionally conservative:
+The first candidate remains conservative:
 
-- both summands must be physical operation results;
-- each summand result must have exactly one semantic use;
-- both producer realizations must output on the wire-sum phase;
-- the mapped lowerer gives both output connectors one shared abstract signal and one shared abstract
-  net.
+- both summands are operation results;
+- each result has exactly one semantic use;
+- neither contributor is another semantic addition;
+- both contributor outputs occur on the wire-sum phase.
 
-These restrictions avoid pretending that connector-channel/red-green resource allocation is already
-modeled. A later `WireAggregationResource` can relax them by explicitly accounting for contribution
-ports and connector capacity.
+A later n-way aggregation resource can relax these restrictions explicitly.
 
-## Current mapped physical lowering scope
+## Current mapped physical lowering
 
 `lower_stateless_mapping_plan` currently lowers the validated scalar subset:
 
@@ -262,25 +279,25 @@ isolated shared scalar delay buses
 
 Mapped bus lowering keeps late physical choices unresolved:
 
-- ingress and egress copies receive fresh abstract signal lanes;
+- ingress/egress copies receive fresh abstract lanes;
 - trunk stages use `Each + 0 -> Each`;
-- lanes coexisting on a trunk net receive explicit `SignalConflict` constraints;
-- concrete signal identities and red/green wire colors remain physical-synthesis decisions;
-- every selected continuous middle stage is materialized even if individual lane intervals are
-  temporally disjoint, so the physical combinator count matches the solver's charged span.
+- coexisting trunk lanes receive explicit `SignalConflict`s;
+- concrete signals and red/green colors remain synthesis decisions;
+- the entire selected continuous middle span is materialized, even for temporally disjoint lane
+  intervals, so emitted combinator count matches the solver objective exactly.
 
-The periodic occurrence extractor may produce vector operations and register-read sources; those are
-currently solver/analysis inputs only. `lower_stateless_mapping_plan` has not yet been generalized to
-periodic state or vector physical lowering.
+The periodic extractors may contain vector operations and state records, but mapped physical lowering
+has not yet been generalized to them. The existing production Level/Event/Snake routes remain
+unchanged.
 
-This path is still not wired into `compile_circuit()`. The existing Level/Event lowering routes and
-the in-game-validated Snake transport path remain unchanged while the new mapper is validated.
+## Snake diagnostics
 
-## Snake periodic output-cone diagnostic
+`benchmarks/snake/analyze_mapping.py` has two intentionally different modes.
 
-`benchmarks/snake/analyze_mapping.py` exercises the new occurrence boundary on the real Snake output
-cone without changing production compilation. The logical period is explicit. For the currently
-accepted benchmark, 60 ticks is a useful throughput comparison input:
+### Solved post-update output cone
+
+The accepted Snake benchmark currently has a 60-tick logical period. It can be used strictly as a
+throughput comparison input:
 
 ```bash
 uv run --with 'ortools>=9.14,<10' \
@@ -289,25 +306,37 @@ uv run --with 'ortools>=9.14,<10' \
   --compare-private
 ```
 
-This use of `60` means "map the output cone subject to the accepted 60-tick logical cadence". The
-script does not call `analyze_normalized_state_timing()` and does not copy any old computation or
-register phases. Snake's offset-one state reads become stable sources on `[60, 120)`, and all selected
-outputs are demanded at tick 119. The joint mapper chooses the combinational phases inside that
-window.
+The script does not call `analyze_normalized_state_timing()` and does not copy old computation or
+register phases. In this boundary diagnostic, offset-one reads are externalized on `[60, 120)`, all
+outputs are demanded at tick 119, and the joint mapper chooses the combinational phases, candidate
+kinds, exact transport, and optional buses inside that output cone.
 
-The diagnostic reports source/operation/use counts, register occurrence offsets, candidate kinds,
-entity/transport cost, selected delay buses, and an optional all-private comparison. It is not yet a
-full Snake replacement because state-transition value/control cones and physical state cells are not
-part of the new mapping problem.
+### Phase-neutral full recurrence extraction
+
+To traverse the real Snake recurrence without pretending state-cell timing is already known:
+
+```bash
+uv run python -m benchmarks.snake.analyze_mapping \
+  --period 60 \
+  --extract-full-state
+```
+
+This mode reports fixed source count, unresolved state-read occurrences, semantic operation count,
+state-transition kinds/occurrences, and sinks, then stops. It never invokes the CP-SAT solver. Its
+purpose is to prove the complete workload can be represented at the neutral state boundary before
+state-cell candidates are designed.
+
+Neither diagnostic is an accepted replacement blueprint. The established in-game-validated Snake
+path remains the correctness oracle.
 
 ## Shared resource families
 
 The delay bus demonstrates why not every implementation should be enumerated as a finite candidate.
-Its value comes from assigning an arbitrary subset of exact lifetimes to a shared trunk; enumerating
-all subsets would be exponential. The mapper therefore represents it with assignment, activation,
-capacity, and min/max span variables rather than one Boolean candidate per subset.
+Its benefit depends on selecting an arbitrary subset of exact lifetimes; enumerating all subsets would
+be exponential. The solver therefore represents it with assignment, activation, capacity, and min/max
+span variables.
 
-The present bus implementation is still intentionally narrow:
+The current bus model is intentionally narrow:
 
 ```text
 scalar exact lifetimes only
@@ -318,48 +347,32 @@ one interface per semantic bus use
 no explicit incompatibility-pair API yet
 ```
 
-Future shared mechanisms may use the same parameterized-resource pattern, for example:
+Future parameterized resources may include n-way wire aggregation, shared decoder/control networks,
+clock distribution, lookup/ROM structures, and time-multiplexed functional units.
 
-```text
-n-way wire aggregation networks
-shared decoder/control structures
-clock distribution resources
-lookup/ROM structures
-time-multiplexed functional units
-```
-
-The common contract is semantic coverage, timing requirements, produced availability, physical
-resource use, and objective cost. The solver representation does not have to be identical for every
-family.
-
-## Planned migration order
-
-The current progression is:
+## Current progression
 
 1. **done:** ordinary candidate timing plus joint ASAP/interior/ALAP placement;
 2. **done:** deterministic plan -> Abstract Physical lowering for the narrow scalar subset;
-3. **done:** zero-delay wire sum as the first candidate that changes implementation latency;
-4. **done:** shared delay bus as the first parameterized resource family inside the same solve;
-5. **done:** fixed-placement parity tests for controlled unique-tap bus cases;
-6. **current:** implementation-neutral periodic occurrence windows and the Snake post-update output
-   cone diagnostic;
-7. map periodic transition value/control cones together with explicit state-cell implementation
-   candidates, instead of importing `transition_input_phase` from the old analyzer;
-8. add candidate-dependent output availability propagation, local fusion, and rematerialization;
-9. add reusable/time-multiplexed functional units with instance count, binding, latency, and
-   initiation interval;
-10. extend neutral recurrence constraints to Event/multi-clock domains;
-11. add layout-cost feedback only if abstract mapping choices need it, rather than embedding geometry
-    into the master solver initially.
-
-The established Snake path remains the correctness oracle until periodic transition/state-cell
-mapping can express the full recurrence without importing implementation-specific timing windows.
+3. **done:** zero-delay wire sum as the first implementation that changes latency;
+4. **done:** shared delay bus as the first parameterized resource family in the same solve;
+5. **done:** parity checks against the fixed-placement bus optimizer on controlled unique-tap cases;
+6. **done:** periodic output-cone boundary windows and Snake output-cone diagnostic;
+7. **current:** phase-neutral full recurrence records (`MappingStateRead`, `MappingStateTransition`) and
+   full Snake recurrence extraction;
+8. **next:** define periodic state-cell implementation candidates whose read/write port timing is
+   conditional on candidate selection, then admit stateful problems into the joint solve;
+9. add candidate-dependent output availability propagation, local fusion, and rematerialization;
+10. add reusable/time-multiplexed functional units with allocation, binding, latency, and initiation
+    interval;
+11. extend neutral recurrence constraints to Event/multi-clock domains;
+12. add layout-cost feedback only if abstract mapping choices need it.
 
 ## Future spatial/temporal sharing
 
 Longer-term, an implementation template may be instantiated fewer times than the number of semantic
-operations and reused at different physical phases. The mapper then owns the familiar high-level
-synthesis decisions:
+operations and reused at different phases. The mapper then owns the familiar high-level synthesis
+choices:
 
 ```text
 allocation:  how many physical instances exist?
@@ -368,15 +381,12 @@ scheduling:  at which phase/slot?
 delivery:    how do operands/results reach their slots?
 ```
 
-A reusable pipeline must distinguish latency from initiation interval. This makes the desired
-space/throughput tradeoff explicit: hundreds of parallel copies, one fully serialized copy, or any
-intermediate number of instances are all solutions of the same target-mapping problem.
-
-The likely user-facing optimization form is eventually:
+A reusable pipeline must distinguish latency from initiation interval. The eventual user-facing form
+is likely close to:
 
 ```text
 minimize abstract physical area subject to logical period <= P
 ```
 
-with latency/throughput/area Pareto exploration added later. Concrete signal allocation and layout
-remain downstream even when temporal resource sharing becomes aggressive.
+with latency/throughput/area Pareto exploration layered on later. Concrete signal allocation and
+layout remain downstream even when temporal sharing becomes aggressive.
