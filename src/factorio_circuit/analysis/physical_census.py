@@ -169,7 +169,11 @@ def _lowering_role(entity: abstract.AbstractEntity) -> str:
         return "phase-delay.scalar"
     if description == "vector phase alignment delay":
         return "phase-delay.vector"
-    if description.startswith("scalar phase delay bus "):
+    if description == "phase alignment delay: bus ingress":
+        return "phase-delay.scalar-bus-ingress"
+    if description == "phase alignment delay: bus egress":
+        return "phase-delay.scalar-bus-egress"
+    if description.startswith(("scalar phase delay bus ", "shared exact transport bus ")):
         return "phase-delay.scalar-bus"
 
     state = _STATE_DESCRIPTION.fullmatch(description)
