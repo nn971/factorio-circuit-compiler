@@ -1,9 +1,9 @@
-"""Analyze Snake's post-update output cone with the implementation-neutral temporal mapper.
+"""Analyze Snake with the implementation-neutral temporal technology-mapping prototypes.
 
-This diagnostic does not replace the accepted Snake compiler path. The caller prescribes a logical
-period explicitly; the script never imports ``StateTimingPlan`` phases or an inferred period into the
-mapping problem. Snake's post-``Circuit.step(1)`` register reads therefore appear as occurrence-one
-stable sources on ``[P, 2P)`` and all outputs are demanded at the last tick of that occurrence.
+The default mode maps only Snake's post-update output cone. The caller prescribes a logical period;
+the script never imports ``StateTimingPlan`` phases or an inferred period into the mapping problem.
+``--extract-full-state`` instead stops after extracting phase-neutral register-read and state-transition
+obligations, before any unsupported physical state-cell timing is invented.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
     add_wire_sum_candidates,
     build_periodic_level_mapping_problem,
+    build_periodic_state_mapping_problem,
     ordinary_candidates,
     solve_mapping_problem,
 )
@@ -69,7 +70,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--compare-private",
         action="store_true",
-        help="also solve the same problem with shared delay buses disabled",
+        help="also solve the same output-cone problem with shared delay buses disabled",
+    )
+    parser.add_argument(
+        "--extract-full-state",
+        action="store_true",
+        help="extract the full phase-neutral recurrence graph and stop before solving",
     )
     return parser
 
@@ -83,10 +89,45 @@ def main() -> None:
         build_snake_circuit(render_framebuffer=not args.without_framebuffer)
     )
     output_phase = 2 * args.period - 1
+    output_phases = (output_phase,) * len(module.output.values)
+
+    if args.extract_full_state:
+        problem = build_periodic_state_mapping_problem(
+            module,
+            period=args.period,
+            output_phases=output_phases,
+            sampling_policy=SamplingPolicy.ALAP,
+        )
+        read_offsets = Counter(read.logical_offset for read in problem.state_reads)
+        transition_kinds = Counter(item.kind for item in problem.state_transitions)
+        transition_offsets = Counter(item.logical_offset for item in problem.state_transitions)
+        print("Snake phase-neutral recurrence extraction")
+        print(f"  prescribed_period={args.period}; output_phase={output_phase}")
+        print(
+            "  problem: "
+            f"fixed_sources={len(problem.sources)}; state_reads={len(problem.state_reads)}; "
+            f"operations={len(problem.operations)}; sinks={len(problem.sinks)}; "
+            f"state_transitions={len(problem.state_transitions)}"
+        )
+        read_summary = ", ".join(
+            f"offset{offset}:{count}" for offset, count in sorted(read_offsets.items())
+        )
+        transition_summary = ", ".join(
+            f"{kind}:{count}" for kind, count in sorted(transition_kinds.items())
+        )
+        transition_offset_summary = ", ".join(
+            f"offset{offset}:{count}" for offset, count in sorted(transition_offsets.items())
+        )
+        print(f"  state_read_occurrences={read_summary or 'none'}")
+        print(f"  transition_kinds={transition_summary or 'none'}")
+        print(f"  transition_occurrences={transition_offset_summary or 'none'}")
+        print("  solve=not attempted; physical state-cell port timing is intentionally unresolved")
+        return
+
     problem = build_periodic_level_mapping_problem(
         module,
         period=args.period,
-        output_phases=(output_phase,) * len(module.output.values),
+        output_phases=output_phases,
         sampling_policy=SamplingPolicy.ALAP,
     )
     candidates = ordinary_candidates(problem)
