@@ -23,6 +23,7 @@ from factorio_circuit.ir.semantic import PayloadShape, Select, VectorSignal
 from .latency import FACTORIO_LATENCY
 from .temporal_hypergraph import (
     TemporalArc,
+    TemporalComputation,
     TemporalHypergraph,
     TemporalPlacement,
     TemporalPlacementError,
@@ -136,27 +137,22 @@ def _normalized_semantic(value: object) -> object:
     return value.vector if isinstance(value, VectorSignal) else value
 
 
-def _producer_semantic(graph: TemporalHypergraph, producer: int) -> object:
-    if producer in graph.computation_ids:
-        return graph.computation_by_id(producer).semantic
-    return graph.source_by_id(producer).semantic
-
-
 def _consumer_input_phase(
-    graph: TemporalHypergraph,
     arc: TemporalArc,
     *,
     phases: dict[int, int],
+    computations: dict[int, TemporalComputation],
+    semantics: dict[int, object],
     sink_phases: dict[int, int],
 ) -> int:
-    if arc.consumer not in graph.computation_ids:
+    consumer = computations.get(arc.consumer)
+    if consumer is None:
         return sink_phases[arc.consumer]
 
-    consumer = graph.computation_by_id(arc.consumer)
     latency = arc.latency
     if isinstance(consumer.semantic, Select):
         condition = _normalized_semantic(consumer.semantic.condition)
-        if _producer_semantic(graph, arc.producer) is condition:
+        if semantics[arc.producer] is condition:
             latency = FACTORIO_LATENCY.operation_latency(
                 "select_condition", consumer.semantic.name
             )
@@ -192,11 +188,13 @@ def _derive_computation_availability(
     graph: TemporalHypergraph,
     placement: TemporalPlacement,
     availabilities: dict[int, TemporalAvailability],
+    computations: dict[int, TemporalComputation],
+    semantics: dict[int, object],
 ) -> None:
     phases = dict(placement.phases)
     incoming: dict[int, list[TemporalArc]] = {}
     for arc in graph.arcs:
-        if arc.consumer in graph.computation_ids:
+        if arc.consumer in computations:
             incoming.setdefault(arc.consumer, []).append(arc)
 
     for computation in graph.computations:
@@ -209,9 +207,10 @@ def _derive_computation_availability(
         for arc in dependencies:
             child = availabilities[arc.producer]
             input_phase = _consumer_input_phase(
-                graph,
                 arc,
                 phases=phases,
+                computations=computations,
+                semantics=semantics,
                 sink_phases={},
             )
             if input_phase < child.start_phase:
@@ -266,10 +265,19 @@ def analyze_temporal_alignment(
 
     graph.validate_placement(placement)
     phases = dict(placement.phases)
+    computations = {item.id: item for item in graph.computations}
+    semantics: dict[int, object] = {item.id: item.semantic for item in graph.sources}
+    semantics.update({item.id: item.semantic for item in graph.computations})
     sink_phases = {sink.id: sink.phase for sink in graph.sinks}
 
     availabilities = _source_availability(graph)
-    _derive_computation_availability(graph, placement, availabilities)
+    _derive_computation_availability(
+        graph,
+        placement,
+        availabilities,
+        computations,
+        semantics,
+    )
 
     uses: list[TemporalAlignmentDemand] = []
     grouped_transports: dict[tuple[int, int], list[TemporalAlignmentDemand]] = {}
@@ -277,9 +285,10 @@ def analyze_temporal_alignment(
     for arc in graph.arcs:
         producer = availabilities[arc.producer]
         phase = _consumer_input_phase(
-            graph,
             arc,
             phases=phases,
+            computations=computations,
+            semantics=semantics,
             sink_phases=sink_phases,
         )
         if phase < producer.start_phase:
@@ -313,7 +322,7 @@ def analyze_temporal_alignment(
             producer=arc.producer,
             consumer=arc.consumer,
             label=producer.label,
-            shape=arc.shape,
+            shape=producer.shape,
             phase=phase,
             kind=TemporalAlignmentKind.TRANSPORT_TO,
             transport_start_phase=start,
