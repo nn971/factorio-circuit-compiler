@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from factorio_circuit.ir.semantic import PayloadShape
+from factorio_circuit.ir.semantic import PayloadShape, Select
 
 from .temporal_hypergraph import (
     TemporalArc,
@@ -131,7 +131,6 @@ class TemporalAlignmentAnalysis:
         raise KeyError(node)
 
 
-
 def _consumer_input_phase(
     arc: TemporalArc,
     *,
@@ -142,7 +141,6 @@ def _consumer_input_phase(
     if arc.consumer in computation_ids:
         return phases[arc.consumer] - arc.latency
     return sink_phases[arc.consumer]
-
 
 
 def _source_availability(graph: TemporalHypergraph) -> dict[int, TemporalAvailability]:
@@ -168,7 +166,6 @@ def _source_availability(graph: TemporalHypergraph) -> dict[int, TemporalAvailab
             end_phase_exclusive=end,
         )
     return result
-
 
 
 def _derive_computation_availability(
@@ -206,6 +203,14 @@ def _derive_computation_availability(
             if child.end_phase_exclusive is not None:
                 remaining_spans.append(child.end_phase_exclusive - input_phase)
 
+        # Scalar Select still has implementation-dependent internal timing in the production
+        # lowerer.  Until its actual chosen implementation exports a freshness proof, treating the
+        # Select result as re-observable would let the transport planner erase hardware that the
+        # lowerer may still need.  Keep this boundary exact; ordinary BinaryOp/Compare and supported
+        # vector feed-forward operations can continue propagating OBSERVABLE availability.
+        if isinstance(computation.semantic, Select):
+            forced_exact = True
+
         if forced_exact:
             kind = TemporalAvailabilityKind.EXACT
             end = output_phase + 1
@@ -226,7 +231,6 @@ def _derive_computation_availability(
             start_phase=output_phase,
             end_phase_exclusive=end,
         )
-
 
 
 def analyze_temporal_alignment(
@@ -317,9 +321,7 @@ def analyze_temporal_alignment(
     )
 
     return TemporalAlignmentAnalysis(
-        availabilities=tuple(
-            sorted(availabilities.values(), key=lambda item: item.node)
-        ),
+        availabilities=tuple(sorted(availabilities.values(), key=lambda item: item.node)),
         uses=tuple(uses),
         transports=transports,
     )
