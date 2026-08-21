@@ -18,8 +18,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from factorio_circuit.ir.semantic import PayloadShape, Select
+from factorio_circuit.ir.semantic import PayloadShape, Select, VectorSignal
 
+from .latency import FACTORIO_LATENCY
 from .temporal_hypergraph import (
     TemporalArc,
     TemporalHypergraph,
@@ -131,16 +132,35 @@ class TemporalAlignmentAnalysis:
         raise KeyError(node)
 
 
+def _normalized_semantic(value: object) -> object:
+    return value.vector if isinstance(value, VectorSignal) else value
+
+
+def _producer_semantic(graph: TemporalHypergraph, producer: int) -> object:
+    if producer in graph.computation_ids:
+        return graph.computation_by_id(producer).semantic
+    return graph.source_by_id(producer).semantic
+
+
 def _consumer_input_phase(
+    graph: TemporalHypergraph,
     arc: TemporalArc,
     *,
     phases: dict[int, int],
-    computation_ids: frozenset[int],
     sink_phases: dict[int, int],
 ) -> int:
-    if arc.consumer in computation_ids:
-        return phases[arc.consumer] - arc.latency
-    return sink_phases[arc.consumer]
+    if arc.consumer not in graph.computation_ids:
+        return sink_phases[arc.consumer]
+
+    consumer = graph.computation_by_id(arc.consumer)
+    latency = arc.latency
+    if isinstance(consumer.semantic, Select):
+        condition = _normalized_semantic(consumer.semantic.condition)
+        if _producer_semantic(graph, arc.producer) is condition:
+            latency = FACTORIO_LATENCY.operation_latency(
+                "select_condition", consumer.semantic.name
+            )
+    return phases[arc.consumer] - latency
 
 
 def _source_availability(graph: TemporalHypergraph) -> dict[int, TemporalAvailability]:
@@ -188,7 +208,12 @@ def _derive_computation_availability(
 
         for arc in dependencies:
             child = availabilities[arc.producer]
-            input_phase = output_phase - arc.latency
+            input_phase = _consumer_input_phase(
+                graph,
+                arc,
+                phases=phases,
+                sink_phases={},
+            )
             if input_phase < child.start_phase:
                 raise TemporalPlacementError(
                     f"computation {computation.label!r} requests {child.label!r} at phase "
@@ -242,7 +267,6 @@ def analyze_temporal_alignment(
     graph.validate_placement(placement)
     phases = dict(placement.phases)
     sink_phases = {sink.id: sink.phase for sink in graph.sinks}
-    computation_ids = graph.computation_ids
 
     availabilities = _source_availability(graph)
     _derive_computation_availability(graph, placement, availabilities)
@@ -253,9 +277,9 @@ def analyze_temporal_alignment(
     for arc in graph.arcs:
         producer = availabilities[arc.producer]
         phase = _consumer_input_phase(
+            graph,
             arc,
             phases=phases,
-            computation_ids=computation_ids,
             sink_phases=sink_phases,
         )
         if phase < producer.start_phase:
