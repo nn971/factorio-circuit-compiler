@@ -1,10 +1,15 @@
-"""Narrow canonical-IR extraction for the first temporal mapping milestone.
+"""Canonical-IR extraction for temporal technology mapping.
 
-The extractor intentionally supports only one stateless Level occurrence with caller-supplied
-physical output phases. It does not reuse the old state-timing windows, because those already encode
-one particular implementation's Factorio latency. Periodic state, logical reindexing across
-occurrences, and Event clocks enter later milestones once their implementation-neutral constraints
-are represented directly.
+The stateless extractor maps one Level occurrence with caller-supplied output phases. The periodic
+occurrence extractor extends that boundary without importing the established state-timing plan:
+logical register reads become stable semantic sources on occurrence windows ``[kP, (k+1)P)`` for a
+caller-prescribed logical period ``P``. Target combinator latency still appears only in implementation
+candidates.
+
+This module deliberately does not yet map state-transition hardware. A periodic problem describes the
+combinational cone reachable from the selected module outputs while treating register occurrences as
+semantic boundary sources. Transition value/control cones and state-cell implementation candidates
+are the next recurrence-mapping milestone.
 """
 
 from __future__ import annotations
@@ -83,12 +88,59 @@ def build_stateless_level_mapping_problem(
     validate_canonical_module(module)
     if module.state_registers or state_transitions(module):
         raise MappingProblemError(
-            "first-milestone mapping extraction supports stateless Level modules only"
+            "stateless mapping extraction supports modules without periodic state only"
         )
+    return _build_level_mapping_problem(
+        module,
+        output_phases=output_phases,
+        sampling_policy=sampling_policy,
+        period=None,
+    )
+
+
+def build_periodic_level_mapping_problem(
+    module: CircuitModule,
+    *,
+    period: int,
+    output_phases: tuple[int, ...],
+    sampling_policy: SamplingPolicy = SamplingPolicy.BEGINNING_OF_STEP,
+) -> MappingProblem:
+    """Extract output combinational cones across explicit logical occurrence windows.
+
+    ``period`` is a caller-prescribed logical cadence, not a period inferred by the established
+    physical state-timing analyzer. For a ``VectorRegisterRead`` with logical offset ``k``, the same
+    semantic state token is available throughout ``[k*period, (k+1)*period)``. Nonzero external input
+    sample offsets use the corresponding occurrence window too.
+
+    This first periodic extractor does not traverse state transitions merely because they exist in the
+    module. It maps only values reachable from module outputs. That makes it useful for post-update
+    rendering/output cones (including Snake's offset-one framebuffer cone) without prematurely
+    choosing a physical state-cell implementation.
+    """
+
+    reject_event_module(module)
+    validate_canonical_module(module)
+    if isinstance(period, bool) or not isinstance(period, int) or period < 1:
+        raise MappingProblemError("periodic mapping period must be a positive integer")
+    return _build_level_mapping_problem(
+        module,
+        output_phases=output_phases,
+        sampling_policy=sampling_policy,
+        period=period,
+    )
+
+
+def _build_level_mapping_problem(
+    module: CircuitModule,
+    *,
+    output_phases: tuple[int, ...],
+    sampling_policy: SamplingPolicy,
+    period: int | None,
+) -> MappingProblem:
     if len(output_phases) != len(module.output.values):
         raise MappingProblemError("output phase count must match semantic output arity")
     if not output_phases:
-        raise MappingProblemError("stateless mapping extraction requires at least one output")
+        raise MappingProblemError("mapping extraction requires at least one output")
     if any(
         isinstance(phase, bool) or not isinstance(phase, int) or phase < 0
         for phase in output_phases
@@ -115,27 +167,50 @@ def build_stateless_level_mapping_problem(
         if cached is not None:
             return cached
 
-        shape = PayloadShape.VECTOR if is_vector_value(value) else PayloadShape.SCALAR
+        shape = (
+            PayloadShape.VECTOR
+            if isinstance(value, VectorRegisterRead) or is_vector_value(value)
+            else PayloadShape.SCALAR
+        )
         label = _label(value)
         if isinstance(value, (Constant, VectorConstant)):
             mode = MappingSourceMode.STABLE
             start = 0
             end = None
+        elif isinstance(value, VectorRegisterRead):
+            if period is None:
+                raise MappingProblemError("stateless mapping extraction does not model state reads")
+            if value.offset < 0:
+                raise MappingProblemError(
+                    "periodic mapping currently requires non-negative register-read offsets"
+                )
+            start = value.offset * period
+            end = start + period
+            mode = MappingSourceMode.STABLE
         elif isinstance(
             value,
             (FlowInputSample, InputSample, FlowVectorInputSample, VectorInputSample),
         ):
-            if value.offset != 0:
-                raise MappingProblemError(
-                    "first-milestone mapping extraction does not yet model nonzero logical offsets"
-                )
-            start = 0
+            if period is None:
+                if value.offset != 0:
+                    raise MappingProblemError(
+                        "stateless mapping extraction does not model nonzero logical offsets"
+                    )
+                start = 0
+                observable_end = horizon + 1
+            else:
+                if value.offset < 0:
+                    raise MappingProblemError(
+                        "periodic mapping currently requires non-negative input-sample offsets"
+                    )
+                start = value.offset * period
+                observable_end = start + period
             if sampling_policy is SamplingPolicy.ALAP:
                 mode = MappingSourceMode.OBSERVABLE
-                end = horizon + 1
+                end = observable_end
             else:
                 mode = MappingSourceMode.EXACT
-                end = 1
+                end = start + 1
         elif isinstance(value, (FlowInput, Input, FlowVectorInput, VectorInput)):
             start = 0
             if sampling_policy is SamplingPolicy.ALAP:
@@ -145,8 +220,9 @@ def build_stateless_level_mapping_problem(
                 mode = MappingSourceMode.EXACT
                 end = 1
         else:
+            scope = "periodic" if period is not None else "stateless"
             raise MappingProblemError(
-                f"unsupported stateless mapping source {type(value).__name__}"
+                f"unsupported {scope} mapping source {type(value).__name__}"
             )
 
         source = MappingSource(
@@ -164,13 +240,12 @@ def build_stateless_level_mapping_problem(
 
     def visit(value: object) -> int:
         if isinstance(value, VectorRegisterRead):
-            raise MappingProblemError(
-                "first-milestone mapping extraction does not yet model state reads"
-            )
+            return source_for(value).id
         if isinstance(value, (*_SCALAR_SOURCES, *_VECTOR_SOURCES)):
             return source_for(value).id
         if not isinstance(value, _OPERATIONS):
-            raise MappingProblemError(f"unsupported stateless mapping value {type(value).__name__}")
+            scope = "periodic" if period is not None else "stateless"
+            raise MappingProblemError(f"unsupported {scope} mapping value {type(value).__name__}")
 
         cached = operation_by_semantic.get(id(value))
         if cached is not None:
@@ -224,6 +299,8 @@ def _label(value: object) -> str:
     name = getattr(value, "name", None)
     if isinstance(name, str) and name:
         return name
+    if isinstance(value, VectorRegisterRead):
+        return f"state {value.register.name}[{value.offset}]"
     if isinstance(value, (FlowInput, Input, FlowVectorInput, VectorInput)):
         return value.name
     if isinstance(
