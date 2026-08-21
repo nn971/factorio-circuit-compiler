@@ -120,6 +120,20 @@ def solve_mapping_problem(
                 constraint = use_phase[use] == output_phase[operation.id] + offset
                 model.Add(constraint).OnlyEnforceIf(choose[candidate.id])
 
+            if candidate.kind is ImplementationKind.WIRE_SUM:
+                # The first physical wire-sum realization is deliberately strict: both producer
+                # output connectors themselves drive the same carrier on the same physical tick.
+                # Later contribution-port/resource modeling may allow a preceding transport stage
+                # to join the aggregation network instead.
+                for producer in operation.operands:
+                    if producer not in operations:
+                        raise MappingProblemError(
+                            "wire-sum candidate requires operation-result operands"
+                        )
+                    model.Add(
+                        output_phase[producer] == output_phase[operation.id]
+                    ).OnlyEnforceIf(choose[candidate.id])
+
     outgoing: dict[int, list[Any]] = {item: [] for item in problem.value_ids}
     for use in problem.uses():
         phase = use_phase[use]
