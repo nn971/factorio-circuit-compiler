@@ -85,7 +85,8 @@ is extracted.
 
 ## Joint solver
 
-`mapping/solver.py` chooses candidate and phase in one CP-SAT model. The first objective is:
+`mapping/solver.py` chooses finite candidates, physical phases, exact lifetimes, and optional shared
+delay-bus membership in one CP-SAT model. With buses disabled, the objective is:
 
 ```text
 selected implementation entity cost
@@ -98,6 +99,53 @@ the same solve; only the residual part after the last free phase becomes exact t
 There is deliberately no global ASAP or ALAP mode. ASAP, ALAP, and interior placements are all
 possible solutions of the same model.
 
+### Joint delay-bus resource
+
+`solve_mapping_problem(..., max_delay_buses=N)` enables the first parameterized shared-resource
+family. Unlike the established `analysis/transport_optimize.py` path, this bus is **not** optimized
+after a fixed placement. Its lane starts, ends, membership, and shared middle span are expressions of
+the same phase variables used by candidate selection.
+
+For a selected scalar exact lifetime `s -> t`, the first model uses the already validated isolated
+Factorio topology:
+
+```text
+semantic producer
+    -> signal-specific +0 ingress          one tick
+    -> bus-private Each + 0 -> Each trunk  shared middle
+    -> signal-specific +0 egress           one per transported semantic use
+```
+
+A lane can join a bus only when its exact lifetime has length at least three ticks. A bus must have at
+least two lanes. The bus middle is continuous from
+
+```text
+min(lane.start + 1)
+```
+
+to
+
+```text
+max(lane.end - 1)
+```
+
+and its objective cost is
+
+```text
+continuous middle stages
++ one ingress per lane
++ one isolated interface per transported semantic use
+```
+
+The first joint model deliberately charges one egress/interface per semantic use even when two uses
+happen at the same phase. This keeps CP-SAT cost and emitted hardware exactly one-to-one. Equal-phase
+egress coalescing is a future explicit sharing optimization rather than an accidental discrepancy
+between plan and lowering.
+
+`max_delay_buses=0` remains the default, so introducing the resource family does not change existing
+mapping results unless it is explicitly enabled. `delay_bus_capacity` bounds the number of scalar
+lanes on each bus.
+
 ## Realization plan
 
 `mapping/plan.py` is the target-aware boundary immediately before mapped physical lowering. It
@@ -108,13 +156,16 @@ SelectedRealization
     candidate + output phase for one selected implementation
 
 PlannedDelivery
-    reuse / observe-at / private exact transport for one semantic use
+    reuse / observe-at / private exact transport / bus exact transport
 
 ExactLifetime
-    one prefix-shareable exact token lifetime
+    one semantic exact token lifetime before its physical transport is chosen
 
 WireSumResource
     one selected intentional same-carrier aggregation network
+
+DelayBusResource
+    one continuous shared Each trunk plus its isolated scalar lanes
 ```
 
 A plan does not assign concrete Factorio signal names, red/green colors, entity coordinates, or wire
@@ -122,7 +173,11 @@ routes. Those remain synthesis/layout decisions.
 
 `mapping/validate.py` independently rechecks semantic coverage, candidate timing equations,
 availability/delivery classification, exact lifetimes, explicit shared-resource contracts, and plan
-costs. Physical lowering must consume a validated plan rather than silently repairing it.
+costs. For buses it verifies that lane spans reproduce exact lifetimes, every `BUS_TRANSPORT` use
+belongs to exactly one lane, the selected middle span agrees with its lanes, and reported transport
+cost equals private lifetime cost plus bus middle/interface cost.
+
+Physical lowering must consume a validated plan rather than silently repairing it.
 
 ## First non-ordinary implementation: zero-delay wire sum
 
@@ -160,28 +215,47 @@ ordinary BinaryOp
 ordinary Compare
 private exact delay chains
 zero-delay WIRE_SUM
+isolated shared scalar delay buses
 ```
 
-It is not wired into `compile_circuit()`. The existing Level/Event lowering routes remain canonical
-and unchanged while this path is validated.
+Mapped bus lowering keeps late physical choices unresolved:
+
+- ingress and egress copies receive fresh abstract signal lanes;
+- trunk stages use `Each + 0 -> Each`;
+- lanes coexisting on a trunk net receive explicit `SignalConflict` constraints;
+- concrete signal identities and red/green wire colors remain physical-synthesis decisions;
+- every selected continuous middle stage is materialized even if individual lane intervals are
+  temporally disjoint, so the physical combinator count matches the solver's charged span.
+
+This path is still not wired into `compile_circuit()`. The existing Level/Event lowering routes and
+the in-game-validated Snake transport path remain unchanged while the new mapper is validated.
 
 ## Shared resource families
 
-Not every useful implementation should be enumerated as a finite candidate. A delay bus is useful
-because an arbitrary subset of exact lifetimes can share one trunk; enumerating every subset would be
-exponential.
+The delay bus demonstrates why not every implementation should be enumerated as a finite candidate.
+Its value comes from assigning an arbitrary subset of exact lifetimes to a shared trunk; enumerating
+all subsets would be exponential. The mapper therefore represents it with assignment, activation,
+capacity, and min/max span variables rather than one Boolean candidate per subset.
 
-The intended extension is a parameterized resource-family interface whose solver variables describe
-membership and shared geometry/capacity. The existing validated shared-delay-bus model is the first
-resource family to migrate after the finite candidate/timing boundary is stable.
-
-Other mechanisms may use the same pattern when sharing is combinatorial, for example:
+The present bus implementation is still intentionally narrow:
 
 ```text
-wire aggregation networks
+scalar exact lifetimes only
+one exact lifetime per semantic producer
+continuous shared trunk
+conservative persistent-lane capacity
+one interface per semantic bus use
+no explicit incompatibility-pair API yet
+```
+
+Future shared mechanisms may use the same parameterized-resource pattern, for example:
+
+```text
+n-way wire aggregation networks
 shared decoder/control structures
 clock distribution resources
 lookup/ROM structures
+time-multiplexed functional units
 ```
 
 The common contract is semantic coverage, timing requirements, produced availability, physical
@@ -190,18 +264,31 @@ family.
 
 ## Planned migration order
 
-The intended order is:
+The current progression is:
 
-1. validate ordinary candidate timing plus joint ASAP/interior/ALAP placement;
-2. validate deterministic plan -> Abstract Physical lowering;
-3. validate zero-delay wire sum as the first candidate that changes latency;
-4. migrate the established shared-delay bus as a parameterized resource family;
-5. add local fusion and rematerialization, allowing eliminated or duplicated semantic intermediates;
-6. add reusable/time-multiplexed functional units with instance count, binding, latency, and
+1. **done:** ordinary candidate timing plus joint ASAP/interior/ALAP placement;
+2. **done:** deterministic plan -> Abstract Physical lowering for the narrow scalar subset;
+3. **done:** zero-delay wire sum as the first candidate that changes implementation latency;
+4. **current:** shared delay bus as the first parameterized resource family inside the same solve;
+5. compare the joint bus model against the established fixed-placement bus optimizer on controlled
+   cases, then extend the neutral mapping problem toward the periodic Level/Snake state cone;
+6. add local fusion and rematerialization, allowing eliminated or duplicated semantic intermediates;
+7. add reusable/time-multiplexed functional units with instance count, binding, latency, and
    initiation interval;
-7. extend the neutral constraints to periodic state and later Event/multi-clock domains;
-8. add layout-cost feedback only if abstract mapping choices need it, rather than embedding geometry
+8. extend the neutral constraints to Event/multi-clock domains;
+9. add layout-cost feedback only if abstract mapping choices need it, rather than embedding geometry
    into the master solver initially.
+
+Before step 5 changes production behavior, the mapped bus milestone should demonstrate three things:
+
+```text
+solver objective < all-private objective on profitable exact lifetimes
+validated RealizationPlan records the same bus topology/cost
+AbstractPhysicalCircuit emits exactly that number of transport combinators
+```
+
+The established Snake path remains the correctness oracle until the periodic neutral constraints can
+express its state boundaries without importing implementation-specific timing windows.
 
 ## Future spatial/temporal sharing
 
