@@ -57,10 +57,30 @@ MappingUse
 `MappingOperation.semantic` retain provenance back to canonical IR so deterministic physical
 lowering never has to reconstruct semantic identity from labels.
 
-The first extractor, `build_stateless_level_mapping_problem`, is deliberately narrow. It handles one
-stateless Level occurrence with caller-supplied output phases. It does not import periodic state
-windows from the established state-timing pass, because those windows already reflect one physical
-implementation family.
+`build_stateless_level_mapping_problem` handles one stateless Level occurrence with caller-supplied
+output phases. It does not import periodic state windows from the established state-timing pass,
+because those windows already reflect one physical implementation family.
+
+`build_periodic_level_mapping_problem` is the first state-aware neutral extension. The caller supplies
+a logical period `P` as a throughput/occurrence contract. A register read at logical offset `k` is a
+stable semantic source on
+
+```text
+[kP, (k+1)P)
+```
+
+and a sampled external Level occurrence uses the corresponding window. This does **not** import
+`StateTimingPlan.state_phase`, `transition_input_phase`, or old ordinary-combinator depth. Target
+latency still first appears in implementation candidates.
+
+The first periodic extractor intentionally walks only values reachable from module outputs. Merely
+having a state transition in the module does not pull its value/control cone into the mapping problem.
+Consequently it can already represent post-update rendering/output cones, including Snake's
+post-`Circuit.step(1)` output cone, while treating each logical register occurrence as a semantic
+boundary source. Physical state-transition/storage implementation remains a later mapping milestone.
+
+Negative logical offsets are not normalized yet; the first periodic extractor requires non-negative
+register/input-sample offsets.
 
 ## Finite implementation candidates
 
@@ -146,6 +166,28 @@ between plan and lowering.
 mapping results unless it is explicitly enabled. `delay_bus_capacity` bounds the number of scalar
 lanes on each bus.
 
+### Fixed-placement parity checkpoint
+
+`tests/mapping/test_delay_bus_parity.py` projects controlled exact lifetimes into both the joint mapper
+and the established fixed-placement `optimize_exact_transports` model. With fixed source/sink phases
+and unique physical tap phases, the two optimizers must agree on:
+
+```text
+objective combinator cost
+bus/private partition
+continuous bus middle span
+assigned producer lanes
+```
+
+The tests include a mixed case where a short exact lifetime remains private while longer lifetimes
+share a bus, and a staggered-start case.
+
+There is one deliberately documented non-parity case. The established fixed-placement optimizer
+coalesces multiple semantic consumers on the same physical tap phase, whereas the first joint mapper
+charges/lowers one isolated interface per semantic use. A dedicated regression records that cost
+difference so it cannot be mistaken for a solver error. Joint equal-phase egress coalescing should be
+introduced as an explicit resource-sharing feature later.
+
 ## Realization plan
 
 `mapping/plan.py` is the target-aware boundary immediately before mapped physical lowering. It
@@ -227,8 +269,36 @@ Mapped bus lowering keeps late physical choices unresolved:
 - every selected continuous middle stage is materialized even if individual lane intervals are
   temporally disjoint, so the physical combinator count matches the solver's charged span.
 
+The periodic occurrence extractor may produce vector operations and register-read sources; those are
+currently solver/analysis inputs only. `lower_stateless_mapping_plan` has not yet been generalized to
+periodic state or vector physical lowering.
+
 This path is still not wired into `compile_circuit()`. The existing Level/Event lowering routes and
 the in-game-validated Snake transport path remain unchanged while the new mapper is validated.
+
+## Snake periodic output-cone diagnostic
+
+`benchmarks/snake/analyze_mapping.py` exercises the new occurrence boundary on the real Snake output
+cone without changing production compilation. The logical period is explicit. For the currently
+accepted benchmark, 60 ticks is a useful throughput comparison input:
+
+```bash
+uv run --with 'ortools>=9.14,<10' \
+  python -m benchmarks.snake.analyze_mapping \
+  --period 60 \
+  --compare-private
+```
+
+This use of `60` means "map the output cone subject to the accepted 60-tick logical cadence". The
+script does not call `analyze_normalized_state_timing()` and does not copy any old computation or
+register phases. Snake's offset-one state reads become stable sources on `[60, 120)`, and all selected
+outputs are demanded at tick 119. The joint mapper chooses the combinational phases inside that
+window.
+
+The diagnostic reports source/operation/use counts, register occurrence offsets, candidate kinds,
+entity/transport cost, selected delay buses, and an optional all-private comparison. It is not yet a
+full Snake replacement because state-transition value/control cones and physical state cells are not
+part of the new mapping problem.
 
 ## Shared resource families
 
@@ -269,26 +339,21 @@ The current progression is:
 1. **done:** ordinary candidate timing plus joint ASAP/interior/ALAP placement;
 2. **done:** deterministic plan -> Abstract Physical lowering for the narrow scalar subset;
 3. **done:** zero-delay wire sum as the first candidate that changes implementation latency;
-4. **current:** shared delay bus as the first parameterized resource family inside the same solve;
-5. compare the joint bus model against the established fixed-placement bus optimizer on controlled
-   cases, then extend the neutral mapping problem toward the periodic Level/Snake state cone;
-6. add local fusion and rematerialization, allowing eliminated or duplicated semantic intermediates;
-7. add reusable/time-multiplexed functional units with instance count, binding, latency, and
+4. **done:** shared delay bus as the first parameterized resource family inside the same solve;
+5. **done:** fixed-placement parity tests for controlled unique-tap bus cases;
+6. **current:** implementation-neutral periodic occurrence windows and the Snake post-update output
+   cone diagnostic;
+7. map periodic transition value/control cones together with explicit state-cell implementation
+   candidates, instead of importing `transition_input_phase` from the old analyzer;
+8. add candidate-dependent output availability propagation, local fusion, and rematerialization;
+9. add reusable/time-multiplexed functional units with instance count, binding, latency, and
    initiation interval;
-8. extend the neutral constraints to Event/multi-clock domains;
-9. add layout-cost feedback only if abstract mapping choices need it, rather than embedding geometry
-   into the master solver initially.
+10. extend neutral recurrence constraints to Event/multi-clock domains;
+11. add layout-cost feedback only if abstract mapping choices need it, rather than embedding geometry
+    into the master solver initially.
 
-Before step 5 changes production behavior, the mapped bus milestone should demonstrate three things:
-
-```text
-solver objective < all-private objective on profitable exact lifetimes
-validated RealizationPlan records the same bus topology/cost
-AbstractPhysicalCircuit emits exactly that number of transport combinators
-```
-
-The established Snake path remains the correctness oracle until the periodic neutral constraints can
-express its state boundaries without importing implementation-specific timing windows.
+The established Snake path remains the correctness oracle until periodic transition/state-cell
+mapping can express the full recurrence without importing implementation-specific timing windows.
 
 ## Future spatial/temporal sharing
 
