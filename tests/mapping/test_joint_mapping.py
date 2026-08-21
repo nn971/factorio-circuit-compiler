@@ -1,13 +1,17 @@
 import pytest
 
+from factorio_circuit import Circuit, SamplingPolicy
 from factorio_circuit.ir.semantic import BinaryOp, Constant, PayloadShape, Select
+from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
     MappingOperation,
     MappingProblem,
     MappingSink,
     MappingSource,
     MappingSourceMode,
+    build_stateless_level_mapping_problem,
     ordinary_candidate,
+    ordinary_candidates,
     solve_mapping_problem,
 )
 
@@ -64,6 +68,28 @@ def test_select_candidate_owns_asymmetric_input_latency() -> None:
     assert candidate.input_phase_offsets == (-2, -3, -3)
 
 
+def test_stateless_extractor_keeps_target_latency_out_of_problem() -> None:
+    circuit = Circuit("mapping_extract")
+    left = circuit.input("left")
+    right = circuit.input("right")
+    circuit.output("sum", left + right)
+    module = lower_frontend(circuit)
+
+    problem = build_stateless_level_mapping_problem(
+        module,
+        output_phases=(10,),
+        sampling_policy=SamplingPolicy.ALAP,
+    )
+
+    assert problem.horizon == 10
+    assert len(problem.sources) == 2
+    assert all(source.mode is MappingSourceMode.OBSERVABLE for source in problem.sources)
+    assert len(problem.operations) == 1
+    assert problem.sinks[0].phase == 10
+    candidate = ordinary_candidates(problem)[0]
+    assert candidate.input_phase_offsets == (-1, -1)
+
+
 def test_joint_mapper_can_choose_asap_when_exact_inputs_dominate() -> None:
     pytest.importorskip("ortools.sat.python.cp_model")
 
@@ -101,7 +127,11 @@ def test_joint_mapper_finds_interior_phase_from_shared_exact_lifetimes() -> None
     assert realization.output_phase == 6
     assert result.plan.entity_cost == 1
     assert result.plan.transport_cost == 14
-    assert {(item.producer, item.start_phase, item.end_phase) for item in result.plan.exact_lifetimes} == {
+    lifetimes = {
+        (item.producer, item.start_phase, item.end_phase)
+        for item in result.plan.exact_lifetimes
+    }
+    assert lifetimes == {
         (1, 0, 5),
         (2, 0, 5),
         (3, 6, 10),
