@@ -141,7 +141,21 @@ def test_full_periodic_state_extractor_records_transition_cones_without_write_ph
     assert problem.operations
 
 
+def test_full_state_problem_refuses_physical_use_enumeration_without_state_cell_candidate() -> None:
+    module = _state_module(step_before_output=False)
+    problem = build_periodic_state_mapping_problem(
+        module,
+        period=8,
+        output_phases=(7,),
+        sampling_policy=SamplingPolicy.ALAP,
+    )
+
+    with pytest.raises(MappingProblemError, match="state-cell implementation candidates"):
+        problem.uses()
+
+
 def test_current_solver_rejects_full_state_problem_at_state_cell_boundary() -> None:
+    pytest.importorskip("ortools.sat.python.cp_model")
     module = _state_module(step_before_output=False)
     problem = build_periodic_state_mapping_problem(
         module,
