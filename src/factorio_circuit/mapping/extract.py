@@ -1,15 +1,10 @@
 """Canonical-IR extraction for temporal technology mapping.
 
 The stateless extractor maps one Level occurrence with caller-supplied output phases. The periodic
-occurrence extractor extends that boundary without importing the established state-timing plan:
-logical register reads become stable semantic sources on occurrence windows ``[kP, (k+1)P)`` for a
-caller-prescribed logical period ``P``. Target combinator latency still appears only in implementation
-candidates.
-
-This module deliberately does not yet map state-transition hardware. A periodic problem describes the
-combinational cone reachable from the selected module outputs while treating register occurrences as
-semantic boundary sources. Transition value/control cones and state-cell implementation candidates
-are the next recurrence-mapping milestone.
+output-cone extractor can externalize logical register occurrences as stable boundary sources for a
+caller-prescribed period. The full periodic-state extractor is stricter: register reads remain
+unresolved ``MappingStateRead`` values and state transitions carry no physical consume phase, so a
+future state-cell candidate—not the established state-timing analyzer—must own that timing.
 """
 
 from __future__ import annotations
@@ -39,7 +34,7 @@ from factorio_circuit.ir.semantic import (
     reject_event_module,
     validate_canonical_module,
 )
-from factorio_circuit.ir.state import VectorRegisterRead, state_transitions
+from factorio_circuit.ir.state import StateTransition, VectorRegisterRead, state_transitions
 from factorio_circuit.sampling import SamplingPolicy
 
 from .problem import (
@@ -49,6 +44,8 @@ from .problem import (
     MappingSink,
     MappingSource,
     MappingSourceMode,
+    MappingStateRead,
+    MappingStateTransition,
 )
 
 _SCALAR_SOURCES = (FlowInput, Input, FlowInputSample, InputSample, Constant)
@@ -77,12 +74,7 @@ def build_stateless_level_mapping_problem(
     output_phases: tuple[int, ...],
     sampling_policy: SamplingPolicy = SamplingPolicy.BEGINNING_OF_STEP,
 ) -> MappingProblem:
-    """Extract one implementation-neutral stateless Level mapping problem.
-
-    ``output_phases`` are explicit target constraints supplied by the caller; they are not inferred
-    from the current ordinary lowering. Under ``ALAP`` an offset-zero external Level source is
-    modeled as physically observable through the mapping horizon. Constants remain stable.
-    """
+    """Extract one implementation-neutral stateless Level mapping problem."""
 
     reject_event_module(module)
     validate_canonical_module(module)
@@ -95,6 +87,8 @@ def build_stateless_level_mapping_problem(
         output_phases=output_phases,
         sampling_policy=sampling_policy,
         period=None,
+        externalize_state_reads=False,
+        include_state_transitions=False,
     )
 
 
@@ -105,29 +99,59 @@ def build_periodic_level_mapping_problem(
     output_phases: tuple[int, ...],
     sampling_policy: SamplingPolicy = SamplingPolicy.BEGINNING_OF_STEP,
 ) -> MappingProblem:
-    """Extract output combinational cones across explicit logical occurrence windows.
+    """Extract output cones with register occurrences externalized as stable boundary sources.
 
-    ``period`` is a caller-prescribed logical cadence, not a period inferred by the established
-    physical state-timing analyzer. For a ``VectorRegisterRead`` with logical offset ``k``, the same
-    semantic state token is available throughout ``[k*period, (k+1)*period)``. Nonzero external input
-    sample offsets use the corresponding occurrence window too.
-
-    This first periodic extractor does not traverse state transitions merely because they exist in the
-    module. It maps only values reachable from module outputs. That makes it useful for post-update
-    rendering/output cones (including Snake's offset-one framebuffer cone) without prematurely
-    choosing a physical state-cell implementation.
+    For a ``VectorRegisterRead`` with logical offset ``k``, this diagnostic abstraction supplies the
+    token throughout ``[k*period, (k+1)*period)``. It is useful for mapping a post-update output cone
+    against an already prescribed logical cadence, but it is not the eventual recurrence IR: the
+    physical phase of a real register read port may depend on the selected state-cell implementation.
     """
 
-    reject_event_module(module)
-    validate_canonical_module(module)
-    if isinstance(period, bool) or not isinstance(period, int) or period < 1:
-        raise MappingProblemError("periodic mapping period must be a positive integer")
+    _validate_periodic_request(module, period)
     return _build_level_mapping_problem(
         module,
         output_phases=output_phases,
         sampling_policy=sampling_policy,
         period=period,
+        externalize_state_reads=True,
+        include_state_transitions=False,
     )
+
+
+def build_periodic_state_mapping_problem(
+    module: CircuitModule,
+    *,
+    period: int,
+    output_phases: tuple[int, ...],
+    sampling_policy: SamplingPolicy = SamplingPolicy.BEGINNING_OF_STEP,
+) -> MappingProblem:
+    """Extract full periodic semantic recurrence obligations without physical state timing.
+
+    ``period`` is a logical cadence constraint. Register occurrences become unresolved
+    :class:`MappingStateRead` values: only register identity and logical offset are retained. Every
+    canonical periodic ``StateTransition`` contributes a :class:`MappingStateTransition` referencing
+    the mapping ids of its value/control cones, but no transition input phase is invented.
+
+    The current joint solver intentionally rejects the resulting stateful problem until state-cell
+    implementation candidates provide read/write port timing equations.
+    """
+
+    _validate_periodic_request(module, period)
+    return _build_level_mapping_problem(
+        module,
+        output_phases=output_phases,
+        sampling_policy=sampling_policy,
+        period=period,
+        externalize_state_reads=False,
+        include_state_transitions=True,
+    )
+
+
+def _validate_periodic_request(module: CircuitModule, period: int) -> None:
+    reject_event_module(module)
+    validate_canonical_module(module)
+    if isinstance(period, bool) or not isinstance(period, int) or period < 1:
+        raise MappingProblemError("periodic mapping period must be a positive integer")
 
 
 def _build_level_mapping_problem(
@@ -136,6 +160,8 @@ def _build_level_mapping_problem(
     output_phases: tuple[int, ...],
     sampling_policy: SamplingPolicy,
     period: int | None,
+    externalize_state_reads: bool,
+    include_state_transitions: bool,
 ) -> MappingProblem:
     if len(output_phases) != len(module.output.values):
         raise MappingProblemError("output phase count must match semantic output arity")
@@ -148,12 +174,16 @@ def _build_level_mapping_problem(
         raise MappingProblemError("output phases must be non-negative integers")
     if not isinstance(sampling_policy, SamplingPolicy):
         raise TypeError("sampling_policy must be a SamplingPolicy")
+    if include_state_transitions and period is None:
+        raise AssertionError("state-transition mapping requires a periodic occurrence coordinate")
 
     horizon = max(output_phases)
     next_value_id = 1
     source_by_semantic: dict[int, MappingSource] = {}
+    state_read_by_semantic: dict[int, MappingStateRead] = {}
     operation_by_semantic: dict[int, MappingOperation] = {}
     sources: list[MappingSource] = []
+    state_reads: list[MappingStateRead] = []
     operations: list[MappingOperation] = []
 
     def take_value_id() -> int:
@@ -161,6 +191,19 @@ def _build_level_mapping_problem(
         result = next_value_id
         next_value_id += 1
         return result
+
+    def state_read_for(value: VectorRegisterRead) -> MappingStateRead:
+        cached = state_read_by_semantic.get(id(value))
+        if cached is not None:
+            return cached
+        read = MappingStateRead(
+            id=take_value_id(),
+            label=_label(value),
+            semantic=value,
+        )
+        state_read_by_semantic[id(value)] = read
+        state_reads.append(read)
+        return read
 
     def source_for(value: object) -> MappingSource:
         cached = source_by_semantic.get(id(value))
@@ -178,11 +221,13 @@ def _build_level_mapping_problem(
             start = 0
             end = None
         elif isinstance(value, VectorRegisterRead):
-            if period is None:
-                raise MappingProblemError("stateless mapping extraction does not model state reads")
+            if period is None or not externalize_state_reads:
+                raise MappingProblemError(
+                    "unresolved state reads require the full periodic-state mapping extractor"
+                )
             if value.offset < 0:
                 raise MappingProblemError(
-                    "periodic mapping currently requires non-negative register-read offsets"
+                    "periodic output-cone mapping requires non-negative register-read offsets"
                 )
             start = value.offset * period
             end = start + period
@@ -240,6 +285,8 @@ def _build_level_mapping_problem(
 
     def visit(value: object) -> int:
         if isinstance(value, VectorRegisterRead):
+            if include_state_transitions:
+                return state_read_for(value).id
             return source_for(value).id
         if isinstance(value, (*_SCALAR_SOURCES, *_VECTOR_SOURCES)):
             return source_for(value).id
@@ -264,20 +311,47 @@ def _build_level_mapping_problem(
         return operation.id
 
     output_values = tuple(visit(value) for value in module.output.values)
+
+    transition_specs: list[tuple[StateTransition, int | None, int | None]] = []
+    if include_state_transitions:
+        for transition in state_transitions(module):
+            if transition.trigger is not None:
+                raise MappingProblemError(
+                    "periodic state mapping cannot contain Event-triggered transitions"
+                )
+            value_id = visit(transition.value) if transition.value is not None else None
+            when_id = visit(transition.when) if transition.when is not None else None
+            transition_specs.append((transition, value_id, when_id))
+
+    next_special_id = next_value_id
     sinks = tuple(
         MappingSink(
-            id=next_value_id + index,
+            id=next_special_id + index,
             label=_output_label(module, index),
             value=value_id,
             phase=output_phases[index],
         )
         for index, value_id in enumerate(output_values)
     )
+    transition_base = next_special_id + len(sinks)
+    mapped_transitions = tuple(
+        MappingStateTransition(
+            id=transition_base + index,
+            label=_transition_label(transition),
+            value=value_id,
+            when=when_id,
+            semantic=transition,
+        )
+        for index, (transition, value_id, when_id) in enumerate(transition_specs)
+    )
+
     return MappingProblem(
         horizon=horizon,
         sources=tuple(sources),
         operations=tuple(operations),
         sinks=sinks,
+        state_reads=tuple(state_reads),
+        state_transitions=mapped_transitions,
     )
 
 
@@ -341,3 +415,10 @@ def _output_label(module: CircuitModule, index: int) -> str:
     if isinstance(name, str) and name:
         return name
     return f"out{index}"
+
+
+def _transition_label(transition: StateTransition) -> str:
+    return (
+        f"state {transition.register.name} {transition.kind} "
+        f"offset {transition.logical_offset} order {transition.order}"
+    )
