@@ -157,7 +157,9 @@ def optimize_exact_transports(
         raise ValueError("max_buses must be a non-negative integer or None")
     max_buses = min(max_buses, len(candidates) // 2)
 
-    incompatible = {tuple(sorted(pair)) for pair in incompatible_pairs}
+    incompatible: set[tuple[int, int]] = {
+        (min(left, right), max(left, right)) for left, right in incompatible_pairs
+    }
     if any(left == right for left, right in incompatible):
         raise ValueError("a transport incompatibility pair must contain distinct producers")
     unknown = {item for pair in incompatible for item in pair} - candidate_ids
@@ -298,9 +300,7 @@ def optimize_exact_transports(
 
     private = tuple(item for item in transports if item.producer not in assigned_to_bus)
     bus_middle = sum(item.middle_stages for item in buses)
-    bus_interfaces = sum(
-        lane.interface_combinators for bus in buses for lane in bus.lanes
-    )
+    bus_interfaces = sum(lane.interface_combinators for bus in buses for lane in bus.lanes)
     private_scalar = sum(
         item.length for item in private if item.shape is PayloadShape.SCALAR
     )
