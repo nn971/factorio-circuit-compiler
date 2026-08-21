@@ -1,14 +1,15 @@
-"""Deterministic first-milestone mapping plan lowering to Abstract Physical IR.
+"""Deterministic mapping-plan lowering to Abstract Physical IR.
 
 This lowerer intentionally supports a narrow stateless scalar subset: external scalar Level inputs,
-scalar constants, ordinary ``BinaryOp``/``Compare`` implementations, private exact transport, and
-the conservative zero-delay ``WIRE_SUM`` candidate.  It consumes an already validated
-:class:`RealizationPlan`; candidate selection and physical phases are never recomputed here.
+scalar constants, ordinary ``BinaryOp``/``Compare`` implementations, private exact transport, the
+conservative zero-delay ``WIRE_SUM`` candidate, and isolated shared scalar delay buses selected by
+the joint mapper. It consumes an already validated :class:`RealizationPlan`; candidate selection and
+physical phases are never recomputed here.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from factorio_circuit.ir.abstract_physical import (
     AbstractNet,
@@ -22,6 +23,7 @@ from factorio_circuit.ir.abstract_physical import (
     InputPort,
     Operand,
     OutputPort,
+    SignalConflict,
     SignalDomain,
 )
 from factorio_circuit.ir.semantic import (
@@ -38,7 +40,14 @@ from factorio_circuit.ir.semantic import (
     validate_canonical_module,
 )
 
-from .plan import DeliveryKind, PlannedDelivery, RealizationPlan, WireSumResource
+from .plan import (
+    DelayBusLane,
+    DelayBusResource,
+    DeliveryKind,
+    PlannedDelivery,
+    RealizationPlan,
+    WireSumResource,
+)
 from .problem import MappingProblem, MappingProblemError, MappingSource, MappingUse
 from .templates import ImplementationCandidate, ImplementationKind
 from .validate import validate_realization_plan
@@ -56,6 +65,9 @@ class _NetBuilder:
     signals: tuple[int, ...]
     endpoints: list[Endpoint] = field(default_factory=list)
     label: str | None = None
+
+
+type _BusBinding = tuple[DelayBusResource, DelayBusLane]
 
 
 class _MappedScalarLowerer:
@@ -105,6 +117,13 @@ class _MappedScalarLowerer:
                         "wire sums"
                     )
 
+        self.bus_binding_by_producer: dict[int, _BusBinding] = {}
+        for bus in plan.delay_buses:
+            for lane in bus.lanes:
+                previous = self.bus_binding_by_producer.setdefault(lane.producer, (bus, lane))
+                if previous != (bus, lane):
+                    raise MappingProblemError("one producer cannot use two mapped delay buses")
+
         self.next_entity_id = 1
         self.next_signal_id = 1
         self.next_net_id = 1
@@ -115,11 +134,21 @@ class _MappedScalarLowerer:
         self.delay_values: dict[tuple[int, int], _Value] = {}
         self.wire_sum_networks: dict[int, _Value] = {}
 
+        self.bus_ingress_by_lane: dict[tuple[int, int], _Value] = {}
+        self.bus_ingress_net_by_phase: dict[tuple[int, int], int] = {}
+        self.bus_short_branch_by_use: dict[MappingUse, _Value] = {}
+        self.bus_egress_by_use: dict[MappingUse, _Value] = {}
+        self.bus_joins: dict[tuple[int, int], list[tuple[int, int]]] = {}
+        self.joined_bus_lanes: set[tuple[int, int]] = set()
+        self.bus_stage_entity_index: dict[tuple[int, int], int] = {}
+        self.bus_stage_output_net: dict[tuple[int, int], int] = {}
+
     def lower(self) -> AbstractPhysicalCircuit:
         self._create_input_markers()
         for sink in self.problem.sinks:
-            delivery = self.delivery_by_use[MappingUse(sink.value, sink.id, None)]
-            value = self._value_for_delivery(delivery)
+            use = MappingUse(sink.value, sink.id, None)
+            delivery = self.delivery_by_use[use]
+            value = self._value_for_delivery(use, delivery)
             marker = ConstantCombinator(
                 id=self._take_entity_id(),
                 description=f"OUTPUT {sink.label} — phase +{sink.phase} tick(s)",
@@ -258,10 +287,11 @@ class _MappedScalarLowerer:
     def _operand_delivery(self, consumer: int, operand_index: int) -> _Value:
         operation = self.operation_by_id[consumer]
         producer = operation.operands[operand_index]
-        delivery = self.delivery_by_use[MappingUse(producer, consumer, operand_index)]
-        return self._value_for_delivery(delivery)
+        use = MappingUse(producer, consumer, operand_index)
+        delivery = self.delivery_by_use[use]
+        return self._value_for_delivery(use, delivery)
 
-    def _value_for_delivery(self, delivery: PlannedDelivery) -> _Value:
+    def _value_for_delivery(self, use: MappingUse, delivery: PlannedDelivery) -> _Value:
         if delivery.producer in self.source_by_id:
             base = self._source_value(self.source_by_id[delivery.producer])
         else:
@@ -269,16 +299,18 @@ class _MappedScalarLowerer:
 
         if delivery.kind in {DeliveryKind.REUSE, DeliveryKind.OBSERVE_AT}:
             return _Value(base.signal, base.net, delivery.phase)
-        if delivery.kind is not DeliveryKind.PRIVATE_TRANSPORT:
-            raise MappingProblemError(f"unsupported delivery kind {delivery.kind.value!r}")
         if delivery.transport_start_phase is None:
-            raise MappingProblemError("private transport has no exact start phase")
-        return self._exact_transport(
-            delivery.producer,
-            base,
-            delivery.transport_start_phase,
-            delivery.phase,
-        )
+            raise MappingProblemError("transport delivery has no exact start phase")
+        if delivery.kind is DeliveryKind.PRIVATE_TRANSPORT:
+            return self._exact_transport(
+                delivery.producer,
+                base,
+                delivery.transport_start_phase,
+                delivery.phase,
+            )
+        if delivery.kind is DeliveryKind.BUS_TRANSPORT:
+            return self._delay_on_bus(use, delivery, base)
+        raise MappingProblemError(f"unsupported delivery kind {delivery.kind.value!r}")
 
     def _exact_transport(
         self,
@@ -300,23 +332,272 @@ class _MappedScalarLowerer:
             if cached is not None:
                 current = cached
                 continue
-            signal = self._new_signal(f"mapped exact transport {producer} @ {next_phase}")
-            entity = ArithmeticCombinator(
-                id=self._take_entity_id(),
-                operation="+",
-                left=Operand(signal=current.signal, nets=(current.net,)),
-                right=Operand(constant=0),
-                output_each=False,
-                output_signal=signal,
-                description=f"mapped exact transport {producer} -> phase {next_phase}",
+            current = self._copy_scalar(
+                current,
+                next_phase,
+                f"mapped exact transport {producer} -> phase {next_phase}",
+                f"mapped exact {producer} @ {next_phase}",
             )
-            self.circuit.entities.append(entity)
-            self._attach(current.net, Endpoint(entity.id, Connector.INPUT))
-            net = self._new_net((signal,), label=f"mapped exact {producer} @ {next_phase}")
-            self._attach(net, Endpoint(entity.id, Connector.OUTPUT))
-            current = _Value(signal, net, next_phase)
             self.delay_values[(producer, next_phase)] = current
         return current
+
+    def _copy_scalar(
+        self,
+        value: _Value,
+        output_phase: int,
+        description: str,
+        net_label: str,
+    ) -> _Value:
+        if value.phase + 1 != output_phase:
+            raise MappingProblemError("scalar copy must advance exactly one physical tick")
+        signal = self._new_signal(description)
+        entity = ArithmeticCombinator(
+            id=self._take_entity_id(),
+            operation="+",
+            left=Operand(signal=value.signal, nets=(value.net,)),
+            right=Operand(constant=0),
+            output_each=False,
+            output_signal=signal,
+            description=description,
+        )
+        self.circuit.entities.append(entity)
+        self._attach(value.net, Endpoint(entity.id, Connector.INPUT))
+        net = self._new_net((signal,), label=net_label)
+        self._attach(net, Endpoint(entity.id, Connector.OUTPUT))
+        return _Value(signal, net, output_phase)
+
+    def _delay_on_bus(
+        self,
+        use: MappingUse,
+        delivery: PlannedDelivery,
+        base: _Value,
+    ) -> _Value:
+        binding = self.bus_binding_by_producer.get(delivery.producer)
+        if binding is None:
+            raise MappingProblemError("BUS_TRANSPORT delivery has no mapped delay-bus lane")
+        bus, lane = binding
+        if delivery.transport_start_phase != lane.start_phase:
+            raise MappingProblemError("delay-bus delivery starts at the wrong exact phase")
+        start = _Value(base.signal, base.net, lane.start_phase)
+
+        if delivery.phase == lane.start_phase + 1:
+            cached = self.bus_short_branch_by_use.get(use)
+            if cached is not None:
+                return cached
+            result = self._copy_scalar(
+                start,
+                delivery.phase,
+                f"mapped delay bus {bus.index} short branch {lane.producer}",
+                f"mapped delay bus {bus.index} short egress {lane.producer}",
+            )
+            self.bus_short_branch_by_use[use] = result
+            return result
+        if delivery.phase < lane.start_phase + 2:
+            raise MappingProblemError("delay-bus long egress is earlier than its isolated ingress")
+
+        ingress = self._bus_ingress(bus, lane, start)
+        self._register_bus_join(bus, lane, ingress)
+        trunk_phase = delivery.phase - 1
+        if trunk_phase == ingress.phase:
+            trunk = ingress
+        else:
+            for phase in range(ingress.phase, trunk_phase):
+                self._ensure_bus_stage(bus, phase)
+            output_net = self.bus_stage_output_net[(bus.index, trunk_phase - 1)]
+            trunk = _Value(ingress.signal, output_net, trunk_phase)
+        return self._bus_egress(use, bus, lane, trunk, delivery.phase)
+
+    def _bus_ingress(
+        self,
+        bus: DelayBusResource,
+        lane: DelayBusLane,
+        value: _Value,
+    ) -> _Value:
+        key = (bus.index, lane.producer)
+        cached = self.bus_ingress_by_lane.get(key)
+        if cached is not None:
+            return cached
+        if value.phase != lane.start_phase:
+            raise MappingProblemError("mapped delay-bus ingress starts at the wrong phase")
+
+        signal = self._new_signal(f"mapped delay bus {bus.index} lane {lane.producer}")
+        entity = ArithmeticCombinator(
+            id=self._take_entity_id(),
+            operation="+",
+            left=Operand(signal=value.signal, nets=(value.net,)),
+            right=Operand(constant=0),
+            output_each=False,
+            output_signal=signal,
+            description="mapped delay bus ingress",
+        )
+        self.circuit.entities.append(entity)
+        self._attach(value.net, Endpoint(entity.id, Connector.INPUT))
+
+        output_phase = value.phase + 1
+        if output_phase != lane.ingress_phase:
+            raise MappingProblemError("mapped delay-bus ingress latency disagrees with plan")
+        endpoint = Endpoint(entity.id, Connector.OUTPUT)
+        ingress_key = (bus.index, output_phase)
+        net = self.bus_ingress_net_by_phase.get(ingress_key)
+        if net is None:
+            net = self._new_net(
+                (signal,),
+                label=f"mapped delay bus {bus.index} ingress @ {output_phase}",
+            )
+            self._attach(net, endpoint)
+            self.bus_ingress_net_by_phase[ingress_key] = net
+        else:
+            self._attach(net, endpoint)
+            self._append_bus_signal(net, signal)
+
+        result = _Value(signal, net, output_phase)
+        self.bus_ingress_by_lane[key] = result
+        return result
+
+    def _bus_egress(
+        self,
+        use: MappingUse,
+        bus: DelayBusResource,
+        lane: DelayBusLane,
+        trunk: _Value,
+        target_phase: int,
+    ) -> _Value:
+        cached = self.bus_egress_by_use.get(use)
+        if cached is not None:
+            return cached
+        if trunk.phase + 1 != target_phase:
+            raise MappingProblemError("mapped delay-bus egress must consume the prior tick")
+
+        result = self._copy_scalar(
+            trunk,
+            target_phase,
+            f"mapped delay bus {bus.index} egress {lane.producer}",
+            f"mapped delay bus {bus.index} isolated egress {lane.producer} @ {target_phase}",
+        )
+        self.bus_egress_by_use[use] = result
+        return result
+
+    def _register_bus_join(
+        self,
+        bus: DelayBusResource,
+        lane: DelayBusLane,
+        value: _Value,
+    ) -> None:
+        key = (bus.index, lane.producer)
+        if key in self.joined_bus_lanes:
+            return
+        if value.phase != lane.ingress_phase:
+            raise MappingProblemError("mapped delay-bus join must use its isolated ingress")
+        self.joined_bus_lanes.add(key)
+        self.bus_joins.setdefault((bus.index, value.phase), []).append((value.net, value.signal))
+
+        stage_key = (bus.index, value.phase)
+        if stage_key in self.bus_stage_entity_index:
+            self._add_bus_stage_input(bus.index, value.phase, value.net)
+            self._propagate_bus_signal(bus.index, value.phase, value.signal)
+
+    def _ensure_bus_stage(self, bus: DelayBusResource, phase: int) -> None:
+        key = (bus.index, phase)
+        if key in self.bus_stage_entity_index:
+            return
+        if not bus.middle_start_phase <= phase < bus.middle_end_phase:
+            raise MappingProblemError("mapped delay-bus stage lies outside selected middle span")
+
+        inputs: list[int] = []
+        previous_net = self.bus_stage_output_net.get((bus.index, phase - 1))
+        if previous_net is not None:
+            inputs.append(previous_net)
+        joins = self.bus_joins.get(key, ())
+        inputs.extend(net for net, _signal in joins)
+        inputs = list(dict.fromkeys(inputs))
+        if not inputs:
+            raise MappingProblemError(
+                f"mapped delay bus {bus.index} has no lane feeding stage {phase}->{phase + 1}"
+            )
+
+        signals: set[int] = set()
+        if previous_net is not None:
+            signals.update(self.net_builders[previous_net].signals)
+        signals.update(signal for _net, signal in joins)
+
+        entity = ArithmeticCombinator(
+            id=self._take_entity_id(),
+            operation="+",
+            left=Operand(each=True, nets=tuple(inputs)),
+            right=Operand(constant=0),
+            output_each=True,
+            description=f"mapped shared delay bus {bus.index}",
+        )
+        self.circuit.entities.append(entity)
+        self.bus_stage_entity_index[key] = len(self.circuit.entities) - 1
+        endpoint = Endpoint(entity.id, Connector.INPUT)
+        for net in inputs:
+            self._attach(net, endpoint)
+
+        output_net = self._new_net(
+            tuple(sorted(signals)),
+            label=f"mapped shared delay bus {bus.index} @ {phase + 1}",
+        )
+        self._attach(output_net, Endpoint(entity.id, Connector.OUTPUT))
+        self.bus_stage_output_net[key] = output_net
+        self._add_all_signal_conflicts(output_net)
+
+        next_key = (bus.index, phase + 1)
+        if next_key in self.bus_stage_entity_index:
+            self._add_bus_stage_input(bus.index, phase + 1, output_net)
+            for signal in signals:
+                self._propagate_bus_signal(bus.index, phase + 1, signal)
+
+    def _add_bus_stage_input(self, bus: int, phase: int, net: int) -> None:
+        key = (bus, phase)
+        index = self.bus_stage_entity_index[key]
+        entity = self.circuit.entities[index]
+        if not isinstance(entity, ArithmeticCombinator) or not entity.left.each:
+            raise AssertionError("mapped delay-bus stage is not an Each combinator")
+        if net in entity.left.nets:
+            return
+        self.circuit.entities[index] = replace(
+            entity,
+            left=Operand(each=True, nets=(*entity.left.nets, net)),
+        )
+        self._attach(net, Endpoint(entity.id, Connector.INPUT))
+
+    def _propagate_bus_signal(self, bus: int, start_phase: int, signal: int) -> None:
+        phase = start_phase
+        while (bus, phase) in self.bus_stage_output_net:
+            self._append_bus_signal(self.bus_stage_output_net[(bus, phase)], signal)
+            phase += 1
+
+    def _append_bus_signal(self, net: int, signal: int) -> None:
+        builder = self.net_builders[net]
+        if signal in builder.signals:
+            return
+        for existing in builder.signals:
+            self._add_signal_conflict(
+                existing,
+                signal,
+                "mapped shared delay-bus lanes coexist on one carrier",
+            )
+        builder.signals = tuple(sorted((*builder.signals, signal)))
+
+    def _add_all_signal_conflicts(self, net: int) -> None:
+        signals = self.net_builders[net].signals
+        for index, left in enumerate(signals):
+            for right in signals[index + 1 :]:
+                self._add_signal_conflict(
+                    left,
+                    right,
+                    "mapped shared delay-bus lanes coexist on one carrier",
+                )
+
+    def _add_signal_conflict(self, left: int, right: int, reason: str) -> None:
+        if left == right:
+            raise MappingProblemError("one mapped delay-bus net reused an abstract lane identity")
+        ordered = (min(left, right), max(left, right))
+        for conflict in self.circuit.signal_conflicts:
+            if (min(conflict.left, conflict.right), max(conflict.left, conflict.right)) == ordered:
+                return
+        self.circuit.signal_conflicts.append(SignalConflict(ordered[0], ordered[1], reason))
 
     def _emit_binary(
         self,
