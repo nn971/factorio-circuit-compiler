@@ -1,7 +1,7 @@
 """Implementation-neutral problem records for temporal technology mapping.
 
 This layer contains only semantic data dependencies plus target-independent occurrence boundaries.
-It deliberately has no Factorio combinator latency.  Latency first appears in implementation
+It deliberately has no Factorio combinator latency. Latency first appears in implementation
 candidates under :mod:`factorio_circuit.mapping.templates`.
 """
 
@@ -84,7 +84,10 @@ class MappingOperation:
             raise MappingProblemError("mapping operation shape must be a PayloadShape")
         if not self.operands:
             raise MappingProblemError("mapping operation must have at least one operand")
-        if any(not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in self.operands):
+        if any(
+            not isinstance(item, int) or isinstance(item, bool) or item <= 0
+            for item in self.operands
+        ):
             raise MappingProblemError("mapping operation operands must be positive value ids")
 
 
@@ -124,13 +127,17 @@ class MappingProblem:
     sinks: tuple[MappingSink, ...]
 
     def __post_init__(self) -> None:
-        if isinstance(self.horizon, bool) or not isinstance(self.horizon, int) or self.horizon < 0:
+        if (
+            isinstance(self.horizon, bool)
+            or not isinstance(self.horizon, int)
+            or self.horizon < 0
+        ):
             raise MappingProblemError("mapping horizon must be a non-negative integer")
         self.validate()
 
     @property
     def value_ids(self) -> frozenset[int]:
-        return frozenset((*[item.id for item in self.sources], *[item.id for item in self.operations]))
+        return frozenset(item.id for item in (*self.sources, *self.operations))
 
     def source_by_id(self, value_id: int) -> MappingSource:
         for source in self.sources:
