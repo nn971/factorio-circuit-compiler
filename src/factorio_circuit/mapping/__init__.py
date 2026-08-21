@@ -1,6 +1,9 @@
 """Joint temporal technology-mapping primitives."""
 
-from .extract import build_stateless_level_mapping_problem
+from .extract import (
+    build_periodic_level_mapping_problem,
+    build_stateless_level_mapping_problem,
+)
 from .lower import lower_stateless_mapping_plan
 from .plan import (
     DelayBusLane,
@@ -54,6 +57,7 @@ __all__ = [
     "SelectedRealization",
     "WireSumResource",
     "add_wire_sum_candidates",
+    "build_periodic_level_mapping_problem",
     "build_stateless_level_mapping_problem",
     "lower_stateless_mapping_plan",
     "ordinary_candidate",
