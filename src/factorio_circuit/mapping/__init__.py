@@ -1,5 +1,6 @@
 """Joint temporal technology-mapping primitives."""
 
+from .extract import build_stateless_level_mapping_problem
 from .plan import DeliveryKind, ExactLifetime, PlannedDelivery, RealizationPlan, SelectedRealization
 from .problem import (
     MappingOperation,
@@ -34,6 +35,7 @@ __all__ = [
     "PlannedDelivery",
     "RealizationPlan",
     "SelectedRealization",
+    "build_stateless_level_mapping_problem",
     "ordinary_candidate",
     "ordinary_candidates",
     "solve_mapping_problem",
