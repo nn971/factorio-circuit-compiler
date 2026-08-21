@@ -35,6 +35,7 @@ class MappingSource:
     label: str
     shape: PayloadShape
     mode: MappingSourceMode
+    semantic: object
     start_phase: int = 0
     end_phase_exclusive: int | None = None
 
