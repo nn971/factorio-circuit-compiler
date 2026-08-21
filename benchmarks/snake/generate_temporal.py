@@ -48,7 +48,7 @@ from factorio_circuit.target.factorio.signals import DEFAULT_VIRTUAL_SIGNAL_POOL
 
 
 def _marker_wire_color(layout: object, marker_entity: int) -> WireColor:
-    wires = getattr(layout, "wires")
+    wires = layout.wires
     colors = {
         wire.color
         for wire in wires
@@ -57,7 +57,8 @@ def _marker_wire_color(layout: object, marker_entity: int) -> WireColor:
     if len(colors) != 1:
         rendered = ", ".join(sorted(color.value for color in colors)) or "none"
         raise ValueError(
-            f"expected exactly one synthesized wire color at marker {marker_entity}; found {rendered}"
+            "expected exactly one synthesized wire color at marker "
+            f"{marker_entity}; found {rendered}"
         )
     return next(iter(colors))
 
@@ -73,7 +74,8 @@ def _pin_graph_to_schedule(
         requested = schedule.phase_for(computation.semantic)
         if requested is None:
             raise ValueError(
-                f"state-cone computation {computation.label!r} is missing from production ALAP schedule"
+                "state-cone computation "
+                f"{computation.label!r} is missing from production ALAP schedule"
             )
         # ``AlapVectorLowerer._operation_input_phase`` never moves an operation earlier than its
         # naturally available ASAP phase. Mirror that production rule here rather than treating the
@@ -108,7 +110,8 @@ def _restore_accepted_live_sampling(
 
     The accepted Snake baseline uses ``SamplingPolicy.ALAP`` exactly as implemented by the ordinary
     lowerer: each state-cone consumer may observe the external Level source at its already-validated
-    ALAP phase. The current global optimizer also experiments with one coherent source snapshot; that
+    ALAP phase. The current global optimizer also experiments with one coherent source
+    snapshot; that
     changes behavior and has not passed Factorio validation. With placement frozen to the accepted
     ALAP schedule, source-observation transport is a constant in the CP-SAT objective and does not
     affect bus grouping, so strip it before physical lowering and reporting.
@@ -205,7 +208,9 @@ def main() -> None:
         print(format_abstract_physical_census(census), file=sys.stderr)
 
     progress = None if args.no_progress else _TerminalProgress()
-    placement = safe_crossbar_options() if args.linear_safe_layout else safe_folded_crossbar_options()
+    placement = (
+        safe_crossbar_options() if args.linear_safe_layout else safe_folded_crossbar_options()
+    )
     try:
         layout = synthesize_vector_layout(
             planned,
@@ -244,7 +249,8 @@ def main() -> None:
     print(
         "temporal snake: "
         f"combinators={layout.circuit.combinator_count}, relays={len(layout.relays)}, "
-        f"state_period={lowered.state_timing.uniform_period}, objective={optimization.objective_delays}, "
+        f"state_period={lowered.state_timing.uniform_period}, "
+        f"objective={optimization.objective_delays}, "
         f"best_bound={optimization.best_bound}, abstract_max_lanes={census.max_signals_per_net}",
         file=sys.stderr,
     )
@@ -257,7 +263,8 @@ def main() -> None:
     )
     print(
         "front-panel marker positions (relative blueprint coordinates): "
-        f"reset={layout.positions[reset.marker_entity]}, movement={layout.positions[movement.marker_entity]}, "
+        f"reset={layout.positions[reset.marker_entity]}, "
+        f"movement={layout.positions[movement.marker_entity]}, "
         f"framebuffer={layout.positions[framebuffer.marker_entity]}",
         file=sys.stderr,
     )

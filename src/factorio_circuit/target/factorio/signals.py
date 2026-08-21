@@ -20,7 +20,8 @@ def _virtual(*names: str) -> tuple[SignalId, ...]:
 # 51-lane compiler palette.  Factorio 2.x mathematical symbols add another 14 scratch identities
 # without consuming the virtual-signal namespace reserved by the 16x16 framebuffer ABI.
 #
-# The combinator meta-signals signal-each/signal-anything/signal-everything and parameter placeholders
+# The combinator meta-signals signal-each/signal-anything/signal-everything and parameter
+# placeholders
 # are deliberately excluded because they are selectors/operators rather than ordinary numeric lanes.
 _BASE_GAME_SCRATCH_NAMES: tuple[str, ...] = (
     *(f"signal-{chr(ord('A') + index)}" for index in range(26)),

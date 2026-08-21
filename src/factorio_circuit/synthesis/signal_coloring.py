@@ -119,7 +119,8 @@ def allocate_abstract_signals_dsat(
         raise ValueError(
             "physical synthesis exhausted the concrete scratch-signal pool while coloring the "
             "abstract signal-interference graph; "
-            f"palette={len(signal_pool)}; reserved_from_palette={len(set(signal_pool) & reserved)}; "
+            f"palette={len(signal_pool)}; "
+            f"reserved_from_palette={len(set(signal_pool) & reserved)}; "
             f"available={len(available)}; vertices={len(roots)}; max_degree={max_degree}; "
             f"largest_group_clique={largest_group_clique}; detail=({exc})"
         ) from exc

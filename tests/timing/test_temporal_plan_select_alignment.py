@@ -55,7 +55,9 @@ def test_temporal_plan_uses_modeled_select_latency_before_bus_join() -> None:
     placement = graph.alap_placement()
 
     select_node = next(
-        computation for computation in graph.computations if isinstance(computation.semantic, Select)
+        computation
+        for computation in graph.computations
+        if isinstance(computation.semantic, Select)
     )
     interval = next(
         item

@@ -17,7 +17,6 @@ from factorio_circuit.ir.abstract_physical import (
     EntityPlacementMode,
 )
 
-
 IRON = SignalId("item", "iron-plate")
 COPPER = SignalId("item", "copper-plate")
 

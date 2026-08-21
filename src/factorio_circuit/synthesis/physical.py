@@ -642,6 +642,8 @@ class PhysicalSynthesizer:
                 ),
                 description=entity.description,
             )
+        if not isinstance(entity, abstract.ConstantCombinator):
+            raise AssertionError(f"unsupported abstract entity: {type(entity).__name__}")
         return ConstantCombinator(
             id=entity.id,
             signals=tuple(

@@ -2,8 +2,8 @@
 
 The default uses ``safe-folded-crossbar``: deterministic serpentine entity rows, row-local physical
 bus tracks chosen after fold portals are known, and search-free vertical stitches. Public inputs and
-outputs are clustered at the beginning of the first row. Food is proposed by a freely placed selector
-combinator in Random Input mode and latched by deterministic Snake state.
+outputs are clustered at the beginning of the first row. Food is proposed by a freely
+placed selector combinator in Random Input mode and latched by deterministic Snake state.
 
 External Level inputs/oracles use ALAP sampling by default for this benchmark, so their live circuit
 network value is observed at the latest consumer phase instead of transported from phase zero.

@@ -293,7 +293,10 @@ def optimize_exact_transports(
                 start_phase=int(solver.Value(bus_starts[bus])),
                 end_phase=int(solver.Value(bus_ends[bus])),
                 lanes=tuple(
-                    sorted(lanes, key=lambda lane: (lane.start_phase, lane.end_phase, lane.producer))
+                    sorted(
+                        lanes,
+                        key=lambda lane: (lane.start_phase, lane.end_phase, lane.producer),
+                    )
                 ),
             )
         )

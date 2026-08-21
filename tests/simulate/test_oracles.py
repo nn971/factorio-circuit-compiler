@@ -2,7 +2,6 @@ import pytest
 
 from factorio_circuit import Circuit, SignalId, simulate_stream_with_oracles
 
-
 IRON = SignalId("item", "iron-plate")
 
 

@@ -16,12 +16,12 @@ from dataclasses import replace
 from typing import cast
 
 from factorio_circuit.analysis.latency import FACTORIO_LATENCY
+from factorio_circuit.analysis.state_timing import StateTimingPlan
 from factorio_circuit.analysis.temporal_hypergraph import TemporalHypergraph
 from factorio_circuit.analysis.temporal_optimize import (
     DelayBusLane,
     TemporalOptimizationResult,
 )
-from factorio_circuit.analysis.state_timing import StateTimingPlan
 from factorio_circuit.ir.abstract_physical import (
     AbstractNet,
     AbstractPhysicalCircuit,
@@ -94,7 +94,8 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
 
         # LIVE inputs must be one coherent observation per logical occurrence. CP-SAT chooses the
         # latest common observation tick (the earliest direct-consumer input). The raw external wire
-        # remains live until that tick; every later use must transport the exact token observed then.
+        # remains live until that tick; every later use must transport the exact token
+        # observed then.
         self._live_observation_by_semantic: dict[int, int] = {}
         for observation in optimization.live_source_observations:
             source = graph.source_by_id(observation.source)
@@ -235,7 +236,8 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         if gated.phase != final_input_phase:  # pragma: no cover - latency-model invariant
             raise AssertionError("Select condition stage disagrees with target latency model")
 
-        # ``when_false`` is a second internal use of the data arm two ticks after the semantic Select
+        # ``when_false`` is a second internal use of the data arm two ticks after the
+        # semantic Select
         # input boundary. Do not ask the global bus to carry it farther than CP-SAT modeled. This is
         # an exact propagation of the already-consumed token, so live external sources must not be
         # observed again here.
@@ -317,7 +319,9 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         # backward compatibility with manually constructed temporal plans; solver-generated plans
         # populate the coherent-source maps above and never reach that independent-observation path.
         window = self._scalar_window(value)
-        if (window is not None and window.contains(target_phase)) or self._can_resample_scalar(value):
+        if (window is not None and window.contains(target_phase)) or self._can_resample_scalar(
+            value
+        ):
             return super().delay_to(value, target_phase)
 
         binding = self._bus_origin.get((value.net, value.signal))

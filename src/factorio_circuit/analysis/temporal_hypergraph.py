@@ -407,15 +407,10 @@ class _TemporalHypergraphBuilder:
             mode = TemporalSourceMode.STABLE
             start = read_timing.physical_phase
             end = start + register_timing.period
-        elif isinstance(value, (FlowInputSample, InputSample)):
-            start = value.offset * self.period
-            mode = (
-                TemporalSourceMode.LIVE
-                if value.offset == 0 and self.sampling_policy is SamplingPolicy.ALAP
-                else TemporalSourceMode.EXACT
-            )
-            end = self.period if mode is TemporalSourceMode.LIVE else start + 1
-        elif isinstance(value, (FlowVectorInputSample, VectorInputSample)):
+        elif isinstance(
+            value,
+            (FlowInputSample, InputSample, FlowVectorInputSample, VectorInputSample),
+        ):
             start = value.offset * self.period
             mode = (
                 TemporalSourceMode.LIVE

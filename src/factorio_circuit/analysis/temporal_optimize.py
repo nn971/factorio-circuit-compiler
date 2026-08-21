@@ -249,7 +249,7 @@ def optimize_temporal_hypergraph(
     for source in graph.sources:
         if source.mode is not TemporalSourceMode.LIVE:
             continue
-        arcs = outgoing.get(source.id, ())
+        arcs = outgoing.get(source.id, [])
         if not arcs:
             continue
         terms = [consumer_inputs[(arc.producer, arc.consumer, arc.latency)] for arc in arcs]
@@ -385,13 +385,13 @@ def optimize_temporal_hypergraph(
         if end is None:
             continue
         if source.mode is TemporalSourceMode.EXACT:
-            start: Any = model.NewConstant(source.start_phase)
+            source_start: Any = model.NewConstant(source.start_phase)
         elif source.mode is TemporalSourceMode.LIVE:
-            start = live_observation_vars[source.id]
+            source_start = live_observation_vars[source.id]
         else:
             continue
         length = model.NewIntVar(0, horizon, f"source_length_{source.id}")
-        model.Add(length == end - start)
+        model.Add(length == end - source_start)
         if source.shape is PayloadShape.SCALAR:
             ordinary_scalar_terms.append(length)
         else:

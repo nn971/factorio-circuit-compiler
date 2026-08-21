@@ -6,7 +6,8 @@ ALAP placement fixed, lets the ordinary sampling/settling implementation realize
 and intercepts only the residual exact transports chosen by :mod:`analysis.transport_optimize`.
 
 Shared scalar buses are electrically isolated on both sides.  Every bus lane receives a fresh
-abstract signal at ingress, shared ``Each + 0 -> Each`` stages carry only bus-private nets, and every
+abstract signal at ingress, shared ``Each + 0 -> Each`` stages carry only bus-private nets,
+and every
 tap receives another fresh abstract signal at egress.  Concrete Factorio signal identities remain a
 later signal-coloring decision, so disconnected abstract lane instances may still reuse one physical
 signal while lanes coexisting on the same carrier are forced to differ.
@@ -164,14 +165,20 @@ class ObservationAwareTransportLowerer(SamplingPolicyLowerer):
             expected_start = min(lane.start_phase + 1 for lane in bus.lanes)
             expected_end = max(lane.end_phase - 1 for lane in bus.lanes)
             if (bus.start_phase, bus.end_phase) != (expected_start, expected_end):
-                raise TemporalPlacementError("shared transport bus middle span disagrees with lanes")
+                raise TemporalPlacementError(
+                    "shared transport bus middle span disagrees with lanes"
+                )
 
             for lane in bus.lanes:
                 if lane.lane_id in lane_ids:
-                    raise TemporalPlacementError("shared transport lane ids must be plan-local unique")
+                    raise TemporalPlacementError(
+                        "shared transport lane ids must be plan-local unique"
+                    )
                 lane_ids.add(lane.lane_id)
                 if lane.producer in bus_producers:
-                    raise TemporalPlacementError("one producer was assigned to multiple shared buses")
+                    raise TemporalPlacementError(
+                        "one producer was assigned to multiple shared buses"
+                    )
                 bus_producers.add(lane.producer)
                 matches = [
                     item
@@ -246,7 +253,9 @@ class ObservationAwareTransportLowerer(SamplingPolicyLowerer):
     def _realize_select(self, select: Select) -> RealizedValue:
         """Use the timing-exact arithmetic Select representation for modeled temporal nodes."""
 
-        node = self._node_by_semantic.get(id(select)) if hasattr(self, "_node_by_semantic") else None
+        node = (
+            self._node_by_semantic.get(id(select)) if hasattr(self, "_node_by_semantic") else None
+        )
         if node is None or node not in self._computation_ids:
             return super()._realize_select(select)
 
@@ -277,7 +286,9 @@ class ObservationAwareTransportLowerer(SamplingPolicyLowerer):
             "scalar_binary", "select-final"
         )
         if gated.phase != final_input_phase:
-            raise TemporalPlacementError("Select condition stage disagrees with target latency model")
+            raise TemporalPlacementError(
+                "Select condition stage disagrees with target latency model"
+            )
 
         final_false = when_false
         if isinstance(final_false, RealizedValue) and final_false.phase < final_input_phase:
@@ -374,7 +385,8 @@ class ObservationAwareTransportLowerer(SamplingPolicyLowerer):
             return self.exact_delay_to(start, target_phase)
         _bus, lane = binding
         if target_phase == lane.start_phase + 1:
-            # The isolated bus has no profitable shareable middle at this tap.  Keep the short branch
+            # The isolated bus has no profitable shareable middle at this tap. Keep the
+            # short branch
             # private even when the same exact token also has later bus taps.
             return self.exact_delay_to(start, target_phase)
         return self._delay_on_bus(start, target_phase, binding)
@@ -420,7 +432,9 @@ class ObservationAwareTransportLowerer(SamplingPolicyLowerer):
         if cached is not None:
             return cached
         if value.phase != lane.start_phase:
-            raise TemporalPlacementError("shared-bus ingress must start at residual transport phase")
+            raise TemporalPlacementError(
+                "shared-bus ingress must start at residual transport phase"
+            )
 
         bus_signal = self._new_signal(f"transport bus {bus} lane {lane.lane_id}: {lane.label}")
         entity = ArithmeticCombinator(
@@ -474,7 +488,9 @@ class ObservationAwareTransportLowerer(SamplingPolicyLowerer):
         if cached is not None:
             return cached
         if trunk.phase + 1 != target_phase:
-            raise TemporalPlacementError("shared-bus egress must consume the immediately prior tick")
+            raise TemporalPlacementError(
+                "shared-bus egress must consume the immediately prior tick"
+            )
 
         output_signal = self._new_signal(
             f"transport bus {bus} lane {lane.lane_id} egress @ {target_phase}"
@@ -515,7 +531,9 @@ class ObservationAwareTransportLowerer(SamplingPolicyLowerer):
         if key in self._joined_bus_lanes:
             return
         if value.phase != lane.ingress_phase or not isinstance(value.signal, int):
-            raise TemporalPlacementError("first bus join must be the isolated abstract ingress lane")
+            raise TemporalPlacementError(
+                "first bus join must be the isolated abstract ingress lane"
+            )
         self._joined_bus_lanes.add(key)
         self._bus_joins.setdefault((bus, value.phase), []).append((value.net, value.signal))
 
@@ -602,7 +620,9 @@ class ObservationAwareTransportLowerer(SamplingPolicyLowerer):
     ) -> RealizedValue:
         bus, lane = binding
         if value.phase != lane.start_phase:
-            raise TemporalPlacementError("shared transport must enter from its planned capture phase")
+            raise TemporalPlacementError(
+                "shared transport must enter from its planned capture phase"
+            )
         if target_phase not in lane.tap_phases or target_phase < lane.start_phase + 2:
             raise TemporalPlacementError("requested phase is not a shareable tap of this lane")
 
