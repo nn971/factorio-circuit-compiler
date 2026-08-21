@@ -1,8 +1,9 @@
 """Selected realization plan produced by temporal technology mapping.
 
 A plan is target-level enough to say which implementation candidate realizes each semantic recipe,
-when its ports are used, and which exact lifetimes need storage.  It deliberately stops before
-concrete Factorio signal identities, red/green wiring, placement, and routing.
+when its ports are used, which exact lifetimes need storage, and which explicit shared-resource
+mechanisms were selected. It deliberately stops before concrete Factorio signal identities,
+red/green wiring, placement, and routing.
 """
 
 from __future__ import annotations
@@ -60,12 +61,23 @@ class ExactLifetime:
 
 
 @dataclass(frozen=True, slots=True)
+class WireSumResource:
+    """Intentional same-carrier output-network aggregation selected by the mapper."""
+
+    operation: int
+    left_producer: int
+    right_producer: int
+    phase: int
+
+
+@dataclass(frozen=True, slots=True)
 class RealizationPlan:
     """Complete first-milestone target plan before abstract physical lowering."""
 
     realizations: tuple[SelectedRealization, ...]
     deliveries: tuple[PlannedDelivery, ...]
     exact_lifetimes: tuple[ExactLifetime, ...]
+    wire_sums: tuple[WireSumResource, ...]
     entity_cost: int
     transport_cost: int
 
