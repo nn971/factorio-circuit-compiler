@@ -328,7 +328,8 @@ class ObservationAwareTransportLowerer(SamplingPolicyLowerer):
     ) -> RealizedValue:
         before = len(self.circuit.entities)
         result = SamplingPolicyLowerer.delay_to(self, value, target_phase)
-        if len(self.circuit.entities) != before or result.net != value.net or result.signal != value.signal:
+        changed_representation = result.net != value.net or result.signal != value.signal
+        if len(self.circuit.entities) != before or changed_representation:
             raise TemporalPlacementError(
                 "temporal alignment marked a scalar transport start free, but physical lowering "
                 "required exact hardware"
@@ -362,11 +363,7 @@ class ObservationAwareTransportLowerer(SamplingPolicyLowerer):
         if planned is None:
             result = SamplingPolicyLowerer.delay_to(self, value, target_phase)
             producer = self._scalar_producer_by_key.get(self._scalar_key(value))
-            if (
-                producer is not None
-                and result.net == value.net
-                and result.signal == value.signal
-            ):
+            if producer is not None and result.net == value.net and result.signal == value.signal:
                 self._remember_scalar_producer(result, producer)
             return result
 
