@@ -3,6 +3,8 @@
 from .extract import build_stateless_level_mapping_problem
 from .lower import lower_stateless_mapping_plan
 from .plan import (
+    DelayBusLane,
+    DelayBusResource,
     DeliveryKind,
     ExactLifetime,
     PlannedDelivery,
@@ -33,6 +35,8 @@ from .validate import validate_realization_plan
 
 __all__ = [
     "CandidateOutputMode",
+    "DelayBusLane",
+    "DelayBusResource",
     "DeliveryKind",
     "ExactLifetime",
     "ImplementationCandidate",
