@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .plan import (
+    DelayBusResource,
     DeliveryKind,
     ExactLifetime,
     RealizationPlan,
@@ -88,23 +89,28 @@ def validate_realization_plan(
             start = realization_by_operation[use.producer].output_phase
             if delivery.phase < start:
                 raise MappingProblemError("operation result is consumed before it is produced")
-            expected_kind = (
-                DeliveryKind.REUSE if delivery.phase == start else DeliveryKind.PRIVATE_TRANSPORT
-            )
-            transport_start = start if expected_kind is DeliveryKind.PRIVATE_TRANSPORT else None
+            transport_start = start if delivery.phase > start else None
+            free_kind = DeliveryKind.REUSE
         else:
             source = sources[use.producer]
             if delivery.phase < source.start_phase:
                 raise MappingProblemError("source is consumed before its availability begins")
-            expected_kind, transport_start = source_delivery_kind(source, delivery.phase)
+            source_kind, transport_start = source_delivery_kind(source, delivery.phase)
+            free_kind = source_kind
 
-        if delivery.kind is not expected_kind or delivery.transport_start_phase != transport_start:
-            raise MappingProblemError("planned delivery kind disagrees with producer availability")
-        if transport_start is not None:
-            current = expected_transport.setdefault(use.producer, (transport_start, []))
-            if current[0] != transport_start:
-                raise MappingProblemError("one producer acquired inconsistent transport anchors")
-            current[1].append(delivery.phase)
+        if transport_start is None:
+            if delivery.kind is not free_kind or delivery.transport_start_phase is not None:
+                raise MappingProblemError("planned free delivery disagrees with producer availability")
+            continue
+
+        if delivery.kind not in {DeliveryKind.PRIVATE_TRANSPORT, DeliveryKind.BUS_TRANSPORT}:
+            raise MappingProblemError("exact transport use is missing a physical transport mechanism")
+        if delivery.transport_start_phase != transport_start:
+            raise MappingProblemError("planned transport start disagrees with producer availability")
+        current = expected_transport.setdefault(use.producer, (transport_start, []))
+        if current[0] != transport_start:
+            raise MappingProblemError("one producer acquired inconsistent transport anchors")
+        current[1].append(delivery.phase)
 
     expected_lifetimes = _lifetimes_from_transport(expected_transport)
     actual_lifetimes = tuple(
@@ -122,8 +128,15 @@ def validate_realization_plan(
         realization_by_operation,
         plan.wire_sums,
     )
+    bus_producers = _validate_delay_buses(plan, expected_lifetimes)
 
-    transport_cost = sum(item.length for item in expected_lifetimes)
+    private_transport_cost = sum(
+        item.length for item in expected_lifetimes if item.producer not in bus_producers
+    )
+    bus_transport_cost = sum(
+        bus.middle_stages + bus.interface_combinators for bus in plan.delay_buses
+    )
+    transport_cost = private_transport_cost + bus_transport_cost
     if plan.entity_cost != entity_cost:
         raise MappingProblemError("realization plan entity cost is inconsistent")
     if plan.transport_cost != transport_cost:
@@ -172,6 +185,70 @@ def _lifetimes_from_transport(
             key=lambda item: (item.start_phase, item.end_phase, item.producer),
         )
     )
+
+
+def _validate_delay_buses(
+    plan: RealizationPlan,
+    lifetimes: tuple[ExactLifetime, ...],
+) -> set[int]:
+    lifetime_by_producer = {item.producer: item for item in lifetimes}
+    if len(lifetime_by_producer) != len(lifetimes):
+        raise MappingProblemError("exact lifetimes must have unique producers")
+
+    bus_indices = [bus.index for bus in plan.delay_buses]
+    if len(set(bus_indices)) != len(bus_indices):
+        raise MappingProblemError("delay-bus resource indices must be unique")
+
+    bus_delivery_phases: dict[int, list[int]] = {}
+    private_transport_producers: set[int] = set()
+    for delivery in plan.deliveries:
+        if delivery.kind is DeliveryKind.BUS_TRANSPORT:
+            bus_delivery_phases.setdefault(delivery.producer, []).append(delivery.phase)
+        elif delivery.kind is DeliveryKind.PRIVATE_TRANSPORT:
+            private_transport_producers.add(delivery.producer)
+
+    bus_producers: set[int] = set()
+    for bus in plan.delay_buses:
+        if len(bus.lanes) < 2:
+            raise MappingProblemError("an active delay bus must contain at least two lanes")
+        if bus.middle_end_phase < bus.middle_start_phase:
+            raise MappingProblemError("delay-bus middle span cannot run backwards")
+
+        expected_middle_start = min(lane.ingress_phase for lane in bus.lanes)
+        expected_middle_end = max(lane.trunk_end_phase for lane in bus.lanes)
+        if (bus.middle_start_phase, bus.middle_end_phase) != (
+            expected_middle_start,
+            expected_middle_end,
+        ):
+            raise MappingProblemError("delay-bus middle span disagrees with its lane lifetimes")
+
+        for lane in bus.lanes:
+            if lane.producer in bus_producers:
+                raise MappingProblemError("one producer cannot be assigned to multiple delay buses")
+            bus_producers.add(lane.producer)
+            lifetime = lifetime_by_producer.get(lane.producer)
+            if lifetime is None:
+                raise MappingProblemError("delay-bus lane has no corresponding exact lifetime")
+            if (lane.start_phase, lane.end_phase) != (
+                lifetime.start_phase,
+                lifetime.end_phase,
+            ):
+                raise MappingProblemError("delay-bus lane span disagrees with exact lifetime")
+            if lane.end_phase - lane.start_phase < 3:
+                raise MappingProblemError("delay-bus lane requires an exact lifetime of at least 3 ticks")
+            expected_phases = tuple(sorted(bus_delivery_phases.get(lane.producer, ())))
+            if tuple(sorted(lane.delivery_phases)) != expected_phases:
+                raise MappingProblemError("delay-bus lane interfaces disagree with bus deliveries")
+            if not expected_phases:
+                raise MappingProblemError("delay-bus lane has no transported semantic use")
+
+    if set(bus_delivery_phases) != bus_producers:
+        raise MappingProblemError("BUS_TRANSPORT deliveries must match delay-bus lane producers")
+    if bus_producers & private_transport_producers:
+        raise MappingProblemError(
+            "one exact lifetime cannot mix private and bus transport in the first bus model"
+        )
+    return bus_producers
 
 
 def _validate_wire_sums(
