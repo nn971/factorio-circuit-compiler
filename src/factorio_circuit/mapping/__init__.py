@@ -1,7 +1,15 @@
 """Joint temporal technology-mapping primitives."""
 
 from .extract import build_stateless_level_mapping_problem
-from .plan import DeliveryKind, ExactLifetime, PlannedDelivery, RealizationPlan, SelectedRealization
+from .lower import lower_stateless_mapping_plan
+from .plan import (
+    DeliveryKind,
+    ExactLifetime,
+    PlannedDelivery,
+    RealizationPlan,
+    SelectedRealization,
+    WireSumResource,
+)
 from .problem import (
     MappingOperation,
     MappingProblem,
@@ -11,7 +19,7 @@ from .problem import (
     MappingSourceMode,
     MappingUse,
 )
-from .solver import MappingOptimizationResult, solve_mapping_problem, validate_realization_plan
+from .solver import MappingOptimizationResult, solve_mapping_problem
 from .templates import (
     CandidateOutputMode,
     ImplementationCandidate,
@@ -21,6 +29,7 @@ from .templates import (
     ordinary_candidates,
     wire_sum_candidate,
 )
+from .validate import validate_realization_plan
 
 __all__ = [
     "CandidateOutputMode",
@@ -39,8 +48,10 @@ __all__ = [
     "PlannedDelivery",
     "RealizationPlan",
     "SelectedRealization",
+    "WireSumResource",
     "add_wire_sum_candidates",
     "build_stateless_level_mapping_problem",
+    "lower_stateless_mapping_plan",
     "ordinary_candidate",
     "ordinary_candidates",
     "solve_mapping_problem",
