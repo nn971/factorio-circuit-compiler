@@ -4,11 +4,13 @@ from factorio_circuit import Circuit, SamplingPolicy
 from factorio_circuit.ir.semantic import BinaryOp, Constant, PayloadShape, Select
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
+    ImplementationKind,
     MappingOperation,
     MappingProblem,
     MappingSink,
     MappingSource,
     MappingSourceMode,
+    add_wire_sum_candidates,
     build_stateless_level_mapping_problem,
     ordinary_candidate,
     ordinary_candidates,
@@ -46,6 +48,32 @@ def _problem(
     )
 
 
+def _wire_sum_problem() -> MappingProblem:
+    sources = tuple(
+        MappingSource(
+            source_id,
+            f"source-{source_id}",
+            PayloadShape.SCALAR,
+            MappingSourceMode.STABLE,
+        )
+        for source_id in (1, 2, 3, 4)
+    )
+    left_semantic = BinaryOp("*", Constant(2), Constant(3), name="left")
+    right_semantic = BinaryOp("*", Constant(5), Constant(7), name="right")
+    sum_semantic = BinaryOp("+", left_semantic, right_semantic, name="sum")
+    operations = (
+        MappingOperation(5, "left", PayloadShape.SCALAR, (1, 2), left_semantic),
+        MappingOperation(6, "right", PayloadShape.SCALAR, (3, 4), right_semantic),
+        MappingOperation(7, "sum", PayloadShape.SCALAR, (5, 6), sum_semantic),
+    )
+    return MappingProblem(
+        horizon=10,
+        sources=sources,
+        operations=operations,
+        sinks=(MappingSink(10, "out", 7, 10),),
+    )
+
+
 def test_ordinary_candidate_owns_factorio_latency() -> None:
     candidate = ordinary_candidate(_add_operation(), candidate_id=7)
 
@@ -54,7 +82,7 @@ def test_ordinary_candidate_owns_factorio_latency() -> None:
     assert candidate.entity_cost == 1
 
 
-def test_select_candidate_owns_asymmetric_input_latency() -> None:
+def test_select_candidate_owns_asymmetric_input_latency_and_area() -> None:
     semantic = Select(
         Constant(1),
         Constant(7),
@@ -66,6 +94,7 @@ def test_select_candidate_owns_asymmetric_input_latency() -> None:
     candidate = ordinary_candidate(operation, candidate_id=8)
 
     assert candidate.input_phase_offsets == (-2, -3, -3)
+    assert candidate.entity_cost == 3
 
 
 def test_stateless_extractor_keeps_target_latency_out_of_problem() -> None:
@@ -136,3 +165,31 @@ def test_joint_mapper_finds_interior_phase_from_shared_exact_lifetimes() -> None
         (2, 0, 5),
         (3, 6, 10),
     }
+
+
+def test_wire_sum_candidate_changes_timing_inside_same_solve() -> None:
+    pytest.importorskip("ortools.sat.python.cp_model")
+    problem = _wire_sum_problem()
+
+    ordinary = solve_mapping_problem(problem, time_limit_seconds=5.0)
+    candidates = add_wire_sum_candidates(problem, ordinary_candidates(problem))
+    fused = solve_mapping_problem(
+        problem,
+        candidates=candidates,
+        time_limit_seconds=5.0,
+    )
+
+    assert ordinary.proven_optimal
+    assert fused.proven_optimal
+    assert ordinary.plan.realization_for(5).output_phase == 9
+    assert ordinary.plan.realization_for(6).output_phase == 9
+    assert ordinary.plan.realization_for(7).output_phase == 10
+
+    sum_realization = fused.plan.realization_for(7)
+    selected = next(item for item in candidates if item.id == sum_realization.candidate)
+    assert selected.kind is ImplementationKind.WIRE_SUM
+    assert fused.plan.realization_for(5).output_phase == 10
+    assert fused.plan.realization_for(6).output_phase == 10
+    assert sum_realization.output_phase == 10
+    assert fused.plan.entity_cost == 2
+    assert fused.plan.transport_cost == 0
