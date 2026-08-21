@@ -2,8 +2,20 @@
 
 from __future__ import annotations
 
-from .plan import DeliveryKind, ExactLifetime, RealizationPlan, WireSumResource
-from .problem import MappingProblem, MappingProblemError, MappingSource, MappingSourceMode, MappingUse
+from .plan import (
+    DeliveryKind,
+    ExactLifetime,
+    RealizationPlan,
+    SelectedRealization,
+    WireSumResource,
+)
+from .problem import (
+    MappingProblem,
+    MappingProblemError,
+    MappingSource,
+    MappingSourceMode,
+    MappingUse,
+)
 from .templates import CandidateOutputMode, ImplementationCandidate, ImplementationKind
 
 
@@ -61,9 +73,8 @@ def validate_realization_plan(
             if expected_phase < 0 or deliveries[use].phase != expected_phase:
                 raise MappingProblemError("candidate timing equation disagrees with planned delivery")
 
-    sink_by_id = {item.id: item for item in problem.sinks}
-    for sink_id, sink in sink_by_id.items():
-        delivery = deliveries[MappingUse(sink.value, sink_id, None)]
+    for sink in problem.sinks:
+        delivery = deliveries[MappingUse(sink.value, sink.id, None)]
         if delivery.phase != sink.phase:
             raise MappingProblemError("sink delivery phase disagrees with the fixed sink contract")
 
@@ -105,7 +116,12 @@ def validate_realization_plan(
     if actual_lifetimes != expected_lifetimes:
         raise MappingProblemError("realization plan exact lifetimes disagree with deliveries")
 
-    _validate_wire_sums(problem, selected_candidate, realization_by_operation, plan.wire_sums)
+    _validate_wire_sums(
+        problem,
+        selected_candidate,
+        realization_by_operation,
+        plan.wire_sums,
+    )
 
     transport_cost = sum(item.length for item in expected_lifetimes)
     if plan.entity_cost != entity_cost:
@@ -161,7 +177,7 @@ def _lifetimes_from_transport(
 def _validate_wire_sums(
     problem: MappingProblem,
     selected: dict[int, ImplementationCandidate],
-    realizations: dict[int, object],
+    realizations: dict[int, SelectedRealization],
     wire_sums: tuple[WireSumResource, ...],
 ) -> None:
     operations = {item.id: item for item in problem.operations}
@@ -183,10 +199,9 @@ def _validate_wire_sums(
             raise MappingProblemError("wire-sum resource requires two semantic operands")
         resource = by_operation[operation_id]
         realization = realizations[operation_id]
-        phase = getattr(realization, "output_phase", None)
         if (
             resource.left_producer != operation.operands[0]
             or resource.right_producer != operation.operands[1]
-            or resource.phase != phase
+            or resource.phase != realization.output_phase
         ):
             raise MappingProblemError("wire-sum resource disagrees with its selected realization")
