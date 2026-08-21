@@ -15,8 +15,11 @@ from .solver import MappingOptimizationResult, solve_mapping_problem, validate_r
 from .templates import (
     CandidateOutputMode,
     ImplementationCandidate,
+    ImplementationKind,
+    add_wire_sum_candidates,
     ordinary_candidate,
     ordinary_candidates,
+    wire_sum_candidate,
 )
 
 __all__ = [
@@ -24,6 +27,7 @@ __all__ = [
     "DeliveryKind",
     "ExactLifetime",
     "ImplementationCandidate",
+    "ImplementationKind",
     "MappingOperation",
     "MappingOptimizationResult",
     "MappingProblem",
@@ -35,9 +39,11 @@ __all__ = [
     "PlannedDelivery",
     "RealizationPlan",
     "SelectedRealization",
+    "add_wire_sum_candidates",
     "build_stateless_level_mapping_problem",
     "ordinary_candidate",
     "ordinary_candidates",
     "solve_mapping_problem",
     "validate_realization_plan",
+    "wire_sum_candidate",
 ]
