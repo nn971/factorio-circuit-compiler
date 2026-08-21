@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from .plan import (
-    DelayBusResource,
     DeliveryKind,
     ExactLifetime,
     RealizationPlan,
@@ -100,13 +99,19 @@ def validate_realization_plan(
 
         if transport_start is None:
             if delivery.kind is not free_kind or delivery.transport_start_phase is not None:
-                raise MappingProblemError("planned free delivery disagrees with producer availability")
+                raise MappingProblemError(
+                    "planned free delivery disagrees with producer availability"
+                )
             continue
 
         if delivery.kind not in {DeliveryKind.PRIVATE_TRANSPORT, DeliveryKind.BUS_TRANSPORT}:
-            raise MappingProblemError("exact transport use is missing a physical transport mechanism")
+            raise MappingProblemError(
+                "exact transport use is missing a physical transport mechanism"
+            )
         if delivery.transport_start_phase != transport_start:
-            raise MappingProblemError("planned transport start disagrees with producer availability")
+            raise MappingProblemError(
+                "planned transport start disagrees with producer availability"
+            )
         current = expected_transport.setdefault(use.producer, (transport_start, []))
         if current[0] != transport_start:
             raise MappingProblemError("one producer acquired inconsistent transport anchors")
@@ -235,7 +240,9 @@ def _validate_delay_buses(
             ):
                 raise MappingProblemError("delay-bus lane span disagrees with exact lifetime")
             if lane.end_phase - lane.start_phase < 3:
-                raise MappingProblemError("delay-bus lane requires an exact lifetime of at least 3 ticks")
+                raise MappingProblemError(
+                    "delay-bus lane requires an exact lifetime of at least 3 ticks"
+                )
             expected_phases = tuple(sorted(bus_delivery_phases.get(lane.producer, ())))
             if tuple(sorted(lane.delivery_phases)) != expected_phases:
                 raise MappingProblemError("delay-bus lane interfaces disagree with bus deliveries")

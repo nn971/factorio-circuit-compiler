@@ -120,8 +120,8 @@ class _MappedScalarLowerer:
         self.bus_binding_by_producer: dict[int, _BusBinding] = {}
         for bus in plan.delay_buses:
             for lane in bus.lanes:
-                previous = self.bus_binding_by_producer.setdefault(lane.producer, (bus, lane))
-                if previous != (bus, lane):
+                bus_previous = self.bus_binding_by_producer.setdefault(lane.producer, (bus, lane))
+                if bus_previous != (bus, lane):
                     raise MappingProblemError("one producer cannot use two mapped delay buses")
 
         self.next_entity_id = 1
