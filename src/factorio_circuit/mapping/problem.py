@@ -1,8 +1,9 @@
 """Implementation-neutral problem records for temporal technology mapping.
 
-This layer contains only semantic data dependencies plus target-independent occurrence boundaries.
-It deliberately has no Factorio combinator latency. Latency first appears in implementation
-candidates under :mod:`factorio_circuit.mapping.templates`.
+This layer contains semantic data dependencies plus target-independent occurrence information. It
+deliberately has no ordinary Factorio combinator latency. Fixed external availability belongs to
+``MappingSource``; unresolved state read/write port timing belongs to explicit state records and is
+chosen only after a physical state-cell implementation exists.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from factorio_circuit.ir.semantic import PayloadShape
-from factorio_circuit.ir.state import StateTransition
+from factorio_circuit.ir.state import StateTransition, VectorRegisterRead
 
 
 class MappingProblemError(ValueError):
@@ -19,11 +20,7 @@ class MappingProblemError(ValueError):
 
 
 class MappingSourceMode(StrEnum):
-    """Physical observation contract supplied for one semantic leaf.
-
-    These modes describe target/source capability, not the latency of any implementation of a
-    semantic operation.
-    """
+    """Physical observation contract supplied for one fixed semantic leaf."""
 
     STABLE = "stable"
     OBSERVABLE = "observable"
@@ -66,6 +63,39 @@ class MappingSource:
         if self.end_phase_exclusive is None:
             return None
         return self.end_phase_exclusive - 1
+
+
+@dataclass(frozen=True, slots=True)
+class MappingStateRead:
+    """One semantic register occurrence before a physical state-cell implementation is chosen.
+
+    Unlike ``MappingSource``, this record has no physical availability interval. A future state-cell
+    candidate must export the read port's phase/availability contract. ``logical_offset`` remains the
+    implementation-independent occurrence displacement from canonical semantic IR.
+    """
+
+    id: int
+    label: str
+    semantic: VectorRegisterRead
+
+    def __post_init__(self) -> None:
+        _require_positive_id(self.id, "state read")
+        if not self.label:
+            raise MappingProblemError("mapping state read label must be non-empty")
+        if not isinstance(self.semantic, VectorRegisterRead):
+            raise MappingProblemError("mapping state read requires a VectorRegisterRead semantic")
+
+    @property
+    def shape(self) -> PayloadShape:
+        return PayloadShape.VECTOR
+
+    @property
+    def register_name(self) -> str:
+        return self.semantic.register.name
+
+    @property
+    def logical_offset(self) -> int:
+        return self.semantic.offset
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +207,7 @@ class MappingProblem:
     sources: tuple[MappingSource, ...]
     operations: tuple[MappingOperation, ...]
     sinks: tuple[MappingSink, ...]
+    state_reads: tuple[MappingStateRead, ...] = ()
     state_transitions: tuple[MappingStateTransition, ...] = ()
 
     def __post_init__(self) -> None:
@@ -187,13 +218,21 @@ class MappingProblem:
     @property
     def value_ids(self) -> frozenset[int]:
         return frozenset(
-            {source.id for source in self.sources} | {operation.id for operation in self.operations}
+            {source.id for source in self.sources}
+            | {read.id for read in self.state_reads}
+            | {operation.id for operation in self.operations}
         )
 
     def source_by_id(self, value_id: int) -> MappingSource:
         for source in self.sources:
             if source.id == value_id:
                 return source
+        raise KeyError(value_id)
+
+    def state_read_by_id(self, value_id: int) -> MappingStateRead:
+        for read in self.state_reads:
+            if read.id == value_id:
+                return read
         raise KeyError(value_id)
 
     def operation_by_id(self, value_id: int) -> MappingOperation:
@@ -212,7 +251,9 @@ class MappingProblem:
         """Return uses whose physical input phase is already part of the current solver model.
 
         State-transition value/control references are intentionally absent until state-cell
-        implementation candidates own their consume-phase equations.
+        implementation candidates own their consume-phase equations. Operation uses of unresolved
+        state reads are retained structurally, but the current solver rejects such problems before
+        assigning phases.
         """
 
         result = [
@@ -224,7 +265,11 @@ class MappingProblem:
         return tuple(result)
 
     def validate(self) -> None:
-        value_ids = [item.id for item in self.sources] + [item.id for item in self.operations]
+        value_ids = (
+            [item.id for item in self.sources]
+            + [item.id for item in self.state_reads]
+            + [item.id for item in self.operations]
+        )
         sink_ids = [item.id for item in self.sinks]
         transition_ids = [item.id for item in self.state_transitions]
         if len(set(value_ids)) != len(value_ids):
@@ -234,7 +279,12 @@ class MappingProblem:
         if len(set(transition_ids)) != len(transition_ids):
             raise MappingProblemError("mapping state transition ids must be unique")
         namespaces = (set(value_ids), set(sink_ids), set(transition_ids))
-        if any(namespaces[left] & namespaces[right] for left in range(3) for right in range(left + 1, 3)):
+        overlap = any(
+            namespaces[left] & namespaces[right]
+            for left in range(len(namespaces))
+            for right in range(left + 1, len(namespaces))
+        )
+        if overlap:
             raise MappingProblemError(
                 "mapping values, sinks, and state transitions must use disjoint namespaces"
             )
