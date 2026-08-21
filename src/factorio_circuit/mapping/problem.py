@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from factorio_circuit.ir.semantic import PayloadShape
+from factorio_circuit.ir.state import StateTransition
 
 
 class MappingProblemError(ValueError):
@@ -109,6 +110,56 @@ class MappingSink:
         _require_phase(self.phase, "mapping sink phase")
 
 
+@dataclass(frozen=True, slots=True)
+class MappingStateTransition:
+    """One periodic semantic state-update obligation before a state-cell implementation is chosen.
+
+    ``value`` and ``when`` are mapping value ids for the canonical transition's data/control
+    expressions. No physical consume phase is stored here. A future state-cell implementation
+    candidate must own those port timing equations instead of importing ``transition_input_phase``
+    from the established state-timing analyzer.
+    """
+
+    id: int
+    label: str
+    value: int | None
+    when: int | None
+    semantic: StateTransition
+
+    def __post_init__(self) -> None:
+        _require_positive_id(self.id, "state transition")
+        if not self.label:
+            raise MappingProblemError("mapping state transition label must be non-empty")
+        if not isinstance(self.semantic, StateTransition):
+            raise MappingProblemError("mapping state transition requires a StateTransition semantic")
+        if self.semantic.trigger is not None:
+            raise MappingProblemError("periodic mapping state transition cannot be Event-triggered")
+        if self.value is not None:
+            _require_positive_id(self.value, "state transition value")
+        if self.when is not None:
+            _require_positive_id(self.when, "state transition condition")
+        if (self.value is None) != (self.semantic.value is None):
+            raise MappingProblemError(
+                "mapping state transition value presence disagrees with semantic transition"
+            )
+        if (self.when is None) != (self.semantic.when is None):
+            raise MappingProblemError(
+                "mapping state transition condition presence disagrees with semantic transition"
+            )
+
+    @property
+    def register_name(self) -> str:
+        return self.semantic.register.name
+
+    @property
+    def kind(self) -> str:
+        return self.semantic.kind
+
+    @property
+    def logical_offset(self) -> int:
+        return self.semantic.logical_offset
+
+
 @dataclass(frozen=True, slots=True, order=True)
 class MappingUse:
     """One producer use before any physical delivery mechanism is chosen."""
@@ -126,6 +177,7 @@ class MappingProblem:
     sources: tuple[MappingSource, ...]
     operations: tuple[MappingOperation, ...]
     sinks: tuple[MappingSink, ...]
+    state_transitions: tuple[MappingStateTransition, ...] = ()
 
     def __post_init__(self) -> None:
         if isinstance(self.horizon, bool) or not isinstance(self.horizon, int) or self.horizon < 0:
@@ -150,7 +202,19 @@ class MappingProblem:
                 return operation
         raise KeyError(value_id)
 
+    def state_transition_by_id(self, transition_id: int) -> MappingStateTransition:
+        for transition in self.state_transitions:
+            if transition.id == transition_id:
+                return transition
+        raise KeyError(transition_id)
+
     def uses(self) -> tuple[MappingUse, ...]:
+        """Return uses whose physical input phase is already part of the current solver model.
+
+        State-transition value/control references are intentionally absent until state-cell
+        implementation candidates own their consume-phase equations.
+        """
+
         result = [
             MappingUse(producer, operation.id, operand_index)
             for operation in self.operations
@@ -162,12 +226,18 @@ class MappingProblem:
     def validate(self) -> None:
         value_ids = [item.id for item in self.sources] + [item.id for item in self.operations]
         sink_ids = [item.id for item in self.sinks]
+        transition_ids = [item.id for item in self.state_transitions]
         if len(set(value_ids)) != len(value_ids):
             raise MappingProblemError("mapping value ids must be unique")
         if len(set(sink_ids)) != len(sink_ids):
             raise MappingProblemError("mapping sink ids must be unique")
-        if set(value_ids) & set(sink_ids):
-            raise MappingProblemError("mapping value and sink ids must use disjoint namespaces")
+        if len(set(transition_ids)) != len(transition_ids):
+            raise MappingProblemError("mapping state transition ids must be unique")
+        namespaces = (set(value_ids), set(sink_ids), set(transition_ids))
+        if any(namespaces[left] & namespaces[right] for left in range(3) for right in range(left + 1, 3)):
+            raise MappingProblemError(
+                "mapping values, sinks, and state transitions must use disjoint namespaces"
+            )
 
         known = set(value_ids)
         operations = {item.id: item for item in self.operations}
@@ -187,6 +257,15 @@ class MappingProblem:
             if sink.phase > self.horizon:
                 raise MappingProblemError(
                     f"sink {sink.label!r} phase {sink.phase} exceeds horizon {self.horizon}"
+                )
+        for transition in self.state_transitions:
+            references = tuple(
+                item for item in (transition.value, transition.when) if item is not None
+            )
+            missing = [item for item in references if item not in known]
+            if missing:
+                raise MappingProblemError(
+                    f"state transition {transition.label!r} references unknown value ids {missing}"
                 )
         for source in self.sources:
             if source.start_phase > self.horizon:
