@@ -130,9 +130,9 @@ def solve_mapping_problem(
                         raise MappingProblemError(
                             "wire-sum candidate requires operation-result operands"
                         )
-                    model.Add(
-                        output_phase[producer] == output_phase[operation.id]
-                    ).OnlyEnforceIf(choose[candidate.id])
+                    model.Add(output_phase[producer] == output_phase[operation.id]).OnlyEnforceIf(
+                        choose[candidate.id]
+                    )
 
     outgoing: dict[int, list[Any]] = {item: [] for item in problem.value_ids}
     for use in problem.uses():
@@ -219,7 +219,9 @@ def _validate_candidate_set(
         covered.add(operation.id)
     missing = set(operations) - covered
     if missing:
-        raise MappingProblemError(f"operations have no implementation candidates: {sorted(missing)}")
+        raise MappingProblemError(
+            f"operations have no implementation candidates: {sorted(missing)}"
+        )
 
 
 def _candidates_by_operation(

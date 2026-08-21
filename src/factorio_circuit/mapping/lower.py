@@ -74,9 +74,13 @@ class _MappedScalarLowerer:
         if any(source.shape is not PayloadShape.SCALAR for source in problem.sources):
             raise MappingProblemError("mapped scalar lowering does not yet support vector sources")
         if any(operation.shape is not PayloadShape.SCALAR for operation in problem.operations):
-            raise MappingProblemError("mapped scalar lowering does not yet support vector operations")
+            raise MappingProblemError(
+                "mapped scalar lowering does not yet support vector operations"
+            )
         if len(problem.sinks) != len(module.output.values):
-            raise MappingProblemError("mapping sinks must correspond one-to-one with module outputs")
+            raise MappingProblemError(
+                "mapping sinks must correspond one-to-one with module outputs"
+            )
 
         self.module = module
         self.problem = problem
@@ -97,7 +101,8 @@ class _MappedScalarLowerer:
                 previous = self.contribution_target.setdefault(producer, resource)
                 if previous != resource:
                     raise MappingProblemError(
-                        "one physical realization cannot contribute to two first-milestone wire sums"
+                        "one physical realization cannot contribute to two first-milestone "
+                        "wire sums"
                     )
 
         self.next_entity_id = 1
@@ -184,7 +189,9 @@ class _MappedScalarLowerer:
             )
 
         if base is None:
-            raise MappingProblemError(f"mapping source {source.label!r} has no physical input marker")
+            raise MappingProblemError(
+                f"mapping source {source.label!r} has no physical input marker"
+            )
         if source.start_phase != 0:
             raise MappingProblemError(
                 "first-milestone mapped scalar lowering requires phase-zero physical sources"
@@ -371,7 +378,9 @@ class _MappedScalarLowerer:
         resource = self.contribution_target.get(operation_id)
         if resource is not None:
             if resource.phase != phase:
-                raise MappingProblemError("wire-sum contribution is not produced at the shared phase")
+                raise MappingProblemError(
+                    "wire-sum contribution is not produced at the shared phase"
+                )
             shared = self._ensure_wire_sum_network(resource)
             return shared.signal, shared.net
         signal = self._new_signal(label)

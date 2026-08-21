@@ -180,8 +180,7 @@ def test_joint_mapper_finds_interior_phase_from_shared_exact_lifetimes() -> None
     assert result.plan.entity_cost == 1
     assert result.plan.transport_cost == 14
     lifetimes = {
-        (item.producer, item.start_phase, item.end_phase)
-        for item in result.plan.exact_lifetimes
+        (item.producer, item.start_phase, item.end_phase) for item in result.plan.exact_lifetimes
     }
     assert lifetimes == {
         (1, 0, 5),

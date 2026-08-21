@@ -51,11 +51,7 @@ from .model import (
 FOOD_CANDIDATE_ORACLE = "food_candidate"
 FOOD_CANDIDATE_INPUT = "candidates"
 
-ALL_PIXELS = {
-    pixel_signal(x, y): 1
-    for y in range(SCREEN_HEIGHT)
-    for x in range(SCREEN_WIDTH)
-}
+ALL_PIXELS = {pixel_signal(x, y): 1 for y in range(SCREEN_HEIGHT) for x in range(SCREEN_WIDTH)}
 
 
 def build_random_snake_circuit(

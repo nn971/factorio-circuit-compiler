@@ -377,7 +377,9 @@ def _entity_context(entity: abstract.AbstractEntity) -> str:
         return f"constant:{description or 'constant'}"
     if isinstance(entity, abstract.ArithmeticCombinator):
         return f"computation:{description or f'arithmetic {entity.operation}'}"
-    return f"computation:{description or f'decider {entity.comparator}'}"
+    if isinstance(entity, abstract.DeciderCombinator):
+        return f"computation:{description or f'decider {entity.comparator}'}"
+    return f"computation:{description or type(entity).__name__}"
 
 
 def _context_class(labels: tuple[str, ...]) -> str:

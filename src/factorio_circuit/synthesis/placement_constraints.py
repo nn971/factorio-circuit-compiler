@@ -33,11 +33,7 @@ def resolve_placement_constraints(
         return options
 
     bindings = dict(anchor_positions or {})
-    required = {
-        constraint.anchor.name
-        for constraint in anchored
-        if constraint.anchor is not None
-    }
+    required = {constraint.anchor.name for constraint in anchored if constraint.anchor is not None}
     missing = sorted(required - bindings.keys())
     if missing:
         raise ValueError(

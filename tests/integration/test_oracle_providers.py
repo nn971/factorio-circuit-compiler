@@ -17,7 +17,6 @@ from factorio_circuit.ir.abstract_physical import (
     EntityPlacementMode,
 )
 
-
 IRON = SignalId("item", "iron-plate")
 COPPER = SignalId("item", "copper-plate")
 
@@ -113,13 +112,9 @@ def test_provider_can_anchor_only_its_physical_sensor_entity() -> None:
     assert constraint.anchor.name == "furnace-temperature-sensor"
 
     ordinary_entities = {
-        entity.id
-        for entity in lowered.abstract_physical.entities
-        if entity.id != provider.id
+        entity.id for entity in lowered.abstract_physical.entities if entity.id != provider.id
     }
-    constrained_entities = {
-        item.entity for item in lowered.abstract_physical.placement_constraints
-    }
+    constrained_entities = {item.entity for item in lowered.abstract_physical.placement_constraints}
     assert ordinary_entities.isdisjoint(constrained_entities)
 
 

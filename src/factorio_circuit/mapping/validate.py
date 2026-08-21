@@ -71,7 +71,9 @@ def validate_realization_plan(
             use = MappingUse(operation.operands[operand_index], operation_id, operand_index)
             expected_phase = realization.output_phase + offset
             if expected_phase < 0 or deliveries[use].phase != expected_phase:
-                raise MappingProblemError("candidate timing equation disagrees with planned delivery")
+                raise MappingProblemError(
+                    "candidate timing equation disagrees with planned delivery"
+                )
 
     for sink in problem.sinks:
         delivery = deliveries[MappingUse(sink.value, sink.id, None)]
@@ -87,9 +89,7 @@ def validate_realization_plan(
             if delivery.phase < start:
                 raise MappingProblemError("operation result is consumed before it is produced")
             expected_kind = (
-                DeliveryKind.REUSE
-                if delivery.phase == start
-                else DeliveryKind.PRIVATE_TRANSPORT
+                DeliveryKind.REUSE if delivery.phase == start else DeliveryKind.PRIVATE_TRANSPORT
             )
             transport_start = start if expected_kind is DeliveryKind.PRIVATE_TRANSPORT else None
         else:

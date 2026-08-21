@@ -27,7 +27,8 @@ def _vector_fanout_circuit(*, oracle: bool) -> Circuit:
 
     # A real state recurrence creates a multi-tick logical occurrence.  The two cheap external
     # branches are then scheduled close to the state boundary, so BEGINNING_OF_STEP must transport
-    # the phase-zero snapshot while ALAP may observe the still-live external net at that later phase.
+    # the phase-zero snapshot while ALAP may observe the still-live external net at that
+    # later phase.
     deep = memory.sample()
     for _ in range(5):
         deep = deep + one
@@ -76,7 +77,9 @@ def test_alap_eliminates_external_vector_input_transport_trunk() -> None:
     removed = _delay_count(beginning.abstract_physical, "vector phase alignment delay")
     assert removed > 0
     assert _delay_count(alap.abstract_physical, "vector phase alignment delay") == 0
-    assert len(beginning.abstract_physical.entities) - len(alap.abstract_physical.entities) == removed
+    assert (
+        len(beginning.abstract_physical.entities) - len(alap.abstract_physical.entities) == removed
+    )
 
 
 def test_alap_applies_equally_to_external_vector_oracles() -> None:
@@ -87,7 +90,9 @@ def test_alap_applies_equally_to_external_vector_oracles() -> None:
     removed = _delay_count(beginning.abstract_physical, "vector phase alignment delay")
     assert removed > 0
     assert _delay_count(alap.abstract_physical, "vector phase alignment delay") == 0
-    assert len(beginning.abstract_physical.entities) - len(alap.abstract_physical.entities) == removed
+    assert (
+        len(beginning.abstract_physical.entities) - len(alap.abstract_physical.entities) == removed
+    )
 
 
 def test_alap_resamples_scalar_lane_views_of_external_vectors() -> None:

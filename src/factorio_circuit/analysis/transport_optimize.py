@@ -245,9 +245,7 @@ def optimize_exact_transports(
         for item in transports
         if item.shape is PayloadShape.SCALAR and item.producer not in candidate_ids
     )
-    fixed_vector = sum(
-        item.length for item in transports if item.shape is PayloadShape.VECTOR
-    )
+    fixed_vector = sum(item.length for item in transports if item.shape is PayloadShape.VECTOR)
 
     private_terms = [item.length * private_vars[item.producer] for item in candidates]
     interface_terms = [
@@ -293,7 +291,9 @@ def optimize_exact_transports(
                 start_phase=int(solver.Value(bus_starts[bus])),
                 end_phase=int(solver.Value(bus_ends[bus])),
                 lanes=tuple(
-                    sorted(lanes, key=lambda lane: (lane.start_phase, lane.end_phase, lane.producer))
+                    sorted(
+                        lanes, key=lambda lane: (lane.start_phase, lane.end_phase, lane.producer)
+                    )
                 ),
             )
         )
@@ -301,9 +301,7 @@ def optimize_exact_transports(
     private = tuple(item for item in transports if item.producer not in assigned_to_bus)
     bus_middle = sum(item.middle_stages for item in buses)
     bus_interfaces = sum(lane.interface_combinators for bus in buses for lane in bus.lanes)
-    private_scalar = sum(
-        item.length for item in private if item.shape is PayloadShape.SCALAR
-    )
+    private_scalar = sum(item.length for item in private if item.shape is PayloadShape.SCALAR)
     vector = sum(item.length for item in private if item.shape is PayloadShape.VECTOR)
     objective = bus_middle + bus_interfaces + private_scalar + vector
     fixed = fixed_scalar + fixed_vector

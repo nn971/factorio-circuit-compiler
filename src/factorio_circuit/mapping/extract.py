@@ -170,9 +170,7 @@ def build_stateless_level_mapping_problem(
         if isinstance(value, (*_SCALAR_SOURCES, *_VECTOR_SOURCES)):
             return source_for(value).id
         if not isinstance(value, _OPERATIONS):
-            raise MappingProblemError(
-                f"unsupported stateless mapping value {type(value).__name__}"
-            )
+            raise MappingProblemError(f"unsupported stateless mapping value {type(value).__name__}")
 
         cached = operation_by_semantic.get(id(value))
         if cached is not None:

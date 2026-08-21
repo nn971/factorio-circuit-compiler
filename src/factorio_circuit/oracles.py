@@ -16,8 +16,8 @@ from factorio_circuit.ir.abstract_physical import (
     AbstractEntity,
     AbstractNet,
     AbstractPhysicalCircuit,
-    ConstantCombinator,
     Connector,
+    ConstantCombinator,
     Endpoint,
     EntityPlacementConstraint,
     EntityPlacementMode,
@@ -83,7 +83,8 @@ class OraclePhysicalContext:
     """Mutable, target-level context exposed to an oracle provider.
 
     Providers operate on an already-lowered :class:`AbstractPhysicalCircuit`, but before physical
-    synthesis. Entity ids, oracle-net edits, provider-input taps, and placement constraints therefore
+    synthesis. Entity ids, oracle-net edits, provider-input taps, and placement constraints
+    therefore
     participate in the ordinary joint synthesis/layout pass.
     """
 
@@ -151,14 +152,16 @@ class OraclePhysicalContext:
         matches = [port for port in self.circuit.outputs if port.name == port_name]
         if len(matches) != 1:
             raise OracleBindingError(
-                f"oracle {self.source.name!r} provider input {name!r} was not lowered exactly once; "
+                f"oracle {self.source.name!r} provider input {name!r} was not lowered "
+                "exactly once; "
                 "compile provider-input circuits through Circuit.compile()"
             )
         port = matches[0]
         matching_nets = [net for net in self.circuit.nets if port.endpoint in net.endpoints]
         if len(matching_nets) != 1:
             raise OracleBindingError(
-                f"oracle {self.source.name!r} provider input {name!r} must belong to exactly one net"
+                f"oracle {self.source.name!r} provider input {name!r} must belong to "
+                "exactly one net"
             )
         return OracleProviderInput(name, matching_nets[0].id, port.signal, port.phase)
 
@@ -262,9 +265,7 @@ class VectorConstantOracleProvider:
             raise OracleBindingError(
                 f"vector constant provider cannot realize scalar oracle {context.source.name!r}"
             )
-        ordered = tuple(
-            sorted(self.signals.items(), key=lambda item: (item[0].kind, item[0].name))
-        )
+        ordered = tuple(sorted(self.signals.items(), key=lambda item: (item[0].kind, item[0].name)))
         entity = ConstantCombinator(
             id=context.new_entity_id(),
             signals=ordered,
@@ -361,16 +362,12 @@ def _remove_annotation_marker(circuit: AbstractPhysicalCircuit, entity_id: int) 
         )
     circuit.entities = [candidate for candidate in circuit.entities if candidate.id != entity_id]
     circuit.placement_constraints = [
-        constraint
-        for constraint in circuit.placement_constraints
-        if constraint.entity != entity_id
+        constraint for constraint in circuit.placement_constraints if constraint.entity != entity_id
     ]
     circuit.nets = [
         replace(
             net,
-            endpoints=tuple(
-                endpoint for endpoint in net.endpoints if endpoint.entity != entity_id
-            ),
+            endpoints=tuple(endpoint for endpoint in net.endpoints if endpoint.entity != entity_id),
         )
         for net in circuit.nets
     ]
@@ -421,9 +418,7 @@ def materialize_oracle_providers(
         if disposition is OraclePortDisposition.CONSUMED:
             consumed_oracle_ports.append(port)
 
-    hidden_ports = [
-        port for port in circuit.outputs if is_provider_input_port_name(port.name)
-    ]
+    hidden_ports = [port for port in circuit.outputs if is_provider_input_port_name(port.name)]
     unconsumed = sorted(
         port.name for port in hidden_ports if port.name not in consumed_provider_inputs
     )
@@ -442,7 +437,7 @@ def materialize_oracle_providers(
     if hidden_ports:
         hidden_names = {port.name for port in hidden_ports}
         circuit.outputs = [port for port in circuit.outputs if port.name not in hidden_names]
-        for port in hidden_ports:
-            _remove_annotation_marker(circuit, port.endpoint.entity)
+        for hidden_port in hidden_ports:
+            _remove_annotation_marker(circuit, hidden_port.endpoint.entity)
 
     circuit.validate()

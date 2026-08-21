@@ -125,10 +125,7 @@ def test_temporal_lowerer_transports_one_coherent_live_observation() -> None:
     assert at_observation.phase == observation.phase
     assert at_latest_use.net != raw.net
     assert at_latest_use.phase == observation.end_phase
-    assert (
-        len(lowerer.circuit.entities) - entities_before_transport
-        == observation.transport_stages
-    )
+    assert len(lowerer.circuit.entities) - entities_before_transport == observation.transport_stages
 
 
 def test_explicit_observation_and_exact_transport_have_distinct_meanings() -> None:

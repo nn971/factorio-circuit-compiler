@@ -34,16 +34,12 @@ def _mapped_wire_sum_fixture():
     operations = {item.label: item for item in problem.operations}
     left_op = operations["binary *"]
     right_op = next(
-        item
-        for item in problem.operations
-        if item.label == "binary *" and item.id != left_op.id
+        item for item in problem.operations if item.label == "binary *" and item.id != left_op.id
     )
     sum_op = operations["binary +"]
 
     ordinary_by_operation = {
-        item.operation: item
-        for item in candidates
-        if item.name.startswith("ordinary")
+        item.operation: item for item in candidates if item.name.startswith("ordinary")
     }
     wire = next(
         item
@@ -65,8 +61,8 @@ def _mapped_wire_sum_fixture():
             )
     deliveries.extend(
         (
-            PlannedDelivery(left_op.id, sum_op.id, 0, 2, DeliveryKind.REUSE),
-            PlannedDelivery(right_op.id, sum_op.id, 1, 2, DeliveryKind.REUSE),
+            PlannedDelivery(sum_op.operands[0], sum_op.id, 0, 2, DeliveryKind.REUSE),
+            PlannedDelivery(sum_op.operands[1], sum_op.id, 1, 2, DeliveryKind.REUSE),
             PlannedDelivery(sum_op.id, problem.sinks[0].id, None, 2, DeliveryKind.REUSE),
         )
     )
@@ -88,7 +84,7 @@ def _mapped_wire_sum_fixture():
         ),
         deliveries=tuple(deliveries),
         exact_lifetimes=(),
-        wire_sums=(WireSumResource(sum_op.id, left_op.id, right_op.id, 2),),
+        wire_sums=(WireSumResource(sum_op.id, sum_op.operands[0], sum_op.operands[1], 2),),
         entity_cost=2,
         transport_cost=0,
     )
@@ -186,6 +182,7 @@ def test_private_exact_lifetime_lowers_as_one_prefix_shared_chain() -> None:
     delay_entities = [
         entity
         for entity in arithmetic
-        if entity.description is not None and entity.description.startswith("mapped exact transport")
+        if entity.description is not None
+        and entity.description.startswith("mapped exact transport")
     ]
     assert len(delay_entities) == 2

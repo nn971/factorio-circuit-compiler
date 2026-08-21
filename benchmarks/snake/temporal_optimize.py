@@ -147,10 +147,11 @@ def main() -> None:
     print()
     print("optimized-plan abstract physical")
     print(format_abstract_physical_census(planned_census))
+    entity_delta = planned_census.implementation_entities - baseline_census.implementation_entities
+    phase_delay_delta = planned_census.phase_delay_entities - baseline_census.phase_delay_entities
     print(
         "\nrealized abstract delta: "
-        f"entities={planned_census.implementation_entities - baseline_census.implementation_entities:+d}; "
-        f"phase_delays={planned_census.phase_delay_entities - baseline_census.phase_delay_entities:+d}; "
+        f"entities={entity_delta:+d}; phase_delays={phase_delay_delta:+d}; "
         f"max_lanes={planned_census.max_signals_per_net}"
     )
 

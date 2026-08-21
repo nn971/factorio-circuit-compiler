@@ -23,9 +23,7 @@ class _TimingExactTemporalHypergraphBuilder(_TemporalHypergraphBuilder):
     @staticmethod
     def _children(value: object) -> tuple[tuple[object, int], ...]:
         if isinstance(value, Select):
-            condition_latency = FACTORIO_LATENCY.operation_latency(
-                "select_condition", value.name
-            )
+            condition_latency = FACTORIO_LATENCY.operation_latency("select_condition", value.name)
             data_latency = FACTORIO_LATENCY.operation_latency("select_data", value.name)
             return (
                 (value.condition, condition_latency),

@@ -96,9 +96,9 @@ class SelectorCombinator(ArithmeticCombinator):
     still a distinct runtime type and is never serialized or interpreted as arithmetic.
     """
 
-    select_max: bool
-    index: int
-    random_update_interval: int
+    select_max: bool = True
+    index: int = 0
+    random_update_interval: int = 1
 
     def __init__(
         self,

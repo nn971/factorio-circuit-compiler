@@ -71,8 +71,7 @@ class ImplementationCandidate:
         if not self.name:
             raise MappingProblemError("candidate name must be non-empty")
         if any(
-            isinstance(item, bool) or not isinstance(item, int)
-            for item in self.input_phase_offsets
+            isinstance(item, bool) or not isinstance(item, int) for item in self.input_phase_offsets
         ):
             raise MappingProblemError("candidate input phase offsets must be integers")
         if any(item > 0 for item in self.input_phase_offsets):

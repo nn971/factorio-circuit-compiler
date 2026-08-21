@@ -128,17 +128,15 @@ class MappingProblem:
     sinks: tuple[MappingSink, ...]
 
     def __post_init__(self) -> None:
-        if (
-            isinstance(self.horizon, bool)
-            or not isinstance(self.horizon, int)
-            or self.horizon < 0
-        ):
+        if isinstance(self.horizon, bool) or not isinstance(self.horizon, int) or self.horizon < 0:
             raise MappingProblemError("mapping horizon must be a non-negative integer")
         self.validate()
 
     @property
     def value_ids(self) -> frozenset[int]:
-        return frozenset(item.id for item in (*self.sources, *self.operations))
+        return frozenset(
+            {source.id for source in self.sources} | {operation.id for operation in self.operations}
+        )
 
     def source_by_id(self, value_id: int) -> MappingSource:
         for source in self.sources:

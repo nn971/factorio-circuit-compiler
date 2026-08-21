@@ -110,7 +110,9 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
 
         latency = FACTORIO_LATENCY.operation_latency("scalar_binary", "delay")
         if latency != 1:  # pragma: no cover - current Factorio target invariant
-            raise ValueError("isolated scalar delay-bus ingress requires one-tick arithmetic latency")
+            raise ValueError(
+                "isolated scalar delay-bus ingress requires one-tick arithmetic latency"
+            )
 
         entity = ArithmeticCombinator(
             id=self._take_entity_id(),
@@ -173,7 +175,9 @@ class IsolatedTemporalPlanLowerer(TemporalPlanLowerer):
         if cached is not None:
             return cached
         if trunk.phase + 1 != target_phase:
-            raise ValueError("isolated delay-bus egress must consume the immediately preceding tick")
+            raise ValueError(
+                "isolated delay-bus egress must consume the immediately preceding tick"
+            )
         if not isinstance(trunk.signal, int):
             raise ValueError("scalar delay buses require compiler-allocated abstract signals")
 

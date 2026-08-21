@@ -16,12 +16,12 @@ from dataclasses import replace
 from typing import cast
 
 from factorio_circuit.analysis.latency import FACTORIO_LATENCY
+from factorio_circuit.analysis.state_timing import StateTimingPlan
 from factorio_circuit.analysis.temporal_hypergraph import TemporalHypergraph
 from factorio_circuit.analysis.temporal_optimize import (
     DelayBusLane,
     TemporalOptimizationResult,
 )
-from factorio_circuit.analysis.state_timing import StateTimingPlan
 from factorio_circuit.ir.abstract_physical import (
     AbstractNet,
     AbstractPhysicalCircuit,
@@ -94,7 +94,8 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
 
         # LIVE inputs must be one coherent observation per logical occurrence. CP-SAT chooses the
         # latest common observation tick (the earliest direct-consumer input). The raw external wire
-        # remains live until that tick; every later use must transport the exact token observed then.
+        # remains live until that tick; every later use must transport the exact token
+        # observed then.
         self._live_observation_by_semantic: dict[int, int] = {}
         for observation in optimization.live_source_observations:
             source = graph.source_by_id(observation.source)
@@ -200,9 +201,7 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         output_phase = self.alap_schedule.phase_for(select)
         if output_phase is None:  # pragma: no cover - optimized-node invariant
             raise AssertionError("optimized Select has no scheduled output phase")
-        data_phase = output_phase - FACTORIO_LATENCY.operation_latency(
-            "select_data", select.name
-        )
+        data_phase = output_phase - FACTORIO_LATENCY.operation_latency("select_data", select.name)
         condition_phase = output_phase - FACTORIO_LATENCY.operation_latency(
             "select_condition", select.name
         )
@@ -235,7 +234,8 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         if gated.phase != final_input_phase:  # pragma: no cover - latency-model invariant
             raise AssertionError("Select condition stage disagrees with target latency model")
 
-        # ``when_false`` is a second internal use of the data arm two ticks after the semantic Select
+        # ``when_false`` is a second internal use of the data arm two ticks after the
+        # semantic Select
         # input boundary. Do not ask the global bus to carry it farther than CP-SAT modeled. This is
         # an exact propagation of the already-consumed token, so live external sources must not be
         # observed again here.
@@ -243,9 +243,7 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         if isinstance(final_false, RealizedValue) and final_false.phase < final_input_phase:
             final_false = self.exact_delay_to(final_false, final_input_phase)
 
-        result = self._emit_binary_from_operands(
-            "+", final_false, gated, description=select.name
-        )
+        result = self._emit_binary_from_operands("+", final_false, gated, description=select.name)
         if result.phase != output_phase:
             raise ValueError(
                 f"optimized Select realized at phase {result.phase}, expected {output_phase}"
@@ -317,7 +315,9 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
         # backward compatibility with manually constructed temporal plans; solver-generated plans
         # populate the coherent-source maps above and never reach that independent-observation path.
         window = self._scalar_window(value)
-        if (window is not None and window.contains(target_phase)) or self._can_resample_scalar(value):
+        if (window is not None and window.contains(target_phase)) or self._can_resample_scalar(
+            value
+        ):
             return super().delay_to(value, target_phase)
 
         binding = self._bus_origin.get((value.net, value.signal))
@@ -393,9 +393,7 @@ class TemporalPlanLowerer(SamplingPolicyLowerer):
             # has the same ``(bus, producer)`` key registered and returns above.
             raise ValueError("first delay-bus use did not originate at the producer phase")
         self._joined_bus_lanes.add(key)
-        self._bus_joins.setdefault((bus, lane.start_phase), []).append(
-            (value.net, value.signal)
-        )
+        self._bus_joins.setdefault((bus, lane.start_phase), []).append((value.net, value.signal))
 
         stage_key = (bus, lane.start_phase)
         if stage_key in self._bus_stage_entity_index:

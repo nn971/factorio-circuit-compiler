@@ -18,19 +18,16 @@ def color_interference_graph_dsat(
     uncolored = set(adjacency)
     allocation: dict[int, SignalId] = {}
     while uncolored:
+
         def priority(vertex: int) -> tuple[int, int, int]:
             neighbor_colors = {
-                allocation[neighbor]
-                for neighbor in adjacency[vertex]
-                if neighbor in allocation
+                allocation[neighbor] for neighbor in adjacency[vertex] if neighbor in allocation
             }
             return (-len(neighbor_colors), -len(adjacency[vertex]), vertex)
 
         vertex = min(uncolored, key=priority)
         forbidden = {
-            allocation[neighbor]
-            for neighbor in adjacency[vertex]
-            if neighbor in allocation
+            allocation[neighbor] for neighbor in adjacency[vertex] if neighbor in allocation
         }
         concrete = next((signal for signal in palette if signal not in forbidden), None)
         if concrete is None:
@@ -119,14 +116,13 @@ def allocate_abstract_signals_dsat(
         raise ValueError(
             "physical synthesis exhausted the concrete scratch-signal pool while coloring the "
             "abstract signal-interference graph; "
-            f"palette={len(signal_pool)}; reserved_from_palette={len(set(signal_pool) & reserved)}; "
+            f"palette={len(signal_pool)}; "
+            f"reserved_from_palette={len(set(signal_pool) & reserved)}; "
             f"available={len(available)}; vertices={len(roots)}; max_degree={max_degree}; "
             f"largest_group_clique={largest_group_clique}; detail=({exc})"
         ) from exc
 
-    return {
-        signal.id: root_allocation[alias_roots[signal.id]] for signal in circuit.signals
-    }
+    return {signal.id: root_allocation[alias_roots[signal.id]] for signal in circuit.signals}
 
 
 __all__ = ["allocate_abstract_signals_dsat", "color_interference_graph_dsat"]

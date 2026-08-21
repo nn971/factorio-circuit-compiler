@@ -249,9 +249,7 @@ class ConstantCombinator:
     annotation_only: bool = False
 
 
-AbstractEntity = (
-    ArithmeticCombinator | DeciderCombinator | SelectorCombinator | ConstantCombinator
-)
+AbstractEntity = ArithmeticCombinator | DeciderCombinator | SelectorCombinator | ConstantCombinator
 
 
 @dataclass(frozen=True, slots=True)

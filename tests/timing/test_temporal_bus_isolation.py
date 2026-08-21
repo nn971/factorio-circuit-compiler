@@ -160,9 +160,7 @@ def test_shared_bus_is_electrically_isolated_at_ingress_and_egress() -> None:
 
     assert egress_input_entities
     egress_nets = [
-        net
-        for net in planned.nets
-        if net.label.startswith("scalar delay bus 0 isolated egress @ ")
+        net for net in planned.nets if net.label.startswith("scalar delay bus 0 isolated egress @ ")
     ]
     assert egress_nets
     assert all(len(net.signals) == 1 for net in egress_nets)

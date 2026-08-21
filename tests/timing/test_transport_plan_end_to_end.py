@@ -43,12 +43,8 @@ def test_all_private_transport_plan_lowers_complete_periodic_module() -> None:
     )
     placement = graph.alap_placement()
     alignment = analyze_temporal_alignment(graph, placement)
-    scalar = sum(
-        item.length for item in alignment.transports if item.shape is PayloadShape.SCALAR
-    )
-    vector = sum(
-        item.length for item in alignment.transports if item.shape is PayloadShape.VECTOR
-    )
+    scalar = sum(item.length for item in alignment.transports if item.shape is PayloadShape.SCALAR)
+    vector = sum(item.length for item in alignment.transports if item.shape is PayloadShape.VECTOR)
     total = scalar + vector
     optimization = TransportOptimizationResult(
         status="OPTIMAL",

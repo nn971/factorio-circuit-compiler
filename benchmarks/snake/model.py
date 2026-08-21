@@ -275,9 +275,9 @@ def build_snake_circuit(
     tail_mask = old_body_ttl.filter_eq(1)
     not_growing = growing.logical_not()
     collision_body_ttl = old_body_ttl.gate(growing) + aged_body_ttl.gate(not_growing)
-    collision_body_mask = old_body_mask.gate(growing) + (
-        old_body_mask - tail_mask
-    ).gate(not_growing)
+    collision_body_mask = old_body_mask.gate(growing) + (old_body_mask - tail_mask).gate(
+        not_growing
+    )
 
     self_collision = _contains_pixel(collision_body_mask, next_head_one_hot)
 

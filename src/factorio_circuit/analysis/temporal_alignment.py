@@ -8,7 +8,8 @@ hypergraph, this analysis distinguishes three physical availability modes:
   later under the configured freshness policy;
 * ``EXACT``: one chosen token is available only at its current point unless explicitly transported.
 
-Per-use alignment then becomes ``REUSE``, ``OBSERVE_AT`` or ``TRANSPORT_TO``.  Exact transport starts
+Per-use alignment then becomes ``REUSE``, ``OBSERVE_AT`` or ``TRANSPORT_TO``. Exact transport
+starts
 at the latest phase that is free under the producer's availability proof.  This is the analysis a
 shared delay-bus planner should consume: only resulting exact-transport demands require hardware.
 """
@@ -153,9 +154,7 @@ def _consumer_input_phase(
     if isinstance(consumer.semantic, Select):
         condition = _normalized_semantic(consumer.semantic.condition)
         if semantics[arc.producer] is condition:
-            latency = FACTORIO_LATENCY.operation_latency(
-                "select_condition", consumer.semantic.name
-            )
+            latency = FACTORIO_LATENCY.operation_latency("select_condition", consumer.semantic.name)
     return phases[arc.consumer] - latency
 
 
@@ -235,6 +234,7 @@ def _derive_computation_availability(
         if isinstance(computation.semantic, Select):
             forced_exact = True
 
+        end: int | None
         if forced_exact:
             kind = TemporalAvailabilityKind.EXACT
             end = output_phase + 1

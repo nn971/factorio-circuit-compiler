@@ -407,15 +407,9 @@ class _TemporalHypergraphBuilder:
             mode = TemporalSourceMode.STABLE
             start = read_timing.physical_phase
             end = start + register_timing.period
-        elif isinstance(value, (FlowInputSample, InputSample)):
-            start = value.offset * self.period
-            mode = (
-                TemporalSourceMode.LIVE
-                if value.offset == 0 and self.sampling_policy is SamplingPolicy.ALAP
-                else TemporalSourceMode.EXACT
-            )
-            end = self.period if mode is TemporalSourceMode.LIVE else start + 1
-        elif isinstance(value, (FlowVectorInputSample, VectorInputSample)):
+        elif isinstance(
+            value, (FlowInputSample, InputSample, FlowVectorInputSample, VectorInputSample)
+        ):
             start = value.offset * self.period
             mode = (
                 TemporalSourceMode.LIVE
@@ -471,8 +465,7 @@ class _TemporalHypergraphBuilder:
         if isinstance(value, Select):
             latency = FACTORIO_LATENCY.operation_latency("select_data", value.name)
             return tuple(
-                (item, latency)
-                for item in (value.condition, value.when_true, value.when_false)
+                (item, latency) for item in (value.condition, value.when_true, value.when_false)
             )
         if isinstance(value, VectorBinaryOp):
             latency = FACTORIO_LATENCY.operation_latency("vector_binary", value.op)
@@ -678,9 +671,7 @@ def format_temporal_hypergraph(graph: TemporalHypergraph) -> str:
     asap = graph.transport_cost(graph.asap_placement())
     alap = graph.transport_cost(graph.alap_placement())
 
-    modes = ", ".join(
-        f"{name}={count}" for name, count in sorted(source_modes.items())
-    ) or "none"
+    modes = ", ".join(f"{name}={count}" for name, count in sorted(source_modes.items())) or "none"
     return "\n".join(
         [
             "temporal computation hypergraph (periodic state cone)",

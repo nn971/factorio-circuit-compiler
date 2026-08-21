@@ -215,9 +215,11 @@ class SamplingPolicyLowerer(AlapVectorLowerer):
             return
 
         window: ObservationWindow | None = None
-        if isinstance(semantic, (Input, FlowInput)):
-            window = ObservationWindow(result.phase, None)
-        elif isinstance(semantic, (InputSample, FlowInputSample)) and semantic.offset == 0:
+        if (
+            isinstance(semantic, (Input, FlowInput))
+            or isinstance(semantic, (InputSample, FlowInputSample))
+            and semantic.offset == 0
+        ):
             window = ObservationWindow(result.phase, None)
         elif isinstance(semantic, VectorSignal):
             vector = self.vector_memo.get(id(semantic.vector))
@@ -226,9 +228,7 @@ class SamplingPolicyLowerer(AlapVectorLowerer):
                 if source_window is not None and source_window.contains(result.phase):
                     window = source_window.from_phase(result.phase)
         elif isinstance(semantic, BinaryOp):
-            target = result.phase - FACTORIO_LATENCY.operation_latency(
-                "scalar_binary", semantic.op
-            )
+            target = result.phase - FACTORIO_LATENCY.operation_latency("scalar_binary", semantic.op)
             window = self._scalar_children_observation_window(
                 result,
                 (semantic.left, semantic.right),
@@ -266,14 +266,14 @@ class SamplingPolicyLowerer(AlapVectorLowerer):
             if window is None:
                 return None
             windows.append(window)
-        for semantic in scalars:
-            if isinstance(semantic, Constant):
+        for scalar_semantic in scalars:
+            if isinstance(scalar_semantic, Constant):
                 continue
-            child = self.memo.get(id(semantic))
-            if not isinstance(child, RealizedValue):
+            scalar_child = self.memo.get(id(scalar_semantic))
+            if not isinstance(scalar_child, RealizedValue):
                 return None
-            has_live = has_live or self._scalar_observation_window(child) is not None
-            window = self._scalar_available_window(child)
+            has_live = has_live or self._scalar_observation_window(scalar_child) is not None
+            window = self._scalar_available_window(scalar_child)
             if window is None:
                 return None
             windows.append(window)
@@ -287,23 +287,21 @@ class SamplingPolicyLowerer(AlapVectorLowerer):
             return
 
         window: ObservationWindow | None = None
-        if isinstance(semantic, (VectorInput, FlowVectorInput)):
-            window = ObservationWindow(result.phase, None)
-        elif isinstance(semantic, (VectorInputSample, FlowVectorInputSample)) and semantic.offset == 0:
+        if (
+            isinstance(semantic, (VectorInput, FlowVectorInput))
+            or isinstance(semantic, (VectorInputSample, FlowVectorInputSample))
+            and semantic.offset == 0
+        ):
             window = ObservationWindow(result.phase, None)
         elif isinstance(semantic, VectorBinaryOp):
-            target = result.phase - FACTORIO_LATENCY.operation_latency(
-                "vector_binary", semantic.op
-            )
+            target = result.phase - FACTORIO_LATENCY.operation_latency("vector_binary", semantic.op)
             window = self._vector_children_observation_window(
                 result,
                 (semantic.left, semantic.right),
                 target_phase=target,
             )
         elif isinstance(semantic, VectorScalarOp):
-            target = result.phase - FACTORIO_LATENCY.operation_latency(
-                "vector_scalar", semantic.op
-            )
+            target = result.phase - FACTORIO_LATENCY.operation_latency("vector_scalar", semantic.op)
             window = self._vector_children_observation_window(
                 result,
                 (semantic.vector,),
@@ -325,20 +323,20 @@ class SamplingPolicyLowerer(AlapVectorLowerer):
     def _create_input_markers(self) -> None:
         super()._create_input_markers()
         for source in self.module.inputs:
-            realized = self.memo.get(id(source))
-            if isinstance(realized, RealizedValue):
-                self._external_scalar_sources.add((realized.net, realized.signal))
+            scalar_realized = self.memo.get(id(source))
+            if isinstance(scalar_realized, RealizedValue):
+                self._external_scalar_sources.add((scalar_realized.net, scalar_realized.signal))
                 if self.sampling_policy is SamplingPolicy.ALAP:
                     self._remember_scalar_observability(
-                        realized, ObservationWindow(realized.phase, None)
+                        scalar_realized, ObservationWindow(scalar_realized.phase, None)
                     )
-        for source in self.module.vector_inputs:
-            realized = self.vector_memo.get(id(source))
-            if isinstance(realized, RealizedVector):
-                self._external_vector_nets.add(realized.net)
+        for vector_source in self.module.vector_inputs:
+            vector_realized = self.vector_memo.get(id(vector_source))
+            if isinstance(vector_realized, RealizedVector):
+                self._external_vector_nets.add(vector_realized.net)
                 if self.sampling_policy is SamplingPolicy.ALAP:
                     self._remember_vector_observability(
-                        realized, ObservationWindow(realized.phase, None)
+                        vector_realized, ObservationWindow(vector_realized.phase, None)
                     )
 
     def _can_resample_scalar(self, value: RealizedValue) -> bool:
@@ -353,8 +351,7 @@ class SamplingPolicyLowerer(AlapVectorLowerer):
         """Legacy raw-source hook; general re-observation uses the observation-window proof."""
 
         return (
-            self.sampling_policy is SamplingPolicy.ALAP
-            and value.net in self._external_vector_nets
+            self.sampling_policy is SamplingPolicy.ALAP and value.net in self._external_vector_nets
         )
 
     def _can_observe_scalar_at(self, value: RealizedValue, target_phase: int) -> bool:
