@@ -118,19 +118,19 @@ def main() -> None:
         f"sources={len(problem.sources)}; operations={len(problem.operations)}; "
         f"uses={len(problem.uses())}; sinks={len(problem.sinks)}"
     )
-    print(
-        "  register_occurrences="
-        + (", ".join(f"offset{offset}:{count}" for offset, count in sorted(register_offsets.items())) or "none")
+    occurrence_summary = ", ".join(
+        f"offset{offset}:{count}" for offset, count in sorted(register_offsets.items())
     )
+    print(f"  register_occurrences={occurrence_summary or 'none'}")
     print(
         f"  solve: status={result.status}; wall={result.wall_time_seconds:.3f}s; "
         f"entity_cost={result.plan.entity_cost}; transport_cost={result.plan.transport_cost}; "
         f"total={result.plan.total_cost}"
     )
-    print(
-        "  selected_candidates="
-        + (", ".join(f"{kind}:{count}" for kind, count in sorted(kinds.items())) or "none")
+    candidate_summary = ", ".join(
+        f"{kind}:{count}" for kind, count in sorted(kinds.items())
     )
+    print(f"  selected_candidates={candidate_summary or 'none'}")
     print(f"  delay_buses={len(result.plan.delay_buses)}")
     for bus in result.plan.delay_buses:
         print(
