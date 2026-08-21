@@ -159,6 +159,14 @@ class _MappedScalarLowerer:
             self._attach(value.net, endpoint)
             self.circuit.outputs.append(OutputPort(sink.label, endpoint, value.signal, sink.phase))
 
+        # The selected resource pays for one continuous Each trunk between its earliest ingress and
+        # latest trunk tap. Lazy per-use realization above may have built only fragments, especially
+        # for temporally disjoint lanes. Complete every charged middle stage now, after all semantic
+        # uses have registered their ingress joins, so emitted hardware exactly matches plan cost.
+        for bus in self.plan.delay_buses:
+            for phase in range(bus.middle_start_phase, bus.middle_end_phase):
+                self._ensure_bus_stage(bus, phase)
+
         self.circuit.nets = [
             AbstractNet(
                 id=net_id,
