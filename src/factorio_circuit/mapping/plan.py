@@ -18,6 +18,7 @@ class DeliveryKind(StrEnum):
     REUSE = "reuse"
     OBSERVE_AT = "observe-at"
     PRIVATE_TRANSPORT = "private-transport"
+    BUS_TRANSPORT = "bus-transport"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,16 +40,16 @@ class PlannedDelivery:
 
     @property
     def transport_length(self) -> int:
-        if self.kind is not DeliveryKind.PRIVATE_TRANSPORT:
+        if self.kind not in {DeliveryKind.PRIVATE_TRANSPORT, DeliveryKind.BUS_TRANSPORT}:
             return 0
         if self.transport_start_phase is None:
-            raise ValueError("private transport delivery has no start phase")
+            raise ValueError("transport delivery has no start phase")
         return self.phase - self.transport_start_phase
 
 
 @dataclass(frozen=True, slots=True)
 class ExactLifetime:
-    """One prefix-shareable exact token lifetime before any shared bus is considered."""
+    """One exact semantic token lifetime before its transport realization is chosen."""
 
     producer: int
     start_phase: int
@@ -71,8 +72,54 @@ class WireSumResource:
 
 
 @dataclass(frozen=True, slots=True)
+class DelayBusLane:
+    """One scalar exact token assigned to an isolated shared delay bus.
+
+    ``delivery_phases`` contains one entry per transported semantic use, not merely unique tap
+    phases. The first joint bus model deliberately charges/lowers one interface per use so its
+    combinator objective exactly matches emitted hardware even when multiple consumers happen to
+    use the same phase. A later optimization may explicitly coalesce equal-phase egresses.
+    """
+
+    producer: int
+    start_phase: int
+    end_phase: int
+    delivery_phases: tuple[int, ...]
+
+    @property
+    def ingress_phase(self) -> int:
+        return self.start_phase + 1
+
+    @property
+    def trunk_end_phase(self) -> int:
+        return self.end_phase - 1
+
+    @property
+    def interface_combinators(self) -> int:
+        return 1 + len(self.delivery_phases)
+
+
+@dataclass(frozen=True, slots=True)
+class DelayBusResource:
+    """One continuous Each+0 shared middle with signal-isolated scalar lanes."""
+
+    index: int
+    middle_start_phase: int
+    middle_end_phase: int
+    lanes: tuple[DelayBusLane, ...]
+
+    @property
+    def middle_stages(self) -> int:
+        return self.middle_end_phase - self.middle_start_phase
+
+    @property
+    def interface_combinators(self) -> int:
+        return sum(lane.interface_combinators for lane in self.lanes)
+
+
+@dataclass(frozen=True, slots=True)
 class RealizationPlan:
-    """Complete first-milestone target plan before abstract physical lowering."""
+    """Selected target plan before abstract physical lowering."""
 
     realizations: tuple[SelectedRealization, ...]
     deliveries: tuple[PlannedDelivery, ...]
@@ -80,6 +127,7 @@ class RealizationPlan:
     wire_sums: tuple[WireSumResource, ...]
     entity_cost: int
     transport_cost: int
+    delay_buses: tuple[DelayBusResource, ...] = ()
 
     @property
     def total_cost(self) -> int:
@@ -93,3 +141,9 @@ class RealizationPlan:
 
     def deliveries_from(self, producer: int) -> tuple[PlannedDelivery, ...]:
         return tuple(item for item in self.deliveries if item.producer == producer)
+
+    def delay_bus_for(self, producer: int) -> DelayBusResource | None:
+        for bus in self.delay_buses:
+            if any(lane.producer == producer for lane in bus.lanes):
+                return bus
+        return None
