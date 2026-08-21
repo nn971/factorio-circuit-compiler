@@ -40,8 +40,24 @@ def _problem(
     return MappingProblem(
         horizon=10,
         sources=(
-            MappingSource(1, "left", PayloadShape.SCALAR, source_mode, 0, end),
-            MappingSource(2, "right", PayloadShape.SCALAR, source_mode, 0, end),
+            MappingSource(
+                1,
+                "left",
+                PayloadShape.SCALAR,
+                source_mode,
+                Constant(1),
+                0,
+                end,
+            ),
+            MappingSource(
+                2,
+                "right",
+                PayloadShape.SCALAR,
+                source_mode,
+                Constant(2),
+                0,
+                end,
+            ),
         ),
         operations=(_add_operation(),),
         sinks=tuple(sinks),
@@ -49,17 +65,24 @@ def _problem(
 
 
 def _wire_sum_problem() -> MappingProblem:
+    source_semantics = {
+        1: Constant(2),
+        2: Constant(3),
+        3: Constant(5),
+        4: Constant(7),
+    }
     sources = tuple(
         MappingSource(
             source_id,
             f"source-{source_id}",
             PayloadShape.SCALAR,
             MappingSourceMode.STABLE,
+            source_semantics[source_id],
         )
         for source_id in (1, 2, 3, 4)
     )
-    left_semantic = BinaryOp("*", Constant(2), Constant(3), name="left")
-    right_semantic = BinaryOp("*", Constant(5), Constant(7), name="right")
+    left_semantic = BinaryOp("*", source_semantics[1], source_semantics[2], name="left")
+    right_semantic = BinaryOp("*", source_semantics[3], source_semantics[4], name="right")
     sum_semantic = BinaryOp("+", left_semantic, right_semantic, name="sum")
     operations = (
         MappingOperation(5, "left", PayloadShape.SCALAR, (1, 2), left_semantic),
@@ -193,3 +216,4 @@ def test_wire_sum_candidate_changes_timing_inside_same_solve() -> None:
     assert sum_realization.output_phase == 10
     assert fused.plan.entity_cost == 2
     assert fused.plan.transport_cost == 0
+    assert len(fused.plan.wire_sums) == 1
