@@ -205,3 +205,11 @@ def _validate_wire_sums(
             or resource.phase != realization.output_phase
         ):
             raise MappingProblemError("wire-sum resource disagrees with its selected realization")
+        for producer in operation.operands:
+            producer_realization = realizations.get(producer)
+            if producer_realization is None:
+                raise MappingProblemError("wire-sum contribution must be an operation result")
+            if producer_realization.output_phase != resource.phase:
+                raise MappingProblemError(
+                    "first-milestone wire-sum contributors must be produced on the shared phase"
+                )
