@@ -1,9 +1,9 @@
 """Target implementation candidates for the joint temporal technology mapper.
 
 The implementation-neutral problem deliberately carries no Factorio latency. Candidate templates
-own the timing equations and implementation cost. The first milestone registers only the ordinary
-Factorio implementations; later milestones can add zero-delay wire aggregation, fusion,
-rematerialization, buses, and reusable functional units without changing semantic causality.
+own the timing equations and implementation cost. The first milestone registers the ordinary
+Factorio implementations plus one deliberately narrow zero-delay wire-sum candidate used to prove
+that implementation choice and timing are solved together.
 """
 
 from __future__ import annotations
@@ -27,16 +27,19 @@ from .problem import MappingOperation, MappingProblem, MappingProblemError
 
 
 class CandidateOutputMode(StrEnum):
-    """Availability exported by one selected physical realization.
-
-    The initial ordinary implementation family is conservatively EXACT. Keeping the contract on
-    the candidate makes later observability-preserving or stable implementations an implementation
-    choice rather than an upstream timing assumption.
-    """
+    """Availability exported by one selected physical realization."""
 
     EXACT = "exact"
     STABLE = "stable"
     OBSERVABLE = "observable"
+
+
+class ImplementationKind(StrEnum):
+    """Physical realization family selected by one finite candidate."""
+
+    ORDINARY = "ordinary"
+    ZERO_COST_VIEW = "zero-cost-view"
+    WIRE_SUM = "wire-sum"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +48,7 @@ class ImplementationCandidate:
 
     ``input_phase_offsets[i]`` is added to the chosen output phase to obtain the required physical
     phase of semantic operand ``i``. Ordinary Factorio combinators therefore use negative offsets;
-    a future zero-delay wire aggregation candidate will use zero offsets.
+    a zero-delay wire aggregation candidate uses zero offsets.
     """
 
     id: int
@@ -54,6 +57,7 @@ class ImplementationCandidate:
     input_phase_offsets: tuple[int, ...]
     entity_cost: int
     output_mode: CandidateOutputMode = CandidateOutputMode.EXACT
+    kind: ImplementationKind = ImplementationKind.ORDINARY
 
     def __post_init__(self) -> None:
         if isinstance(self.id, bool) or not isinstance(self.id, int) or self.id <= 0:
@@ -79,6 +83,8 @@ class ImplementationCandidate:
             raise MappingProblemError("candidate entity cost must be non-negative")
         if not isinstance(self.output_mode, CandidateOutputMode):
             raise MappingProblemError("candidate output mode must be a CandidateOutputMode")
+        if not isinstance(self.kind, ImplementationKind):
+            raise MappingProblemError("candidate kind must be an ImplementationKind")
 
 
 def ordinary_candidate(
@@ -92,6 +98,7 @@ def ordinary_candidate(
     offsets: tuple[int, ...]
     name: str
     entity_cost = 1
+    kind = ImplementationKind.ORDINARY
 
     if isinstance(semantic, BinaryOp):
         latency = FACTORIO_LATENCY.operation_latency("scalar_binary", semantic.op)
@@ -109,10 +116,12 @@ def ordinary_candidate(
         data_latency = FACTORIO_LATENCY.operation_latency("select_data", semantic.name)
         offsets = (-condition_latency, -data_latency, -data_latency)
         name = "ordinary select"
+        entity_cost = 3
     elif isinstance(semantic, VectorSignal):
         offsets = (0,)
         name = "ordinary vector lane view"
         entity_cost = 0
+        kind = ImplementationKind.ZERO_COST_VIEW
     elif isinstance(semantic, VectorBinaryOp):
         latency = FACTORIO_LATENCY.operation_latency("vector_binary", semantic.op)
         offsets = (-latency, -latency)
@@ -145,6 +154,7 @@ def ordinary_candidate(
         name=name,
         input_phase_offsets=offsets,
         entity_cost=entity_cost,
+        kind=kind,
     )
 
 
@@ -155,3 +165,64 @@ def ordinary_candidates(problem: MappingProblem) -> tuple[ImplementationCandidat
         ordinary_candidate(operation, candidate_id=index)
         for index, operation in enumerate(problem.operations, start=1)
     )
+
+
+def wire_sum_candidate(
+    problem: MappingProblem,
+    operation: MappingOperation,
+    *,
+    candidate_id: int,
+) -> ImplementationCandidate:
+    """Return the first conservative zero-delay same-signal wire-sum implementation.
+
+    This milestone only admits ``x + y`` when both operands are operation results and each operand
+    has exactly this one semantic use. That restriction avoids consuming a producer's second wire
+    color or accidentally changing another consumer while the abstract-physical resource model is
+    still being built. The restriction can later become a connector-channel resource constraint.
+    """
+
+    semantic = operation.semantic
+    if not isinstance(semantic, BinaryOp) or semantic.op != "+":
+        raise MappingProblemError("wire-sum candidate requires a scalar BinaryOp('+')")
+    if len(operation.operands) != 2:
+        raise MappingProblemError("wire-sum candidate requires exactly two operands")
+
+    operation_ids = {item.id for item in problem.operations}
+    if any(operand not in operation_ids for operand in operation.operands):
+        raise MappingProblemError(
+            "first wire-sum candidate requires both operands to be operation results"
+        )
+    use_counts: dict[int, int] = {}
+    for use in problem.uses():
+        use_counts[use.producer] = use_counts.get(use.producer, 0) + 1
+    if any(use_counts.get(operand, 0) != 1 for operand in operation.operands):
+        raise MappingProblemError(
+            "first wire-sum candidate requires each operand result to have exactly one use"
+        )
+
+    return ImplementationCandidate(
+        id=candidate_id,
+        operation=operation.id,
+        name="zero-delay wire sum",
+        input_phase_offsets=(0, 0),
+        entity_cost=0,
+        kind=ImplementationKind.WIRE_SUM,
+    )
+
+
+def add_wire_sum_candidates(
+    problem: MappingProblem,
+    candidates: tuple[ImplementationCandidate, ...],
+) -> tuple[ImplementationCandidate, ...]:
+    """Append every conservative wire-sum alternative that is legal in ``problem``."""
+
+    next_id = max((item.id for item in candidates), default=0) + 1
+    result = list(candidates)
+    for operation in problem.operations:
+        try:
+            candidate = wire_sum_candidate(problem, operation, candidate_id=next_id)
+        except MappingProblemError:
+            continue
+        result.append(candidate)
+        next_id += 1
+    return tuple(result)
