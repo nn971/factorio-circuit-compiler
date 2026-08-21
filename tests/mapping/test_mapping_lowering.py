@@ -2,6 +2,8 @@ from factorio_circuit import Circuit, SamplingPolicy
 from factorio_circuit.ir.abstract_physical import ArithmeticCombinator, Connector
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
+    DelayBusLane,
+    DelayBusResource,
     DeliveryKind,
     ExactLifetime,
     PlannedDelivery,
@@ -186,3 +188,92 @@ def test_private_exact_lifetime_lowers_as_one_prefix_shared_chain() -> None:
         and entity.description.startswith("mapped exact transport")
     ]
     assert len(delay_entities) == 2
+
+
+def test_delay_bus_plan_lowers_to_cost_exact_isolated_shared_trunk() -> None:
+    circuit = Circuit("mapped_delay_bus")
+    left = circuit.input("left")
+    right = circuit.input("right")
+    circuit.output("left-out", left)
+    circuit.output("right-out", right)
+    module = lower_frontend(circuit)
+    problem = build_stateless_level_mapping_problem(
+        module,
+        output_phases=(6, 6),
+        sampling_policy=SamplingPolicy.BEGINNING_OF_STEP,
+    )
+    assert not problem.operations
+    left_source, right_source = problem.sources
+    left_sink, right_sink = problem.sinks
+
+    plan = RealizationPlan(
+        realizations=(),
+        deliveries=(
+            PlannedDelivery(
+                left_source.id,
+                left_sink.id,
+                None,
+                6,
+                DeliveryKind.BUS_TRANSPORT,
+                0,
+            ),
+            PlannedDelivery(
+                right_source.id,
+                right_sink.id,
+                None,
+                6,
+                DeliveryKind.BUS_TRANSPORT,
+                0,
+            ),
+        ),
+        exact_lifetimes=(
+            ExactLifetime(left_source.id, 0, 6, (6,)),
+            ExactLifetime(right_source.id, 0, 6, (6,)),
+        ),
+        wire_sums=(),
+        entity_cost=0,
+        transport_cost=8,
+        delay_buses=(
+            DelayBusResource(
+                index=0,
+                middle_start_phase=1,
+                middle_end_phase=5,
+                lanes=(
+                    DelayBusLane(left_source.id, 0, 6, (6,)),
+                    DelayBusLane(right_source.id, 0, 6, (6,)),
+                ),
+            ),
+        ),
+    )
+
+    physical = lower_stateless_mapping_plan(module, problem, (), plan)
+
+    arithmetic = [
+        entity for entity in physical.entities if isinstance(entity, ArithmeticCombinator)
+    ]
+    ingress = [entity for entity in arithmetic if entity.description == "mapped delay bus ingress"]
+    middle = [
+        entity
+        for entity in arithmetic
+        if entity.description == "mapped shared delay bus 0"
+    ]
+    egress = [
+        entity
+        for entity in arithmetic
+        if entity.description is not None
+        and entity.description.startswith("mapped delay bus 0 egress")
+    ]
+    assert len(arithmetic) == plan.transport_cost == 8
+    assert len(ingress) == 2
+    assert len(middle) == 4
+    assert len(egress) == 2
+
+    shared_nets = [
+        net
+        for net in physical.nets
+        if net.label is not None and net.label.startswith("mapped shared delay bus 0 @")
+    ]
+    assert len(shared_nets) == 4
+    assert all(len(net.signals) == 2 for net in shared_nets)
+    assert len(physical.signal_conflicts) == 1
+    assert [port.phase for port in physical.outputs] == [6, 6]
