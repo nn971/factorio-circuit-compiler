@@ -92,15 +92,15 @@ def main() -> None:
     alignment = analyze_temporal_alignment(pinned_graph, placement)
 
     use_kinds = Counter(item.kind.value for item in alignment.uses)
+    bus_candidates = sum(item.scalar_bus_candidate for item in alignment.transports)
     print(
         "observation-aware Snake transport: fixed production ALAP placement; "
         + ", ".join(f"{kind}={count}" for kind, count in sorted(use_kinds.items())),
         file=sys.stderr,
     )
     print(
-        "residual exact lifetimes: "
-        f"total={len(alignment.transports)}, "
-        f"scalar_bus_candidates={sum(item.scalar_bus_candidate for item in alignment.transports)}",
+        f"residual exact lifetimes: total={len(alignment.transports)}, "
+        f"scalar_bus_candidates={bus_candidates}",
         file=sys.stderr,
     )
 
@@ -128,11 +128,11 @@ def main() -> None:
     )
     planned_census = census_abstract_physical(planned)
     print(format_abstract_physical_census(planned_census), file=sys.stderr)
+    delta = planned_census.implementation_entities - accepted_census.implementation_entities
     print(
         "accepted ALAP vs observation-aware transport: "
         f"accepted={accepted_census.implementation_entities}; "
-        f"planned={planned_census.implementation_entities}; "
-        f"delta={planned_census.implementation_entities - accepted_census.implementation_entities:+d}",
+        f"planned={planned_census.implementation_entities}; delta={delta:+d}",
         file=sys.stderr,
     )
 
