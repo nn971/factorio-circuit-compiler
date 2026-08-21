@@ -4,6 +4,7 @@ from factorio_circuit import Circuit, SamplingPolicy
 from factorio_circuit.ir.semantic import BinaryOp, Constant, PayloadShape, Select
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
+    DeliveryKind,
     ImplementationKind,
     MappingOperation,
     MappingProblem,
@@ -216,3 +217,59 @@ def test_wire_sum_candidate_changes_timing_inside_same_solve() -> None:
     assert fused.plan.entity_cost == 2
     assert fused.plan.transport_cost == 0
     assert len(fused.plan.wire_sums) == 1
+
+
+def test_joint_mapper_selects_shared_bus_for_two_long_exact_lifetimes() -> None:
+    pytest.importorskip("ortools.sat.python.cp_model")
+    left = Constant(11)
+    right = Constant(13)
+    problem = MappingProblem(
+        horizon=6,
+        sources=(
+            MappingSource(
+                1,
+                "left",
+                PayloadShape.SCALAR,
+                MappingSourceMode.EXACT,
+                left,
+                0,
+                1,
+            ),
+            MappingSource(
+                2,
+                "right",
+                PayloadShape.SCALAR,
+                MappingSourceMode.EXACT,
+                right,
+                0,
+                1,
+            ),
+        ),
+        operations=(),
+        sinks=(
+            MappingSink(10, "left-out", 1, 6),
+            MappingSink(11, "right-out", 2, 6),
+        ),
+    )
+
+    private = solve_mapping_problem(problem, time_limit_seconds=5.0)
+    shared = solve_mapping_problem(
+        problem,
+        max_delay_buses=1,
+        delay_bus_capacity=2,
+        time_limit_seconds=5.0,
+    )
+
+    assert private.proven_optimal
+    assert shared.proven_optimal
+    assert private.plan.transport_cost == 12
+    assert shared.plan.transport_cost == 8
+    assert len(shared.plan.delay_buses) == 1
+    bus = shared.plan.delay_buses[0]
+    assert (bus.middle_start_phase, bus.middle_end_phase) == (1, 5)
+    assert bus.middle_stages == 4
+    assert bus.interface_combinators == 4
+    assert {lane.producer for lane in bus.lanes} == {1, 2}
+    assert all(
+        delivery.kind is DeliveryKind.BUS_TRANSPORT for delivery in shared.plan.deliveries
+    )
