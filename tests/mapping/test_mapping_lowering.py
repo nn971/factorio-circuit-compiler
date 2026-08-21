@@ -3,6 +3,7 @@ from factorio_circuit.ir.abstract_physical import ArithmeticCombinator, Connecto
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
     DeliveryKind,
+    ExactLifetime,
     PlannedDelivery,
     RealizationPlan,
     SelectedRealization,
@@ -114,3 +115,77 @@ def test_wire_sum_plan_lowers_to_shared_single_lane_net_without_add_combinator()
     assert len(shared.endpoints) == 3
     assert physical.outputs[0].phase == 2
     assert physical.outputs[0].signal == shared.signals[0]
+
+
+def test_private_exact_lifetime_lowers_as_one_prefix_shared_chain() -> None:
+    circuit = Circuit("mapped_private_transport")
+    a = circuit.input("a")
+    b = circuit.input("b")
+    total = a + b
+    circuit.output("early", total)
+    circuit.output("late", total)
+    module = lower_frontend(circuit)
+    problem = build_stateless_level_mapping_problem(
+        module,
+        output_phases=(2, 3),
+        sampling_policy=SamplingPolicy.BEGINNING_OF_STEP,
+    )
+    candidates = ordinary_candidates(problem)
+    operation = problem.operations[0]
+    candidate = candidates[0]
+    assert len(problem.sources) == 2
+    assert len(problem.sinks) == 2
+
+    plan = RealizationPlan(
+        realizations=(SelectedRealization(operation.id, candidate.id, 1, 1),),
+        deliveries=(
+            PlannedDelivery(
+                operation.operands[0],
+                operation.id,
+                0,
+                0,
+                DeliveryKind.REUSE,
+            ),
+            PlannedDelivery(
+                operation.operands[1],
+                operation.id,
+                1,
+                0,
+                DeliveryKind.REUSE,
+            ),
+            PlannedDelivery(
+                operation.id,
+                problem.sinks[0].id,
+                None,
+                2,
+                DeliveryKind.PRIVATE_TRANSPORT,
+                1,
+            ),
+            PlannedDelivery(
+                operation.id,
+                problem.sinks[1].id,
+                None,
+                3,
+                DeliveryKind.PRIVATE_TRANSPORT,
+                1,
+            ),
+        ),
+        exact_lifetimes=(ExactLifetime(operation.id, 1, 3, (2, 3)),),
+        wire_sums=(),
+        entity_cost=1,
+        transport_cost=2,
+    )
+
+    physical = lower_stateless_mapping_plan(module, problem, candidates, plan)
+
+    arithmetic = [
+        entity for entity in physical.entities if isinstance(entity, ArithmeticCombinator)
+    ]
+    assert len(arithmetic) == 3
+    assert [port.phase for port in physical.outputs] == [2, 3]
+    delay_entities = [
+        entity
+        for entity in arithmetic
+        if entity.description is not None and entity.description.startswith("mapped exact transport")
+    ]
+    assert len(delay_entities) == 2
