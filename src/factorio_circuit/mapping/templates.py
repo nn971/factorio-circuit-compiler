@@ -175,10 +175,9 @@ def wire_sum_candidate(
 ) -> ImplementationCandidate:
     """Return the first conservative zero-delay same-signal wire-sum implementation.
 
-    This milestone only admits ``x + y`` when both operands are operation results and each operand
-    has exactly this one semantic use. That restriction avoids consuming a producer's second wire
-    color or accidentally changing another consumer while the abstract-physical resource model is
-    still being built. The restriction can later become a connector-channel resource constraint.
+    This milestone only admits ``x + y`` when both operands are non-addition operation results and
+    each operand has exactly this one semantic use. That restriction ensures both contributors have
+    real output connectors and avoids nested aggregation until an n-way wire-resource model exists.
     """
 
     semantic = operation.semantic
@@ -192,6 +191,15 @@ def wire_sum_candidate(
         raise MappingProblemError(
             "first wire-sum candidate requires both operands to be operation results"
         )
+    producer_operations = tuple(problem.operation_by_id(item) for item in operation.operands)
+    if any(
+        isinstance(producer.semantic, BinaryOp) and producer.semantic.op == "+"
+        for producer in producer_operations
+    ):
+        raise MappingProblemError(
+            "first wire-sum candidate does not nest another semantic addition contributor"
+        )
+
     use_counts: dict[int, int] = {}
     for use in problem.uses():
         use_counts[use.producer] = use_counts.get(use.producer, 0) + 1
