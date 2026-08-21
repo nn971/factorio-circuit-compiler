@@ -154,6 +154,7 @@ def build_stateless_level_mapping_problem(
             label=label,
             shape=shape,
             mode=mode,
+            semantic=value,
             start_phase=start,
             end_phase_exclusive=end,
         )
