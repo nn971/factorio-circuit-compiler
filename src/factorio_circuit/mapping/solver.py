@@ -1,9 +1,10 @@
-"""Joint candidate selection and physical-phase optimization for the first mapping milestone.
+"""Joint candidate selection and physical-phase optimization for temporal technology mapping.
 
 The solver owns target timing: semantic operations do not arrive with precomputed physical latency
-windows.  Each selected implementation candidate contributes its own input/output phase equations.
-The first milestone supports finite local candidates, free source reuse/observation, and prefix-shared
-private exact transport.  Shared buses and other resource families are intentionally deferred.
+windows. Each selected implementation candidate contributes its own input/output phase equations.
+The first milestone supports finite local candidates, free source reuse/observation, prefix-shared
+private exact transport, and a deliberately narrow zero-delay wire-sum candidate. Shared delay buses
+and other parameterized resource families are intentionally deferred.
 """
 
 from __future__ import annotations
@@ -12,9 +13,22 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any
 
-from .plan import DeliveryKind, ExactLifetime, PlannedDelivery, RealizationPlan, SelectedRealization
-from .problem import MappingProblem, MappingProblemError, MappingSource, MappingSourceMode, MappingUse
-from .templates import CandidateOutputMode, ImplementationCandidate, ordinary_candidates
+from .plan import (
+    DeliveryKind,
+    ExactLifetime,
+    PlannedDelivery,
+    RealizationPlan,
+    SelectedRealization,
+    WireSumResource,
+)
+from .problem import MappingProblem, MappingProblemError, MappingUse
+from .templates import (
+    CandidateOutputMode,
+    ImplementationCandidate,
+    ImplementationKind,
+    ordinary_candidates,
+)
+from .validate import source_delivery_kind, transport_anchor, validate_realization_plan
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,9 +61,9 @@ def solve_mapping_problem(
 ) -> MappingOptimizationResult:
     """Choose implementations and physical phases in one CP-SAT model.
 
-    The objective is abstract implementation entities plus private exact-transport stages.  Source
+    The objective is abstract implementation entities plus private exact-transport stages. Source
     ``STABLE``/``OBSERVABLE`` windows are free through their last valid phase; later uses begin one
-    exact lifetime at that boundary.  Operation outputs are conservatively EXACT in this milestone.
+    exact lifetime at that boundary. Operation outputs are conservatively EXACT in this milestone.
     """
 
     if time_limit_seconds <= 0:
@@ -103,9 +117,8 @@ def solve_mapping_problem(
         for candidate in candidates_by_operation[operation.id]:
             for operand_index, offset in enumerate(candidate.input_phase_offsets):
                 use = MappingUse(operation.operands[operand_index], operation.id, operand_index)
-                model.Add(
-                    use_phase[use] == output_phase[operation.id] + offset
-                ).OnlyEnforceIf(choose[candidate.id])
+                constraint = use_phase[use] == output_phase[operation.id] + offset
+                model.Add(constraint).OnlyEnforceIf(choose[candidate.id])
 
     outgoing: dict[int, list[Any]] = {item: [] for item in problem.value_ids}
     for use in problem.uses():
@@ -126,7 +139,7 @@ def solve_mapping_problem(
         lifetime_lengths.append(length)
 
     for source in problem.sources:
-        anchor = _transport_anchor(source)
+        anchor = transport_anchor(source)
         if anchor is None:
             continue
         uses = outgoing[source.id]
@@ -146,14 +159,13 @@ def solve_mapping_problem(
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(time_limit_seconds)
     solver.parameters.num_search_workers = workers
-    status = solver.Solve(model)
-    status_name = solver.StatusName(status)
-    if status_name not in {"OPTIMAL", "FEASIBLE"}:
-        raise MappingProblemError(f"temporal technology mapping failed with status {status_name}")
+    status_code = solver.Solve(model)
+    status = str(solver.StatusName(status_code))
+    if status.upper() not in {"OPTIMAL", "FEASIBLE"}:
+        raise MappingProblemError(f"temporal technology mapping failed with status {status}")
 
     plan = _extract_plan(
         problem,
-        selected_candidates,
         candidates_by_operation,
         choose,
         output_phase,
@@ -162,124 +174,10 @@ def solve_mapping_problem(
     )
     validate_realization_plan(problem, selected_candidates, plan)
     return MappingOptimizationResult(
-        status=status_name,
+        status=status,
         plan=plan,
         wall_time_seconds=float(solver.WallTime()),
     )
-
-
-def validate_realization_plan(
-    problem: MappingProblem,
-    candidates: tuple[ImplementationCandidate, ...],
-    plan: RealizationPlan,
-) -> None:
-    """Independently validate a selected first-milestone realization plan."""
-
-    candidate_by_id = {item.id: item for item in candidates}
-    if len(candidate_by_id) != len(candidates):
-        raise MappingProblemError("mapping candidates must have unique ids")
-
-    realization_by_operation = {item.operation: item for item in plan.realizations}
-    if len(realization_by_operation) != len(plan.realizations):
-        raise MappingProblemError("realization plan contains duplicate operation realizations")
-    if set(realization_by_operation) != {item.id for item in problem.operations}:
-        raise MappingProblemError("realization plan must realize every semantic operation exactly once")
-
-    deliveries = {
-        MappingUse(item.producer, item.consumer, item.operand_index): item
-        for item in plan.deliveries
-    }
-    if len(deliveries) != len(plan.deliveries):
-        raise MappingProblemError("realization plan contains duplicate semantic deliveries")
-    expected_uses = set(problem.uses())
-    if set(deliveries) != expected_uses:
-        raise MappingProblemError("realization plan must satisfy every semantic use exactly once")
-
-    operations = {item.id: item for item in problem.operations}
-    sources = {item.id: item for item in problem.sources}
-    sinks = {item.id: item for item in problem.sinks}
-
-    entity_cost = 0
-    for operation_id, realization in realization_by_operation.items():
-        candidate = candidate_by_id.get(realization.candidate)
-        if candidate is None or candidate.operation != operation_id:
-            raise MappingProblemError("realization selects a candidate for the wrong operation")
-        if candidate.output_mode is not CandidateOutputMode.EXACT:
-            raise MappingProblemError("first-milestone validator requires EXACT candidate outputs")
-        if realization.entity_cost != candidate.entity_cost:
-            raise MappingProblemError("realization entity cost disagrees with its candidate")
-        if not 0 <= realization.output_phase <= problem.horizon:
-            raise MappingProblemError("realization output phase lies outside the mapping horizon")
-        entity_cost += realization.entity_cost
-
-        operation = operations[operation_id]
-        for operand_index, offset in enumerate(candidate.input_phase_offsets):
-            use = MappingUse(operation.operands[operand_index], operation_id, operand_index)
-            expected_phase = realization.output_phase + offset
-            if expected_phase < 0 or deliveries[use].phase != expected_phase:
-                raise MappingProblemError("candidate timing equation disagrees with planned delivery")
-
-    for sink in problem.sinks:
-        delivery = deliveries[MappingUse(sink.value, sink.id, None)]
-        if delivery.phase != sink.phase:
-            raise MappingProblemError("sink delivery phase disagrees with the fixed sink contract")
-
-    expected_transport: dict[int, tuple[int, list[int]]] = {}
-    for use, delivery in deliveries.items():
-        if not 0 <= delivery.phase <= problem.horizon:
-            raise MappingProblemError("planned delivery phase lies outside the mapping horizon")
-        if use.producer in operations:
-            start = realization_by_operation[use.producer].output_phase
-            if delivery.phase < start:
-                raise MappingProblemError("operation result is consumed before it is produced")
-            expected_kind = (
-                DeliveryKind.REUSE
-                if delivery.phase == start
-                else DeliveryKind.PRIVATE_TRANSPORT
-            )
-            transport_start = start if expected_kind is DeliveryKind.PRIVATE_TRANSPORT else None
-        else:
-            source = sources[use.producer]
-            if delivery.phase < source.start_phase:
-                raise MappingProblemError("source is consumed before its availability begins")
-            expected_kind, transport_start = _source_delivery(source, delivery.phase)
-
-        if delivery.kind is not expected_kind or delivery.transport_start_phase != transport_start:
-            raise MappingProblemError("planned delivery kind disagrees with producer availability")
-        if transport_start is not None:
-            current = expected_transport.setdefault(use.producer, (transport_start, []))
-            if current[0] != transport_start:
-                raise MappingProblemError("one producer acquired inconsistent transport anchors")
-            current[1].append(delivery.phase)
-
-    expected_lifetimes = tuple(
-        sorted(
-            (
-                ExactLifetime(
-                    producer=producer,
-                    start_phase=start,
-                    end_phase=max(taps),
-                    tap_phases=tuple(sorted(set(taps))),
-                )
-                for producer, (start, taps) in expected_transport.items()
-            ),
-            key=lambda item: (item.start_phase, item.end_phase, item.producer),
-        )
-    )
-    actual_lifetimes = tuple(
-        sorted(
-            plan.exact_lifetimes,
-            key=lambda item: (item.start_phase, item.end_phase, item.producer),
-        )
-    )
-    if actual_lifetimes != expected_lifetimes:
-        raise MappingProblemError("realization plan exact lifetimes disagree with deliveries")
-
-    transport_cost = sum(item.length for item in expected_lifetimes)
-    if plan.entity_cost != entity_cost:
-        raise MappingProblemError("realization plan entity cost is inconsistent")
-    if plan.transport_cost != transport_cost:
-        raise MappingProblemError("realization plan transport cost is inconsistent")
 
 
 def _validate_candidate_set(
@@ -320,27 +218,8 @@ def _candidates_by_operation(
     }
 
 
-def _transport_anchor(source: MappingSource) -> int | None:
-    if source.mode is MappingSourceMode.EXACT:
-        return source.start_phase
-    return source.last_free_phase
-
-
-def _source_delivery(source: MappingSource, phase: int) -> tuple[DeliveryKind, int | None]:
-    last_free = source.last_free_phase
-    if last_free is None or phase <= last_free:
-        kind = (
-            DeliveryKind.OBSERVE_AT
-            if source.mode is MappingSourceMode.OBSERVABLE
-            else DeliveryKind.REUSE
-        )
-        return kind, None
-    return DeliveryKind.PRIVATE_TRANSPORT, last_free
-
-
 def _extract_plan(
     problem: MappingProblem,
-    candidates: tuple[ImplementationCandidate, ...],
     candidates_by_operation: dict[int, tuple[ImplementationCandidate, ...]],
     choose: dict[int, Any],
     output_phase: dict[int, Any],
@@ -348,7 +227,9 @@ def _extract_plan(
     solver: Any,
 ) -> RealizationPlan:
     realizations: list[SelectedRealization] = []
+    selected_by_operation: dict[int, ImplementationCandidate] = {}
     output_values: dict[int, int] = {}
+
     for operation in problem.operations:
         selected = next(
             item
@@ -356,6 +237,7 @@ def _extract_plan(
             if solver.Value(choose[item.id]) == 1
         )
         phase = int(solver.Value(output_phase[operation.id]))
+        selected_by_operation[operation.id] = selected
         output_values[operation.id] = phase
         realizations.append(
             SelectedRealization(
@@ -382,7 +264,7 @@ def _extract_plan(
                 kind = DeliveryKind.PRIVATE_TRANSPORT
                 transport_start = start
         else:
-            kind, transport_start = _source_delivery(sources[use.producer], phase)
+            kind, transport_start = source_delivery_kind(sources[use.producer], phase)
 
         deliveries.append(
             PlannedDelivery(
@@ -412,6 +294,16 @@ def _extract_plan(
             key=lambda item: (item.start_phase, item.end_phase, item.producer),
         )
     )
+    wire_sums = tuple(
+        WireSumResource(
+            operation=operation.id,
+            left_producer=operation.operands[0],
+            right_producer=operation.operands[1],
+            phase=output_values[operation.id],
+        )
+        for operation in problem.operations
+        if selected_by_operation[operation.id].kind is ImplementationKind.WIRE_SUM
+    )
     entity_cost = sum(item.entity_cost for item in realizations)
     transport_cost = sum(item.length for item in exact_lifetimes)
     return RealizationPlan(
@@ -427,6 +319,7 @@ def _extract_plan(
             )
         ),
         exact_lifetimes=exact_lifetimes,
+        wire_sums=wire_sums,
         entity_cost=entity_cost,
         transport_cost=transport_cost,
     )
