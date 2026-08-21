@@ -33,7 +33,9 @@ def _mapped_wire_sum_fixture():
     operations = {item.label: item for item in problem.operations}
     left_op = operations["binary *"]
     right_op = next(
-        item for item in problem.operations if item.label == "binary *" and item.id != left_op.id
+        item
+        for item in problem.operations
+        if item.label == "binary *" and item.id != left_op.id
     )
     sum_op = operations["binary +"]
 
@@ -42,7 +44,11 @@ def _mapped_wire_sum_fixture():
         for item in candidates
         if item.name.startswith("ordinary")
     }
-    wire = next(item for item in candidates if item.operation == sum_op.id and item.name == "zero-delay wire sum")
+    wire = next(
+        item
+        for item in candidates
+        if item.operation == sum_op.id and item.name == "zero-delay wire sum"
+    )
 
     deliveries = []
     for operation in (left_op, right_op):
