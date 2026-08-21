@@ -30,7 +30,6 @@ from factorio_circuit.ir.semantic import (
     VectorScalarOp,
     VectorSelect,
     VectorSignal,
-    VectorValue,
     is_vector_value,
     reject_event_module,
     validate_canonical_module,
