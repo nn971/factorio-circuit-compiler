@@ -248,14 +248,19 @@ class MappingProblem:
         raise KeyError(transition_id)
 
     def uses(self) -> tuple[MappingUse, ...]:
-        """Return uses whose physical input phase is already part of the current solver model.
+        """Return physical-phase uses supported by the current mapping solver.
 
-        State-transition value/control references are intentionally absent until state-cell
-        implementation candidates own their consume-phase equations. Operation uses of unresolved
-        state reads are retained structurally, but the current solver rejects such problems before
-        assigning phases.
+        A full stateful problem intentionally has unresolved register read/write port timing. Until
+        state-cell implementation candidates own those equations, enumerating physically timed uses
+        would silently invent an ABI. Fail at this boundary so every current solver/candidate caller
+        rejects the unsupported stateful problem consistently.
         """
 
+        if self.state_reads or self.state_transitions:
+            raise MappingProblemError(
+                "stateful temporal mapping requires physical state-cell implementation candidates "
+                "before read/write use phases can be solved"
+            )
         result = [
             MappingUse(producer, operation.id, operand_index)
             for operation in self.operations
