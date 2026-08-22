@@ -1,13 +1,13 @@
 """Circuit-facing anonymous worker pool for the deterministic autonomous-mall prototype.
 
 The offline scheduler in :mod:`examples.autonomous_mall.scheduler` decides *which* deterministic
-crafts are useful.  This module implements the next boundary down: accepting one already-formed
+crafts are useful. This module implements the next boundary down: accepting one already-formed
 craft job and executing it on the first idle assembler worker while publishing additive reservation
 and promised-output ledgers.
 
-The first physical protocol deliberately uses **one craft per accepted job**.  ``AssemblerDevice``
+The first physical protocol deliberately uses **one craft per accepted job**. ``AssemblerDevice``
 exposes requester demand as a steady-state logistic setpoint, so holding an entire multi-craft batch
-as the setpoint while the assembler consumes items would invite repeated replenishment.  A later
+as the setpoint while the assembler consumes items would invite repeated replenishment. A later
 batch protocol may preload/escrow a batch explicitly; this prototype keeps the exact execution rule
 small and fail-safe.
 
@@ -15,8 +15,8 @@ Job envelope (all Level inputs)
 -------------------------------
 
 ``offer_valid``
-    Nonzero while one job envelope is being offered.  The producer must drop this to zero between
-    distinct envelopes.  The pool contains a ``seen`` latch, so holding one envelope high until
+    Nonzero while one job envelope is being offered. The producer must drop this to zero between
+    distinct envelopes. The pool contains a ``seen`` latch, so holding one envelope high until
     ``offer_accepted`` is safe and cannot duplicate the job.
 
 ``offer_recipe``
@@ -34,13 +34,13 @@ by :class:`factorio_circuit.devices.AssemblerDevice`:
 
 ``worker_i_recipe`` / ``worker_i_enable`` / ``worker_i_requester_demand``.
 
-A worker has three whole-vector registers: held recipe, held reservation, and held promise.  A
-nonempty promise means busy.  A nonempty recipe means the worker is still waiting for the assembler
-to report ``working=1``.  On that observation the recipe is withdrawn; Factorio's validated
+A worker has three whole-vector registers: held recipe, held reservation, and held promise. A
+nonempty promise means busy. A nonempty recipe means the worker is still waiting for the assembler
+to report ``working=1``. On that observation the recipe is withdrawn; Factorio's validated
 Set-recipe behavior lets the already-started craft finish while preventing another craft from
-starting.  The promise and reservation remain held until ``working`` returns to zero.
+starting. The promise and reservation remain held until ``working`` returns to zero.
 
-The aggregate ``reserved`` and ``promised`` outputs are additive buses.  They include a newly claimed
+The aggregate ``reserved`` and ``promised`` outputs are additive buses. They include a newly claimed
 job combinationally during the claim reaction and then continuously from worker state, avoiding a
 one-reaction accounting hole at dispatch.
 """
@@ -76,9 +76,6 @@ OFFER_ACCEPTED_SIGNAL: Final = SignalId("virtual", "signal-A")
 OFFER_BLOCKED_SIGNAL: Final = SignalId("virtual", "signal-B")
 BUSY_COUNT_SIGNAL: Final = SignalId("virtual", "signal-C")
 COMPLETION_COUNT_SIGNAL: Final = SignalId("virtual", "signal-D")
-CLAIM_SIGNAL: Final = SignalId("virtual", "signal-K")
-BUSY_SIGNAL: Final = SignalId("virtual", "signal-I")
-FINISHED_SIGNAL: Final = SignalId("virtual", "signal-F")
 _OFFER_SEEN_SIGNAL: Final = SignalId("virtual", "signal-S")
 
 
@@ -135,7 +132,7 @@ def build_worker_pool(worker_count: int = 2) -> Circuit:
     """Build the deterministic first-free worker-pool controller.
 
     The offer handshake is four-phase: a producer may hold ``offer_valid`` high until
-    ``offer_accepted``; it must then lower valid before presenting another envelope.  If all workers
+    ``offer_accepted``; it must then lower valid before presenting another envelope. If all workers
     are busy, ``offer_blocked`` remains high and the still-unseen envelope is claimed automatically
     when a worker becomes idle.
     """
@@ -149,25 +146,18 @@ def build_worker_pool(worker_count: int = 2) -> Circuit:
     offer_inputs = circuit.signals("offer_inputs")
     offer_product = circuit.signals("offer_product")
     empty = circuit.constant_signals({})
+    scalar_zero = offer_valid * 0
 
     seen_reg = circuit.freeze("offer_seen")
     seen = seen_reg.sample().signal(_OFFER_SEEN_SIGNAL) != 0
     well_formed = offer_recipe.any() * offer_product.any()
     remaining_offer = offer_valid * seen.logical_not() * well_formed
 
-    held_reservations = empty
-    held_promises = empty
-    accepted = circuit.input("_constant_zero_for_accept") * 0
-    completion_count = circuit.input("_constant_zero_for_completion") * 0
-    busy_count = circuit.input("_constant_zero_for_busy") * 0
-
-    # The three zero-valued scalar inputs above are intentionally avoided at the physical ABI by
-    # replacing them below with ordinary constant expressions before build.  They exist only because
-    # the public scalar frontend currently exposes no explicit constant constructor.  Multiplication
-    # by zero canonicalizes them away during lowering.
-
-    worker_claims = []
-    worker_finished = []
+    total_reservation = empty
+    total_promise = empty
+    accepted = scalar_zero
+    completion_count = scalar_zero
+    busy_count = scalar_zero
 
     for index in range(worker_count):
         ports = worker_ports(index)
@@ -193,21 +183,24 @@ def build_worker_pool(worker_count: int = 2) -> Circuit:
         # A busy worker forwards the still-unclaimed envelope; the first idle worker consumes it.
         remaining_offer = remaining_offer * busy
 
+        # Each register has one mutation site. Claim and the corresponding release transition are
+        # mutually exclusive because claim requires idle while started/finished require busy.
         recipe_reg.set(offer_recipe.gate(claim), when=claim | started)
         reservation_reg.set(offer_inputs.gate(claim), when=claim | finished)
         promise_reg.set(offer_product.gate(claim), when=claim | finished)
 
+        # Include a just-claimed envelope immediately on the public ledgers; next reaction the same
+        # values come from held state, so there is no accounting gap at the handoff.
         live_reservation = held_reservation + offer_inputs.gate(claim)
         live_promise = held_promise + offer_product.gate(claim)
-        held_reservations = held_reservations + live_reservation
-        held_promises = held_promises + live_promise
+        live_busy = busy | claim
+        total_reservation = total_reservation + live_reservation
+        total_promise = total_promise + live_promise
         accepted = accepted + claim
         completion_count = completion_count + finished
-        busy_count = busy_count + busy
-        worker_claims.append(claim)
-        worker_finished.append(finished)
+        busy_count = busy_count + live_busy
 
-        # Keep enable asserted through the current craft.  Recipe/request demand are present only
+        # Keep enable asserted through the current craft. Recipe/request demand are present only
         # while waiting for working=1; withdrawing recipe at that point prevents a second craft.
         circuit.output(ports.recipe, held_recipe.gate(starting))
         circuit.output(ports.enable, busy)
@@ -215,18 +208,19 @@ def build_worker_pool(worker_count: int = 2) -> Circuit:
         circuit.output(ports.reservation, live_reservation)
         circuit.output(ports.promise, live_promise)
         circuit.output(ports.claim, claim)
-        circuit.output(ports.busy, busy)
+        circuit.output(ports.busy, live_busy)
         circuit.output(ports.finished, finished)
 
-    # Remember an accepted envelope until its producer has visibly dropped valid.  A blocked offer
+    # Remember an accepted envelope until its producer has visibly dropped valid. A blocked offer
     # leaves seen=0, so it remains eligible for the first worker that later becomes idle.
-    clear_seen = offer_valid.logical_not()
-    seen_change = (accepted != 0) | clear_seen
-    seen_value = circuit.constant_signals({_OFFER_SEEN_SIGNAL: 1}).gate(accepted != 0)
+    accepted_any = accepted != 0
+    clear_seen = seen * offer_valid.logical_not()
+    seen_change = accepted_any | clear_seen
+    seen_value = circuit.constant_signals({_OFFER_SEEN_SIGNAL: 1}).gate(accepted_any)
     seen_reg.set(seen_value, when=seen_change)
 
-    circuit.output("reserved", held_reservations)
-    circuit.output("promised", held_promises)
+    circuit.output("reserved", total_reservation)
+    circuit.output("promised", total_promise)
     circuit.output("offer_accepted", accepted)
     circuit.output("offer_blocked", remaining_offer)
     circuit.output("busy_count", busy_count)
@@ -287,11 +281,35 @@ def _level_anchor(
     return AnchorSpec(name, direction, shape, TemporalModality.LEVEL, wire, signal)
 
 
+def _device_route(
+    device_port: str,
+    offset: tuple[float, float],
+    anchor_position: tuple[float, float],
+) -> tuple[tuple[float, float], ...]:
+    """Approach device docks from outside the worker footprint.
+
+    Command docks are on the left edge. The ``working`` dock is on the right, so its route goes
+    below the worker and comes back from the right instead of dropping relay combinators through the
+    assembler/requester/provider footprint.
+    """
+
+    left_clearance = offset[0] - 4.0
+    if device_port != "working":
+        return ((left_clearance, anchor_position[1]),)
+    bottom_clearance = offset[1] + 21.5
+    right_clearance = offset[0] + 24.0
+    return (
+        (left_clearance, bottom_clearance),
+        (right_clearance, bottom_clearance),
+        (right_clearance, anchor_position[1]),
+    )
+
+
 def build_worker_pool_probe_blueprint(worker_count: int = 2) -> Blueprint:
     """Compile the pool and attach ``worker_count`` real ``AssemblerDevice`` instances.
 
     The resulting blueprint intentionally leaves the offer envelope and aggregate-ledger anchors
-    exposed for manual wiring.  Unused per-device observation anchors (ingredients, contents,
+    exposed for manual wiring. Unused per-device observation anchors (ingredients, contents,
     finished) also survive with worker-prefixed names, which makes the prototype convenient to
     inspect in game without modifying device internals.
     """
@@ -314,32 +332,146 @@ def build_worker_pool_probe_blueprint(worker_count: int = 2) -> Blueprint:
     # External job/ledger ABI on the left of the compiled controller.
     external_x = min_x - 16.0
     external_specs = (
-        ("offer_valid", _level_anchor("offer_valid", DevicePortDirection.INPUT, PayloadShape.SCALAR, WireColor.GREEN, OFFER_VALID_SIGNAL)),
-        ("offer_recipe", _level_anchor("offer_recipe", DevicePortDirection.INPUT, PayloadShape.VECTOR, WireColor.GREEN)),
-        ("offer_inputs", _level_anchor("offer_inputs", DevicePortDirection.INPUT, PayloadShape.VECTOR, WireColor.GREEN)),
-        ("offer_product", _level_anchor("offer_product", DevicePortDirection.INPUT, PayloadShape.VECTOR, WireColor.GREEN)),
-        ("reserved", _level_anchor("reserved", DevicePortDirection.OUTPUT, PayloadShape.VECTOR, WireColor.RED)),
-        ("promised", _level_anchor("promised", DevicePortDirection.OUTPUT, PayloadShape.VECTOR, WireColor.RED)),
-        ("offer_accepted", _level_anchor("offer_accepted", DevicePortDirection.OUTPUT, PayloadShape.SCALAR, WireColor.RED, OFFER_ACCEPTED_SIGNAL)),
-        ("offer_blocked", _level_anchor("offer_blocked", DevicePortDirection.OUTPUT, PayloadShape.SCALAR, WireColor.RED, OFFER_BLOCKED_SIGNAL)),
-        ("busy_count", _level_anchor("busy_count", DevicePortDirection.OUTPUT, PayloadShape.SCALAR, WireColor.RED, BUSY_COUNT_SIGNAL)),
-        ("completion_count", _level_anchor("completion_count", DevicePortDirection.OUTPUT, PayloadShape.SCALAR, WireColor.RED, COMPLETION_COUNT_SIGNAL)),
+        (
+            "offer_valid",
+            _level_anchor(
+                "offer_valid",
+                DevicePortDirection.INPUT,
+                PayloadShape.SCALAR,
+                WireColor.GREEN,
+                OFFER_VALID_SIGNAL,
+            ),
+        ),
+        (
+            "offer_recipe",
+            _level_anchor(
+                "offer_recipe",
+                DevicePortDirection.INPUT,
+                PayloadShape.VECTOR,
+                WireColor.GREEN,
+            ),
+        ),
+        (
+            "offer_inputs",
+            _level_anchor(
+                "offer_inputs",
+                DevicePortDirection.INPUT,
+                PayloadShape.VECTOR,
+                WireColor.GREEN,
+            ),
+        ),
+        (
+            "offer_product",
+            _level_anchor(
+                "offer_product",
+                DevicePortDirection.INPUT,
+                PayloadShape.VECTOR,
+                WireColor.GREEN,
+            ),
+        ),
+        (
+            "reserved",
+            _level_anchor(
+                "reserved",
+                DevicePortDirection.OUTPUT,
+                PayloadShape.VECTOR,
+                WireColor.RED,
+            ),
+        ),
+        (
+            "promised",
+            _level_anchor(
+                "promised",
+                DevicePortDirection.OUTPUT,
+                PayloadShape.VECTOR,
+                WireColor.RED,
+            ),
+        ),
+        (
+            "offer_accepted",
+            _level_anchor(
+                "offer_accepted",
+                DevicePortDirection.OUTPUT,
+                PayloadShape.SCALAR,
+                WireColor.RED,
+                OFFER_ACCEPTED_SIGNAL,
+            ),
+        ),
+        (
+            "offer_blocked",
+            _level_anchor(
+                "offer_blocked",
+                DevicePortDirection.OUTPUT,
+                PayloadShape.SCALAR,
+                WireColor.RED,
+                OFFER_BLOCKED_SIGNAL,
+            ),
+        ),
+        (
+            "busy_count",
+            _level_anchor(
+                "busy_count",
+                DevicePortDirection.OUTPUT,
+                PayloadShape.SCALAR,
+                WireColor.RED,
+                BUSY_COUNT_SIGNAL,
+            ),
+        ),
+        (
+            "completion_count",
+            _level_anchor(
+                "completion_count",
+                DevicePortDirection.OUTPUT,
+                PayloadShape.SCALAR,
+                WireColor.RED,
+                COMPLETION_COUNT_SIGNAL,
+            ),
+        ),
     )
     for slot, (port, spec) in enumerate(external_specs):
         bindings.append(
             CompiledAnchorBinding(port, spec, (external_x, min_y + slot * 3.0))
         )
 
-    # Bind only the four ports needed by the one-craft protocol.  The device's other observation
+    # Bind only the four ports needed by the one-craft protocol. The device's other observation
     # ports remain visible under worker-prefixed names after composition.
     for index, offset in enumerate(device_offsets):
         ports = worker_ports(index)
-        for controller_port, device_port, direction, shape, wire, signal in (
-            (ports.recipe, "recipe", DevicePortDirection.OUTPUT, PayloadShape.VECTOR, WireColor.GREEN, None),
-            (ports.enable, "enable", DevicePortDirection.OUTPUT, PayloadShape.SCALAR, WireColor.GREEN, ASSEMBLER_ENABLE_SIGNAL),
-            (ports.requester_demand, "requester_demand", DevicePortDirection.OUTPUT, PayloadShape.VECTOR, WireColor.GREEN, None),
-            (ports.working, "working", DevicePortDirection.INPUT, PayloadShape.SCALAR, WireColor.RED, ASSEMBLER_WORKING_SIGNAL),
-        ):
+        device_bindings = (
+            (
+                ports.recipe,
+                "recipe",
+                DevicePortDirection.OUTPUT,
+                PayloadShape.VECTOR,
+                WireColor.GREEN,
+                None,
+            ),
+            (
+                ports.enable,
+                "enable",
+                DevicePortDirection.OUTPUT,
+                PayloadShape.SCALAR,
+                WireColor.GREEN,
+                ASSEMBLER_ENABLE_SIGNAL,
+            ),
+            (
+                ports.requester_demand,
+                "requester_demand",
+                DevicePortDirection.OUTPUT,
+                PayloadShape.VECTOR,
+                WireColor.GREEN,
+                None,
+            ),
+            (
+                ports.working,
+                "working",
+                DevicePortDirection.INPUT,
+                PayloadShape.SCALAR,
+                WireColor.RED,
+                ASSEMBLER_WORKING_SIGNAL,
+            ),
+        )
+        for controller_port, device_port, direction, shape, wire, signal in device_bindings:
             local = device_template.anchor(device_port)
             position = (local.position[0] + offset[0], local.position[1] + offset[1])
             bindings.append(
@@ -353,6 +485,7 @@ def build_worker_pool_probe_blueprint(worker_count: int = 2) -> Blueprint:
                         signal,
                     ),
                     position,
+                    route=_device_route(device_port, offset, position),
                 )
             )
 
