@@ -252,11 +252,7 @@ def test_delay_bus_plan_lowers_to_cost_exact_isolated_shared_trunk() -> None:
         entity for entity in physical.entities if isinstance(entity, ArithmeticCombinator)
     ]
     ingress = [entity for entity in arithmetic if entity.description == "mapped delay bus ingress"]
-    middle = [
-        entity
-        for entity in arithmetic
-        if entity.description == "mapped shared delay bus 0"
-    ]
+    middle = [entity for entity in arithmetic if entity.description == "mapped shared delay bus 0"]
     egress = [
         entity
         for entity in arithmetic

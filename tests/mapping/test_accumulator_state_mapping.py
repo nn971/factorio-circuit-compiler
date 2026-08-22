@@ -107,9 +107,7 @@ def test_accumulator_recurrence_solves_with_candidate_owned_timing() -> None:
 
     transitions = {item.kind: item for item in problem.state_transitions}
     next_read = cell.base_read_phase + 8
-    deliveries = {
-        (item.consumer, item.operand_index): item for item in result.plan.deliveries
-    }
+    deliveries = {(item.consumer, item.operand_index): item for item in result.plan.deliveries}
     assert deliveries[(transitions["add"].id, 0)].phase == next_read - 1
     assert deliveries[(transitions["add"].id, 1)].phase == next_read - 2
     assert deliveries[(transitions["clear"].id, 1)].phase == next_read - 2

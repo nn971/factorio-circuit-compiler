@@ -3,10 +3,12 @@
 This is an opt-in benchmark path. It does not change ``compile_circuit()``: the Snake semantic
 module is extracted into the implementation-neutral periodic mapping problem, solved jointly for
 operation/state timing and scalar delay buses, lowered from the selected ``RealizationPlan`` to
-Abstract Physical IR, and then handed to the established physical synthesis/layout/blueprint backend.
+Abstract Physical IR, and then handed to the established physical synthesis/layout/blueprint
+backend.
 
 The mapped benchmark currently uses ``benchmarks.snake.model`` and therefore the deterministic food
-sequence encoded by that model. Random Input selector/oracle technology mapping is a later milestone.
+sequence encoded by that model. Random Input selector/oracle technology mapping is a later
+milestone.
 """
 
 from __future__ import annotations
@@ -95,7 +97,12 @@ def _marker_wire_color(layout, marker_entity: int) -> WireColor:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--period", type=int, default=60, help="logical period in ticks (default: 60)")
+    parser.add_argument(
+        "--period",
+        type=int,
+        default=60,
+        help="logical period in ticks (default: 60)",
+    )
     parser.add_argument(
         "--max-delay-buses",
         type=int,

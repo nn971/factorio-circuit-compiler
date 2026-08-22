@@ -161,7 +161,9 @@ class MappingStateTransition:
         if not self.label:
             raise MappingProblemError("mapping state transition label must be non-empty")
         if not isinstance(self.semantic, StateTransition):
-            raise MappingProblemError("mapping state transition requires a StateTransition semantic")
+            raise MappingProblemError(
+                "mapping state transition requires a StateTransition semantic"
+            )
         if self.semantic.trigger is not None:
             raise MappingProblemError("periodic mapping state transition cannot be Event-triggered")
         if self.value is not None:
@@ -219,7 +221,9 @@ class MappingProblem:
         ):
             raise MappingProblemError("mapping period must be a positive integer when prescribed")
         if (self.state_reads or self.state_transitions) and self.period is None:
-            raise MappingProblemError("stateful mapping problems require a prescribed logical period")
+            raise MappingProblemError(
+                "stateful mapping problems require a prescribed logical period"
+            )
         self.validate()
 
     @property

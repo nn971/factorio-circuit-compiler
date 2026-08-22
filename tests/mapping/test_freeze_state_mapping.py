@@ -76,9 +76,7 @@ def test_freeze_recurrence_is_solved_without_state_timing_plan() -> None:
 
     transition = problem.state_transitions[0]
     next_read = cell.base_read_phase + 8
-    deliveries = {
-        (item.consumer, item.operand_index): item for item in result.plan.deliveries
-    }
+    deliveries = {(item.consumer, item.operand_index): item for item in result.plan.deliveries}
     assert deliveries[(transition.id, 0)].phase == next_read - 1
     assert deliveries[(transition.id, 1)].phase == next_read - 2
 

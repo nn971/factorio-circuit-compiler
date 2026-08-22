@@ -74,9 +74,7 @@ def main() -> None:
     if args.period < 3:
         raise SystemExit("--period must be at least 3 for the first clocked commit resource")
 
-    module = lower_frontend(
-        build_snake_circuit(render_framebuffer=not args.without_framebuffer)
-    )
+    module = lower_frontend(build_snake_circuit(render_framebuffer=not args.without_framebuffer))
     output_phase = 2 * args.period - 1
     problem = build_periodic_state_mapping_problem(
         module,

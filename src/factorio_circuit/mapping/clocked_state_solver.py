@@ -16,6 +16,8 @@ from .state_bus_solver import (
 )
 from .state_solver import (
     PeriodicStateMappingOptimizationResult,
+)
+from .state_solver import (
     solve_periodic_state_mapping_problem as _solve_periodic_state_mapping_problem,
 )
 from .state_templates import StateCellCandidate, ordinary_state_candidates
@@ -28,7 +30,8 @@ def _require_commit_period(problem: MappingProblem) -> PeriodicCommitResource:
         raise MappingProblemError("periodic state solver requires a prescribed mapping period")
     if period < 3:
         raise MappingProblemError(
-            "ordinary clocked state cells require period >= 3 for the shared startup/commit resource"
+            "ordinary clocked state cells require period >= 3 for the shared "
+            "startup/commit resource"
         )
     return PeriodicCommitResource(period=period)
 

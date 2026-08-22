@@ -102,9 +102,11 @@ def build_periodic_level_mapping_problem(
     """Extract output cones with register occurrences externalized as stable boundary sources.
 
     For a ``VectorRegisterRead`` with logical offset ``k``, this diagnostic abstraction supplies the
-    token throughout ``[k*period, (k+1)*period)``. It is useful for mapping a post-update output cone
+    token throughout ``[k*period, (k+1)*period)``. It is useful for mapping a post-update
+    output cone
     against an already prescribed logical cadence, but it is not the eventual recurrence IR: the
-    physical phase of a real register read port may depend on the selected state-cell implementation.
+    physical phase of a real register read port may depend on the selected state-cell
+    implementation.
     """
 
     _validate_periodic_request(module, period)
@@ -263,9 +265,7 @@ def _build_level_mapping_problem(
                 end = 1
         else:
             scope = "periodic" if period is not None else "stateless"
-            raise MappingProblemError(
-                f"unsupported {scope} mapping source {type(value).__name__}"
-            )
+            raise MappingProblemError(f"unsupported {scope} mapping source {type(value).__name__}")
 
         source = MappingSource(
             id=take_value_id(),

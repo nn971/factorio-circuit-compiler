@@ -542,8 +542,7 @@ def _extract_plan(
                 delivery_phases = tuple(
                     delivery.phase
                     for delivery in deliveries
-                    if delivery.producer == producer
-                    and delivery.kind is DeliveryKind.BUS_TRANSPORT
+                    if delivery.producer == producer and delivery.kind is DeliveryKind.BUS_TRANSPORT
                 )
                 lanes.append(
                     DelayBusLane(
@@ -567,9 +566,7 @@ def _extract_plan(
     private_transport_cost = sum(
         item.length for item in exact_lifetimes if item.producer not in bus_producers
     )
-    bus_transport_cost = sum(
-        bus.middle_stages + bus.interface_combinators for bus in delay_buses
-    )
+    bus_transport_cost = sum(bus.middle_stages + bus.interface_combinators for bus in delay_buses)
     transport_cost = private_transport_cost + bus_transport_cost
     return RealizationPlan(
         realizations=tuple(sorted(realizations, key=lambda item: item.operation)),

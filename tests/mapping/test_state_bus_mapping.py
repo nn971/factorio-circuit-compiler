@@ -66,9 +66,7 @@ def test_state_bus_solver_matches_private_baseline_when_disabled() -> None:
     assert result.plan.transport_cost == baseline.plan.transport_cost == 10
     assert result.plan.total_cost == baseline.plan.total_cost
     assert result.plan.delay_buses == ()
-    assert all(
-        item.kind is not DeliveryKind.BUS_TRANSPORT for item in result.plan.deliveries
-    )
+    assert all(item.kind is not DeliveryKind.BUS_TRANSPORT for item in result.plan.deliveries)
 
 
 def test_state_bus_solver_selects_same_shared_resource_inside_recurrence() -> None:
@@ -99,6 +97,4 @@ def test_state_bus_solver_selects_same_shared_resource_inside_recurrence() -> No
     assert len(bus.lanes) == 2
     assert bus.middle_stages == 3
     assert bus.interface_combinators == 4
-    assert sum(
-        item.kind is DeliveryKind.BUS_TRANSPORT for item in shared.plan.deliveries
-    ) == 2
+    assert sum(item.kind is DeliveryKind.BUS_TRANSPORT for item in shared.plan.deliveries) == 2

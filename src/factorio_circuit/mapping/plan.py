@@ -1,7 +1,8 @@
 """Selected realization plan produced by temporal technology mapping.
 
 A plan is target-level enough to say which implementation candidate realizes each semantic recipe,
-when its ports are used, which state-cell implementation realizes each periodic register, which exact
+when its ports are used, which state-cell implementation realizes each periodic register,
+which exact
 lifetimes need storage, and which explicit shared-resource mechanisms were selected. It deliberately
 stops before concrete Factorio signal identities, red/green wiring, placement, and routing.
 """

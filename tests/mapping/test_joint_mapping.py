@@ -270,6 +270,4 @@ def test_joint_mapper_selects_shared_bus_for_two_long_exact_lifetimes() -> None:
     assert bus.middle_stages == 4
     assert bus.interface_combinators == 4
     assert {lane.producer for lane in bus.lanes} == {1, 2}
-    assert all(
-        delivery.kind is DeliveryKind.BUS_TRANSPORT for delivery in shared.plan.deliveries
-    )
+    assert all(delivery.kind is DeliveryKind.BUS_TRANSPORT for delivery in shared.plan.deliveries)

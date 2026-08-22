@@ -217,9 +217,7 @@ def main() -> None:
     if args.period < 1:
         raise SystemExit("--period must be positive")
 
-    module = lower_frontend(
-        build_snake_circuit(render_framebuffer=not args.without_framebuffer)
-    )
+    module = lower_frontend(build_snake_circuit(render_framebuffer=not args.without_framebuffer))
     output_phase = 2 * args.period - 1
     output_phases = (output_phase,) * len(module.output.values)
 
@@ -231,7 +229,9 @@ def main() -> None:
                 period=args.period,
                 output_phase=output_phase,
             )
-            print("  solve=not attempted; physical state-cell port timing is intentionally unresolved")
+            print(
+                "  solve=not attempted; physical state-cell port timing is intentionally unresolved"
+            )
             return
         _solve_full_state(
             problem,
@@ -287,9 +287,7 @@ def main() -> None:
         f"entity_cost={result.plan.entity_cost}; transport_cost={result.plan.transport_cost}; "
         f"total={result.plan.total_cost}"
     )
-    candidate_summary = ", ".join(
-        f"{kind}:{count}" for kind, count in sorted(kinds.items())
-    )
+    candidate_summary = ", ".join(f"{kind}:{count}" for kind, count in sorted(kinds.items()))
     print(f"  selected_candidates={candidate_summary or 'none'}")
     print(f"  delay_buses={len(result.plan.delay_buses)}")
     for bus in result.plan.delay_buses:

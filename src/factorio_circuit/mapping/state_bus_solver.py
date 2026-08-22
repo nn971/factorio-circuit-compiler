@@ -22,14 +22,13 @@ from .plan import (
     DelayBusLane,
     DelayBusResource,
     DeliveryKind,
-    ExactLifetime,
     PlannedDelivery,
     RealizationPlan,
     SelectedRealization,
     SelectedStateCell,
 )
 from .problem import MappingProblem, MappingProblemError, MappingUse
-from .solver import _DelayBusModel, _LifetimeModel, _add_delay_bus_model
+from .solver import _add_delay_bus_model, _DelayBusModel, _LifetimeModel
 from .state_solver import (
     PeriodicStateMappingOptimizationResult,
     _lifetimes_from_transport,
@@ -110,9 +109,7 @@ def solve_periodic_state_bus_mapping_problem(
     }
     state_candidates_by_register = {
         register_name: tuple(
-            item
-            for item in selected_state_candidates
-            if item.register_name == register_name
+            item for item in selected_state_candidates if item.register_name == register_name
         )
         for register_name in register_names
     }
@@ -167,9 +164,9 @@ def solve_periodic_state_bus_mapping_problem(
                     operation.id,
                     operand_index,
                 )
-                model.Add(
-                    use_phase[use] == output_phase[operation.id] + offset
-                ).OnlyEnforceIf(choose[candidate.id])
+                model.Add(use_phase[use] == output_phase[operation.id] + offset).OnlyEnforceIf(
+                    choose[candidate.id]
+                )
 
     for register_name, register_candidates in state_candidates_by_register.items():
         base = state_base_phase[register_name]
@@ -184,9 +181,9 @@ def solve_periodic_state_bus_mapping_problem(
                             "selected state-cell candidate has no data timing for a data transition"
                         )
                     use = MappingUse(transition.value, transition.id, 0)
-                    model.Add(
-                        use_phase[use] == next_read + port.value_phase_offset
-                    ).OnlyEnforceIf(selected)
+                    model.Add(use_phase[use] == next_read + port.value_phase_offset).OnlyEnforceIf(
+                        selected
+                    )
                 if transition.when is not None:
                     if port.when_phase_offset is None:
                         raise MappingProblemError(
@@ -194,13 +191,11 @@ def solve_periodic_state_bus_mapping_problem(
                             "condition transition"
                         )
                     use = MappingUse(transition.when, transition.id, 1)
-                    model.Add(
-                        use_phase[use] == next_read + port.when_phase_offset
-                    ).OnlyEnforceIf(selected)
+                    model.Add(use_phase[use] == next_read + port.when_phase_offset).OnlyEnforceIf(
+                        selected
+                    )
 
-    outgoing: dict[int, list[MappingUse]] = {
-        value_id: [] for value_id in problem.value_ids
-    }
+    outgoing: dict[int, list[MappingUse]] = {value_id: [] for value_id in problem.value_ids}
     state_read_start: dict[int, Any] = {}
     state_read_last_free: dict[int, Any] = {}
     for read in problem.state_reads:
@@ -452,9 +447,7 @@ def _extract_plan(
             start = int(solver.Value(state_read_start[use.producer]))
             last_free = int(solver.Value(state_read_last_free[use.producer]))
             if phase < start:  # pragma: no cover - solver constraint
-                raise AssertionError(
-                    "solver consumed a state read before its candidate read phase"
-                )
+                raise AssertionError("solver consumed a state read before its candidate read phase")
             if phase <= last_free:
                 kind = DeliveryKind.REUSE
                 transport_start = None
@@ -498,8 +491,7 @@ def _extract_plan(
                 delivery_phases = tuple(
                     delivery.phase
                     for delivery in deliveries
-                    if delivery.producer == producer
-                    and delivery.kind is DeliveryKind.BUS_TRANSPORT
+                    if delivery.producer == producer and delivery.kind is DeliveryKind.BUS_TRANSPORT
                 )
                 lanes.append(
                     DelayBusLane(
@@ -525,9 +517,7 @@ def _extract_plan(
     private_transport_cost = sum(
         item.length for item in exact_lifetimes if item.producer not in bus_producers
     )
-    bus_transport_cost = sum(
-        bus.middle_stages + bus.interface_combinators for bus in delay_buses
-    )
+    bus_transport_cost = sum(bus.middle_stages + bus.interface_combinators for bus in delay_buses)
     transport_cost = private_transport_cost + bus_transport_cost
 
     return RealizationPlan(

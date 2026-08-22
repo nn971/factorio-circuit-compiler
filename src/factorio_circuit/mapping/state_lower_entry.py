@@ -26,6 +26,8 @@ from .plan import RealizationPlan
 from .problem import MappingProblem
 from .state_lower import (
     PeriodicStatePhysicalLoweringResult as _BasePeriodicStatePhysicalLoweringResult,
+)
+from .state_lower import (
     _MappedPeriodicStateLowerer,
 )
 from .state_templates import StateCellCandidate
@@ -92,7 +94,9 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
         """Capture one coherent framebuffer once per mapped period and hold it continuously."""
 
         if self.commit_clock_net is None or self.commit_ready_net is None:
-            raise AssertionError("periodic commit resource must exist before output materialization")
+            raise AssertionError(
+                "periodic commit resource must exist before output materialization"
+            )
 
         clock_equal = self._commit_predicate(raw_phase=payload.phase, equal=True)
         clock_not_equal = self._commit_predicate(raw_phase=payload.phase, equal=False)

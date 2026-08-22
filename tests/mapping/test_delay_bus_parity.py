@@ -93,13 +93,19 @@ def test_joint_bus_matches_fixed_optimizer_on_fixed_unique_taps() -> None:
 
     joint_bus = joint.plan.delay_buses[0]
     fixed_bus = fixed.buses[0]
-    assert (joint_bus.middle_start_phase, joint_bus.middle_end_phase) == (
-        fixed_bus.start_phase,
-        fixed_bus.end_phase,
-    ) == (1, 5)
-    assert {lane.producer for lane in joint_bus.lanes} == {
-        lane.producer for lane in fixed_bus.lanes
-    } == {1, 2}
+    assert (
+        (joint_bus.middle_start_phase, joint_bus.middle_end_phase)
+        == (
+            fixed_bus.start_phase,
+            fixed_bus.end_phase,
+        )
+        == (1, 5)
+    )
+    assert (
+        {lane.producer for lane in joint_bus.lanes}
+        == {lane.producer for lane in fixed_bus.lanes}
+        == {1, 2}
+    )
 
 
 def test_joint_bus_matches_fixed_optimizer_with_staggered_fixed_lifetimes() -> None:
@@ -140,7 +146,8 @@ def test_equal_phase_multiuse_difference_is_explicit() -> None:
     """Document the one intentional cost-model difference during migration.
 
     The established fixed-placement optimizer coalesces equal-phase taps. The first joint mapper
-    charges one isolated egress per semantic use. Until joint egress coalescing is modeled explicitly,
+    charges one isolated egress per semantic use. Until joint egress coalescing is modeled
+    explicitly,
     parity tests must not silently assume those two contracts are identical.
     """
 

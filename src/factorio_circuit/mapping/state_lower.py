@@ -12,8 +12,9 @@ The lowerer materializes:
 * prefix-shared private scalar/vector exact transport;
 * selected isolated scalar delay buses.
 
-Fixed semantic constant sources are reported separately because ``MappingProblem`` does not yet price
-them. The ordinary arithmetic Select candidate also has an internal exact false-arm preservation path
+Fixed semantic constant sources are reported separately because ``MappingProblem`` does not yet
+price them. The ordinary arithmetic Select candidate also has an internal exact false-arm
+preservation path
 that is intentionally reported as a candidate-internal surcharge until the candidate model grows
 explicit internal ports.
 """
@@ -61,8 +62,7 @@ from .plan import DelayBusLane, DelayBusResource, DeliveryKind, PlannedDelivery,
 from .problem import MappingProblem, MappingProblemError, MappingUse
 from .state_templates import StateCellCandidate
 from .state_validate import validate_periodic_state_bus_plan
-from .templates import ImplementationCandidate, ImplementationKind
-
+from .templates import ImplementationCandidate
 
 type _BusBinding = tuple[DelayBusResource, DelayBusLane]
 type _QueuedDelivery = tuple[MappingUse, PlannedDelivery]
@@ -166,7 +166,9 @@ class _MappedPeriodicStateLowerer(SamplingPolicyLowerer):
         if plan.periodic_commit is None:
             raise MappingProblemError("mapped periodic lowering requires a commit resource")
         if plan.wire_sums:
-            raise MappingProblemError("first mapped periodic state lowering does not admit wire sums")
+            raise MappingProblemError(
+                "first mapped periodic state lowering does not admit wire sums"
+            )
 
         super().__init__(
             module,
@@ -493,7 +495,9 @@ class _MappedPeriodicStateLowerer(SamplingPolicyLowerer):
             cell = cells[register.name]
             candidate = self.state_candidate_by_id[cell.candidate]
             if candidate.register_name != register.name:
-                raise MappingProblemError("selected state-cell candidate belongs to another register")
+                raise MappingProblemError(
+                    "selected state-cell candidate belongs to another register"
+                )
             if isinstance(register, FreezeRegister):
                 self._lower_mapped_freeze(register, cell.base_read_phase, candidate)
             elif isinstance(register, AccumulatorRegister):
@@ -586,11 +590,15 @@ class _MappedPeriodicStateLowerer(SamplingPolicyLowerer):
         candidate: StateCellCandidate,
     ) -> None:
         if candidate.entity_cost != 4 or candidate.commit_phase_offset != -2:
-            raise MappingProblemError("mapped Freeze lowerer requires the four-entity clocked candidate")
+            raise MappingProblemError(
+                "mapped Freeze lowerer requires the four-entity clocked candidate"
+            )
         port = candidate.transition_ports[0]
         transition = self.problem.state_transition_by_id(port.transition)
         if transition.kind != "set" or transition.value is None or transition.when is None:
-            raise MappingProblemError("mapped Freeze candidate does not describe one set transition")
+            raise MappingProblemError(
+                "mapped Freeze candidate does not describe one set transition"
+            )
         next_read = base_phase + cast(int, self.problem.period)
         raw_phase = next_read + candidate.commit_phase_offset
         data_phase = next_read + cast(int, port.value_phase_offset)
@@ -681,7 +689,9 @@ class _MappedPeriodicStateLowerer(SamplingPolicyLowerer):
             for port in candidate.transition_ports
         }
         if set(transitions) != {"add", "clear"}:
-            raise MappingProblemError("mapped Accumulator candidate requires add and clear transitions")
+            raise MappingProblemError(
+                "mapped Accumulator candidate requires add and clear transitions"
+            )
         add, add_port = transitions["add"]
         clear, clear_port = transitions["clear"]
         if add.value is None or add.when is None or clear.when is None:

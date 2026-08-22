@@ -1,6 +1,7 @@
 """Physical state-cell implementation candidates for periodic technology mapping.
 
-State timing is target technology. The neutral recurrence IR records register occurrences and semantic
+State timing is target technology. The neutral recurrence IR records register occurrences and
+semantic
 transitions only; candidates in this module own the physical read/write port timing and entity cost.
 The ordinary periodic candidates consume one shared modulo-clock/startup-ready resource whose
 predicates are folded directly into their multi-condition deciders.
@@ -33,9 +34,7 @@ class StateTransitionPortTiming:
         ):
             raise MappingProblemError("state transition timing requires a positive transition id")
         for value in (self.value_phase_offset, self.when_phase_offset):
-            if value is not None and (
-                isinstance(value, bool) or not isinstance(value, int)
-            ):
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
                 raise MappingProblemError("state transition port offsets must be integers")
             if value is not None and value >= 0:
                 raise MappingProblemError(
@@ -151,7 +150,8 @@ def ordinary_accumulator_state_candidate(
     - add ``when``, clear ``when``, and shared commit predicates are consumed at ``r-2``;
     - the memory network exposes the new state at ``r``.
 
-    Local entity cost is therefore four: add-active decider, retain decider, vector add gate, memory.
+    Local entity cost is therefore four: add-active decider, retain decider, vector add gate,
+    memory.
     """
 
     transitions = tuple(
@@ -161,7 +161,8 @@ def ordinary_accumulator_state_candidate(
     clears = tuple(item for item in transitions if item.kind == "clear")
     if len(adds) != 1 or len(clears) != 1 or len(transitions) != 2:
         raise MappingProblemError(
-            f"ordinary Accumulator state cell {register_name!r} requires exactly one add and one clear"
+            f"ordinary Accumulator state cell {register_name!r} requires exactly one add "
+            "and one clear"
         )
     add = adds[0]
     clear = clears[0]
@@ -217,7 +218,9 @@ def _register_for(problem: MappingProblem, register_name: str) -> object:
     if transitions:
         return transitions[0].semantic.register
     return next(
-        item.semantic.register for item in problem.state_reads if item.register_name == register_name
+        item.semantic.register
+        for item in problem.state_reads
+        if item.register_name == register_name
     )
 
 
