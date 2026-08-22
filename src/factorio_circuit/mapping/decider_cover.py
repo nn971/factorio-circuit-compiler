@@ -190,10 +190,7 @@ def add_decider_condition_cover_candidates(
             ImplementationCandidate(
                 id=next_id,
                 operation=root.id,
-                name=(
-                    f"decider {cover.boolean_op} condition cover "
-                    f"({len(cover.comparisons)} leaves)"
-                ),
+                name=f"decider {cover.boolean_op} condition cover ({len(cover.comparisons)} leaves)",
                 input_phase_offsets=(-latency,) * len(root.operands),
                 entity_cost=1,
                 recipe=ImplementationRecipe.DECIDER_CONDITION_COVER,
