@@ -69,8 +69,8 @@ class MappingSource:
 class MappingStateRead:
     """One semantic register occurrence before a physical state-cell implementation is chosen.
 
-    Unlike ``MappingSource``, this record has no physical availability interval. A future state-cell
-    candidate must export the read port's phase/availability contract. ``logical_offset`` remains the
+    Unlike ``MappingSource``, this record has no physical availability interval. A state-cell
+    candidate exports the read port's phase/availability contract. ``logical_offset`` remains the
     implementation-independent occurrence displacement from canonical semantic IR.
     """
 
@@ -145,9 +145,9 @@ class MappingStateTransition:
     """One periodic semantic state-update obligation before a state-cell implementation is chosen.
 
     ``value`` and ``when`` are mapping value ids for the canonical transition's data/control
-    expressions. No physical consume phase is stored here. A future state-cell implementation
-    candidate must own those port timing equations instead of importing ``transition_input_phase``
-    from the established state-timing analyzer.
+    expressions. No physical consume phase is stored here. A state-cell implementation candidate
+    owns those port timing equations instead of importing ``transition_input_phase`` from the
+    established state-timing analyzer.
     """
 
     id: int
@@ -209,10 +209,17 @@ class MappingProblem:
     sinks: tuple[MappingSink, ...]
     state_reads: tuple[MappingStateRead, ...] = ()
     state_transitions: tuple[MappingStateTransition, ...] = ()
+    period: int | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.horizon, bool) or not isinstance(self.horizon, int) or self.horizon < 0:
             raise MappingProblemError("mapping horizon must be a non-negative integer")
+        if self.period is not None and (
+            isinstance(self.period, bool) or not isinstance(self.period, int) or self.period < 1
+        ):
+            raise MappingProblemError("mapping period must be a positive integer when prescribed")
+        if (self.state_reads or self.state_transitions) and self.period is None:
+            raise MappingProblemError("stateful mapping problems require a prescribed logical period")
         self.validate()
 
     @property
@@ -248,18 +255,16 @@ class MappingProblem:
         raise KeyError(transition_id)
 
     def uses(self) -> tuple[MappingUse, ...]:
-        """Return physical-phase uses supported by the current mapping solver.
+        """Return physical-phase uses supported by the stateless mapping solver.
 
-        A full stateful problem intentionally has unresolved register read/write port timing. Until
-        state-cell implementation candidates own those equations, enumerating physically timed uses
-        would silently invent an ABI. Fail at this boundary so every current solver/candidate caller
-        rejects the unsupported stateful problem consistently.
+        The first stateful solver has its own candidate-owned state-port use construction. Keep this
+        method strict so legacy/stateless callers cannot silently invent a state-cell ABI.
         """
 
         if self.state_reads or self.state_transitions:
             raise MappingProblemError(
-                "stateful temporal mapping requires physical state-cell implementation candidates "
-                "before read/write use phases can be solved"
+                "stateful temporal mapping requires the periodic state solver so state-cell "
+                "candidates can own read/write use phases"
             )
         result = [
             MappingUse(producer, operation.id, operand_index)
