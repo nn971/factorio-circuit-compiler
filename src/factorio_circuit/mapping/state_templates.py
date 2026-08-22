@@ -2,6 +2,8 @@
 
 State timing is target technology. The neutral recurrence IR records register occurrences and semantic
 transitions only; candidates in this module own the physical read/write port timing and entity cost.
+The ordinary periodic candidates consume one shared modulo-clock/startup-ready resource whose
+predicates are folded directly into their multi-condition deciders.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from .templates import CandidateOutputMode
 
 @dataclass(frozen=True, slots=True)
 class StateTransitionPortTiming:
-    """Candidate-owned transition input offsets relative to the next state read phase."""
+    """Candidate-owned semantic transition input offsets relative to the next state read."""
 
     transition: int
     value_phase_offset: int | None
@@ -37,7 +39,7 @@ class StateTransitionPortTiming:
                 raise MappingProblemError("state transition port offsets must be integers")
             if value is not None and value >= 0:
                 raise MappingProblemError(
-                    "first state-cell candidates require transition inputs before the next read"
+                    "state-cell transition inputs must precede the next state read"
                 )
 
 
@@ -51,6 +53,7 @@ class StateCellCandidate:
     transition_ports: tuple[StateTransitionPortTiming, ...]
     entity_cost: int
     read_mode: CandidateOutputMode = CandidateOutputMode.STABLE
+    commit_phase_offset: int = -2
 
     def __post_init__(self) -> None:
         if isinstance(self.id, bool) or not isinstance(self.id, int) or self.id <= 0:
@@ -70,6 +73,12 @@ class StateCellCandidate:
             raise MappingProblemError("state-cell candidate entity cost must be non-negative")
         if self.read_mode is not CandidateOutputMode.STABLE:
             raise MappingProblemError("first state-cell solver supports stable read ports only")
+        if (
+            isinstance(self.commit_phase_offset, bool)
+            or not isinstance(self.commit_phase_offset, int)
+            or self.commit_phase_offset >= 0
+        ):
+            raise MappingProblemError("periodic commit input must precede the next state read")
 
 
 def ordinary_freeze_state_candidate(
@@ -78,16 +87,17 @@ def ordinary_freeze_state_candidate(
     *,
     candidate_id: int,
 ) -> StateCellCandidate:
-    """Describe the current four-combinator Freeze register topology.
+    """Describe the four-entity clocked Freeze topology.
 
-    The existing target topology has two one-tick control deciders (pass/hold), one transparent data
-    gate, and one memory combinator. If logical occurrence ``k+1`` is visible at phase ``r``:
+    A shared periodic resource supplies ``ready`` plus the modulo-clock residue. Both predicates are
+    folded into the same two pass/hold deciders already needed for Freeze control. If logical state
+    ``S[k+1]`` is visible at phase ``r``:
 
-    - semantic update data is consumed at ``r-1`` by the transparent gate;
-    - semantic ``when`` is consumed at ``r-2`` because pass/hold normalization takes one tick;
-    - the memory output exposes the new state at ``r`` and remains stable until the next update.
+    - semantic update data is consumed at ``r-1`` by the vector input gate;
+    - semantic ``when`` and shared commit predicates are consumed at ``r-2``;
+    - the memory network exposes the new state at ``r``.
 
-    These offsets are properties of this candidate, not of ``MappingStateTransition``.
+    The four local entities are pass decider, hold decider, vector data gate, and memory combinator.
     """
 
     transitions = tuple(
@@ -108,7 +118,7 @@ def ordinary_freeze_state_candidate(
     return StateCellCandidate(
         id=candidate_id,
         register_name=register_name,
-        name="ordinary Freeze cell",
+        name="ordinary clocked Freeze cell",
         transition_ports=(
             StateTransitionPortTiming(
                 transition=transition.id,
@@ -117,6 +127,7 @@ def ordinary_freeze_state_candidate(
             ),
         ),
         entity_cost=4,
+        commit_phase_offset=-2,
     )
 
 
@@ -126,21 +137,21 @@ def ordinary_accumulator_state_candidate(
     *,
     candidate_id: int,
 ) -> StateCellCandidate:
-    """Describe the current one-add/one-clear Accumulator topology used by Snake.
+    """Describe the four-entity clocked one-add/one-clear Accumulator used by Snake.
 
-    This first Accumulator candidate deliberately matches the established target topology rather than
-    generalizing every future accumulator form. It requires one non-constant conditional add and one
-    clear transition. Relative to the next state read at phase ``r``:
+    Factorio deciders can combine several predicates directly. With the shared ``ready`` and clock
+    residue available, one decider produces ``add active`` from
+    ``ready && clock && add_when && !clear`` and one decider produces the complementary memory
+    retain predicate. This removes the separate normalization/combination/delay chain used by the
+    earlier unclocked prototype.
+
+    Relative to the next state read at phase ``r``:
 
     - add data is consumed at ``r-1`` by the vector add gate;
-    - add ``when`` is consumed at ``r-3``: one tick normalizes it, then one tick combines it with
-      clear-inactive before the gate consumes the result at ``r-1``;
-    - clear ``when`` is also consumed at ``r-3``. Its clear-inactive result is used at ``r-2`` for
-      add suppression and delayed one tick to ``r-1`` for the memory gate.
+    - add ``when``, clear ``when``, and shared commit predicates are consumed at ``r-2``;
+    - the memory network exposes the new state at ``r``.
 
-    The six state-specific entities are clear normalization, add normalization, add/clear control
-    combination, the gated add, one clear-active delay stage, and the memory combinator. Semantic
-    expressions feeding these ports are costed independently as ordinary mapping operations.
+    Local entity cost is therefore four: add-active decider, retain decider, vector add gate, memory.
     """
 
     transitions = tuple(
@@ -172,20 +183,21 @@ def ordinary_accumulator_state_candidate(
     return StateCellCandidate(
         id=candidate_id,
         register_name=register_name,
-        name="ordinary Accumulator add+clear cell",
+        name="ordinary clocked Accumulator add+clear cell",
         transition_ports=(
             StateTransitionPortTiming(
                 transition=add.id,
                 value_phase_offset=-1,
-                when_phase_offset=-3,
+                when_phase_offset=-2,
             ),
             StateTransitionPortTiming(
                 transition=clear.id,
                 value_phase_offset=None,
-                when_phase_offset=-3,
+                when_phase_offset=-2,
             ),
         ),
-        entity_cost=6,
+        entity_cost=4,
+        commit_phase_offset=-2,
     )
 
 
@@ -210,7 +222,7 @@ def _register_for(problem: MappingProblem, register_name: str) -> object:
 
 
 def ordinary_freeze_state_candidates(problem: MappingProblem) -> tuple[StateCellCandidate, ...]:
-    """Generate ordinary candidates for every Freeze register represented by the problem."""
+    """Generate ordinary clocked candidates for every Freeze register in the problem."""
 
     result: list[StateCellCandidate] = []
     for register_name in _state_register_names(problem):
@@ -229,7 +241,7 @@ def ordinary_freeze_state_candidates(problem: MappingProblem) -> tuple[StateCell
 def ordinary_accumulator_state_candidates(
     problem: MappingProblem,
 ) -> tuple[StateCellCandidate, ...]:
-    """Generate first ordinary candidates for supported Accumulator registers."""
+    """Generate clocked candidates for supported Accumulator registers."""
 
     result: list[StateCellCandidate] = []
     for register_name in _state_register_names(problem):
@@ -246,7 +258,7 @@ def ordinary_accumulator_state_candidates(
 
 
 def ordinary_state_candidates(problem: MappingProblem) -> tuple[StateCellCandidate, ...]:
-    """Generate one ordinary state-cell implementation for every supported periodic register."""
+    """Generate one ordinary clocked state-cell implementation per supported register."""
 
     result: list[StateCellCandidate] = []
     for register_name in _state_register_names(problem):
