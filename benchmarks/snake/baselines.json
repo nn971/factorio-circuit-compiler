@@ -162,6 +162,36 @@
         "extent_tiles": [454, 408],
         "state_period_ticks": 65
       }
+    },
+    {
+      "id": "mapped-state-bus-v1",
+      "commit": "483a7fddcb2410801fe85705abd48aac3728240f",
+      "date": "2026-08-22",
+      "in_game_validated": true,
+      "notes": "First accepted full phase-neutral recurrence -> joint operation/state/bus solve -> mapped Abstract Physical lowering -> safe-folded blueprint. The first 455-combinator blueprint was functionally correct but exposed a small head/body display skew because the framebuffer network was observed continuously while internal state cells committed at different phases. A two-combinator coherent framebuffer HOLD fixed the boundary; the regenerated Snake then ran perfectly in Factorio. Layout relay/extent metrics for the final HOLD variant were not separately recorded.",
+      "metrics": {
+        "mapping_objective": 427,
+        "operation_entities": 213,
+        "state_entities": 36,
+        "periodic_commit_entities": 3,
+        "transport_entities": 175,
+        "all_private_mapping_total": 605,
+        "all_private_transport_entities": 353,
+        "delay_bus_count": 1,
+        "delay_bus_lanes": 29,
+        "delay_bus_middle_span": [44, 118],
+        "delay_bus_middle_stages": 74,
+        "delay_bus_interfaces": 70,
+        "fixed_source_entities": 8,
+        "select_internal_entities": 20,
+        "output_hold_entities": 2,
+        "implementation_combinators": 457,
+        "state_period_ticks": 60
+      },
+      "change_from_all_private_mapping": {
+        "transport_reduction_fraction": 0.5042,
+        "mapped_total_reduction_fraction": 0.2942
+      }
     }
   ]
 }
