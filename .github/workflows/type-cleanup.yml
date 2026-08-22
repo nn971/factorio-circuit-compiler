@@ -1,0 +1,258 @@
+name: Type Cleanup
+
+on:
+  push:
+    branches:
+      - agent/temporal-technology-mapping
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Apply type-only cleanup
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path_text: str, old: str, new: str, *, count: int = 1) -> None:
+              path = Path(path_text)
+              text = path.read_text(encoding="utf-8")
+              actual = text.count(old)
+              if actual == 0:
+                  return
+              if actual != count:
+                  raise SystemExit(
+                      f"{path}: expected {count} occurrence(s), found {actual}: {old!r}"
+                  )
+              path.write_text(text.replace(old, new), encoding="utf-8")
+
+          state_solver = "src/factorio_circuit/mapping/state_solver.py"
+          replace(
+              state_solver,
+              """        for candidate in state_candidates_by_register[register_name]:
+            variable = model.NewBoolVar(f\"state_mapping_cell_candidate_{candidate.id}\")
+            state_choose[candidate.id] = variable
+            choices.append(variable)
+""",
+              """        for state_candidate in state_candidates_by_register[register_name]:
+            variable = model.NewBoolVar(
+                f\"state_mapping_cell_candidate_{state_candidate.id}\"
+            )
+            state_choose[state_candidate.id] = variable
+            choices.append(variable)
+""",
+          )
+          replace(
+              state_solver,
+              """        for candidate in register_candidates:
+            selected = state_choose[candidate.id]
+            for port in candidate.transition_ports:
+""",
+              """        for state_candidate in register_candidates:
+            selected_state = state_choose[state_candidate.id]
+            for port in state_candidate.transition_ports:
+""",
+          )
+          replace(state_solver, "                        selected\n", "                        selected_state\n", count=2)
+          replace(
+              state_solver,
+              """    for register_name in _state_register_names(problem):
+        selected = next(
+            item
+            for item in state_candidates_by_register[register_name]
+            if solver.BooleanValue(state_choose[item.id])
+        )
+        state_cells.append(
+            SelectedStateCell(
+                register_name=register_name,
+                candidate=selected.id,
+                base_read_phase=int(solver.Value(state_base_phase[register_name])),
+                entity_cost=selected.entity_cost,
+            )
+        )
+""",
+              """    for register_name in _state_register_names(problem):
+        selected_state = next(
+            item
+            for item in state_candidates_by_register[register_name]
+            if solver.BooleanValue(state_choose[item.id])
+        )
+        state_cells.append(
+            SelectedStateCell(
+                register_name=register_name,
+                candidate=selected_state.id,
+                base_read_phase=int(solver.Value(state_base_phase[register_name])),
+                entity_cost=selected_state.entity_cost,
+            )
+        )
+""",
+          )
+          replace(
+              state_solver,
+              """    for register_name, cell in state_cell_by_register.items():
+        candidate = state_candidate_by_id.get(cell.candidate)
+        if candidate is None or candidate.register_name != register_name:
+            raise MappingProblemError(\"periodic state plan selects the wrong state-cell candidate\")
+        if cell.entity_cost != candidate.entity_cost:
+            raise MappingProblemError(\"state-cell realization cost disagrees with candidate\")
+        if not 0 <= cell.base_read_phase < period:
+            raise MappingProblemError(\"state-cell base read phase lies outside one logical period\")
+        entity_cost += cell.entity_cost
+        for port in candidate.transition_ports:
+""",
+              """    for register_name, cell in state_cell_by_register.items():
+        state_candidate = state_candidate_by_id.get(cell.candidate)
+        if state_candidate is None or state_candidate.register_name != register_name:
+            raise MappingProblemError(\"periodic state plan selects the wrong state-cell candidate\")
+        if cell.entity_cost != state_candidate.entity_cost:
+            raise MappingProblemError(\"state-cell realization cost disagrees with candidate\")
+        if not 0 <= cell.base_read_phase < period:
+            raise MappingProblemError(\"state-cell base read phase lies outside one logical period\")
+        entity_cost += cell.entity_cost
+        for port in state_candidate.transition_ports:
+""",
+          )
+
+          state_bus = "src/factorio_circuit/mapping/state_bus_solver.py"
+          replace(
+              state_bus,
+              """        for candidate in state_candidates_by_register[register_name]:
+            variable = model.NewBoolVar(f\"state_bus_cell_candidate_{candidate.id}\")
+            state_choose[candidate.id] = variable
+            choices.append(variable)
+""",
+              """        for state_candidate in state_candidates_by_register[register_name]:
+            variable = model.NewBoolVar(f\"state_bus_cell_candidate_{state_candidate.id}\")
+            state_choose[state_candidate.id] = variable
+            choices.append(variable)
+""",
+          )
+          replace(
+              state_bus,
+              """        for candidate in register_candidates:
+            selected = state_choose[candidate.id]
+            for port in candidate.transition_ports:
+""",
+              """        for state_candidate in register_candidates:
+            selected_state = state_choose[state_candidate.id]
+            for port in state_candidate.transition_ports:
+""",
+          )
+          replace(state_bus, "                        selected\n", "                        selected_state\n", count=2)
+          replace(
+              state_bus,
+              """    for register_name in _state_register_names(problem):
+        selected = next(
+            item
+            for item in state_candidates_by_register[register_name]
+            if solver.BooleanValue(state_choose[item.id])
+        )
+        state_cells.append(
+            SelectedStateCell(
+                register_name=register_name,
+                candidate=selected.id,
+                base_read_phase=int(solver.Value(state_base_phase[register_name])),
+                entity_cost=selected.entity_cost,
+            )
+        )
+""",
+              """    for register_name in _state_register_names(problem):
+        selected_state = next(
+            item
+            for item in state_candidates_by_register[register_name]
+            if solver.BooleanValue(state_choose[item.id])
+        )
+        state_cells.append(
+            SelectedStateCell(
+                register_name=register_name,
+                candidate=selected_state.id,
+                base_read_phase=int(solver.Value(state_base_phase[register_name])),
+                entity_cost=selected_state.entity_cost,
+            )
+        )
+""",
+          )
+
+          state_lower = "src/factorio_circuit/mapping/state_lower.py"
+          replace(
+              state_lower,
+              """        self.value_id_by_semantic = {
+            id(item.semantic): item.id
+            for item in (*problem.sources, *problem.state_reads, *problem.operations)
+        }
+""",
+              """        self.value_id_by_semantic = {
+            **{id(item.semantic): item.id for item in problem.sources},
+            **{id(item.semantic): item.id for item in problem.state_reads},
+            **{id(item.semantic): item.id for item in problem.operations},
+        }
+""",
+          )
+          replace(
+              state_lower,
+              """    def lower(self) -> PeriodicStatePhysicalLoweringResult:
+""",
+              """    def lower_mapped(self) -> PeriodicStatePhysicalLoweringResult:
+""",
+          )
+          replace(
+              state_lower,
+              """            if is_vector_value(semantic):
+                base = self.realize_vector(cast(VectorValue, semantic))
+                realized = self.delay_vector_to(base, sink.phase)
+            else:
+                base = self.realize(cast(Value, semantic))
+                realized = self.delay_to(base, sink.phase)
+            realized_outputs.append(realized)
+""",
+              """            if is_vector_value(semantic):
+                vector_base = self.realize_vector(cast(VectorValue, semantic))
+                vector_realized = self.delay_vector_to(vector_base, sink.phase)
+                realized_outputs.append(vector_realized)
+            else:
+                scalar_base = self.realize(cast(Value, semantic))
+                scalar_realized = self.delay_to(scalar_base, sink.phase)
+                realized_outputs.append(scalar_realized)
+""",
+          )
+          replace(state_lower, "    ).lower()\n", "    ).lower_mapped()\n")
+
+          state_entry = "src/factorio_circuit/mapping/state_lower_entry.py"
+          replace(
+              state_entry,
+              "    base: _BasePeriodicStatePhysicalLoweringResult = lowerer.lower()\n",
+              "    base: _BasePeriodicStatePhysicalLoweringResult = lowerer.lower_mapped()\n",
+          )
+          PY
+          uv run ruff format \
+            src/factorio_circuit/mapping/state_solver.py \
+            src/factorio_circuit/mapping/state_bus_solver.py \
+            src/factorio_circuit/mapping/state_lower.py \
+            src/factorio_circuit/mapping/state_lower_entry.py
+          uv run ruff check .
+          uv run mypy src
+      - name: Commit cleanup
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            src/factorio_circuit/mapping/state_solver.py \
+            src/factorio_circuit/mapping/state_bus_solver.py \
+            src/factorio_circuit/mapping/state_lower.py \
+            src/factorio_circuit/mapping/state_lower_entry.py
+          git commit -m "Clean up mapper typing"
+          git push origin HEAD:agent/temporal-technology-mapping

@@ -91,6 +91,107 @@
           "external_input": 80
         }
       }
+    },
+    {
+      "id": "random-food-alap-v1",
+      "commit": "ab51e547ee40b0c6b78d0820fb5a20fc9f556dc7",
+      "date": "2026-08-20",
+      "in_game_validated": true,
+      "notes": "Random-selector food provider, TTL body representation, and ALAP external sampling. Full Snake behavior was validated in Factorio; this is the accepted baseline for temporal hypergraph optimization.",
+      "metrics": {
+        "implementation_combinators": 698,
+        "abstract_physical_entities": 709,
+        "annotation_entities": 11,
+        "abstract_nets": 652,
+        "phase_delay_combinators": 421,
+        "phase_delay_scalar": 403,
+        "phase_delay_vector": 18,
+        "computation_combinators": 206,
+        "state_implementation_combinators": 60,
+        "max_abstract_lanes_per_net": 1,
+        "state_period_ticks": 65
+      }
+    },
+    {
+      "id": "temporal-delay-bus-incoherent-live-v1",
+      "commit": "92150920939080259de8be747e893b184404478f",
+      "date": "2026-08-20",
+      "in_game_validated": false,
+      "notes": "First end-to-end CP-SAT phase placement, multi-lane scalar buses, signal allocation, safe-folded layout, and playable blueprint at period 65. Rejected during gameplay: independent free resampling of LIVE sources allowed different consumers to observe different movement/random-selector values within one logical occurrence. Observed symptoms were incorrect bumps while turning, eaten food remaining visible, delayed initial food, and uneven-looking frames.",
+      "metrics": {
+        "implementation_combinators": 454,
+        "abstract_physical_entities": 465,
+        "annotation_entities": 11,
+        "abstract_nets": 420,
+        "phase_delay_combinators": 165,
+        "phase_delay_scalar_private": 94,
+        "phase_delay_scalar_bus": 54,
+        "phase_delay_vector": 17,
+        "computation_combinators": 218,
+        "state_implementation_combinators": 60,
+        "max_abstract_lanes_per_net_observed": 36,
+        "solver_objective_delays": 71,
+        "solver_best_bound_observed": 64,
+        "solver_bus_count": 3,
+        "layout_relays": 16181,
+        "layout_rows": 5,
+        "layout_columns": 93,
+        "extent_tiles": [458, 436],
+        "state_period_ticks": 65
+      },
+      "change_from_random_food_alap_v1": {
+        "implementation_combinator_reduction_fraction": 0.3496,
+        "phase_delay_reduction_fraction": 0.6081
+      }
+    },
+    {
+      "id": "temporal-delay-bus-coherent-live-v1",
+      "commit": "e8af68b69b2e6d04157ca50681762ebf95de6413",
+      "date": "2026-08-20",
+      "in_game_validated": false,
+      "notes": "Second end-to-end candidate added one coherent observation phase per LIVE source and charged its transport. CP-SAT proved the modeled objective 83 optimal, but Factorio gameplay still failed: Snake started without player input and food did not become visible until death. This shows that source coherence alone is insufficient without an explicit physical sampling/provider-availability contract. The next validation candidate therefore freezes the already validated ALAP computation placement and changes only scalar delay-bus sharing.",
+      "metrics": {
+        "implementation_combinators": 466,
+        "physical_entities": 477,
+        "max_abstract_lanes_per_net_observed": 27,
+        "solver_objective_delays": 83,
+        "solver_best_bound_observed": 83,
+        "layout_relays": 15097,
+        "layout_rows": 5,
+        "layout_columns": 97,
+        "extent_tiles": [454, 408],
+        "state_period_ticks": 65
+      }
+    },
+    {
+      "id": "mapped-state-bus-v1",
+      "commit": "483a7fddcb2410801fe85705abd48aac3728240f",
+      "date": "2026-08-22",
+      "in_game_validated": true,
+      "notes": "First accepted full phase-neutral recurrence -> joint operation/state/bus solve -> mapped Abstract Physical lowering -> safe-folded blueprint. The first 455-combinator blueprint was functionally correct but exposed a small head/body display skew because the framebuffer network was observed continuously while internal state cells committed at different phases. A two-combinator coherent framebuffer HOLD fixed the boundary; the regenerated Snake then ran perfectly in Factorio. Layout relay/extent metrics for the final HOLD variant were not separately recorded.",
+      "metrics": {
+        "mapping_objective": 427,
+        "operation_entities": 213,
+        "state_entities": 36,
+        "periodic_commit_entities": 3,
+        "transport_entities": 175,
+        "all_private_mapping_total": 605,
+        "all_private_transport_entities": 353,
+        "delay_bus_count": 1,
+        "delay_bus_lanes": 29,
+        "delay_bus_middle_span": [44, 118],
+        "delay_bus_middle_stages": 74,
+        "delay_bus_interfaces": 70,
+        "fixed_source_entities": 8,
+        "select_internal_entities": 20,
+        "output_hold_entities": 2,
+        "implementation_combinators": 457,
+        "state_period_ticks": 60
+      },
+      "change_from_all_private_mapping": {
+        "transport_reduction_fraction": 0.5042,
+        "mapped_total_reduction_fraction": 0.2942
+      }
     }
   ]
 }

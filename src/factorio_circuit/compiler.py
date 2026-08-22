@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from factorio_circuit.analysis import (
@@ -17,6 +18,7 @@ from factorio_circuit.blueprint.layout_encode import (
 from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
 from factorio_circuit.frontend.symbolic import Circuit
 from factorio_circuit.ir.abstract_physical import AbstractPhysicalCircuit
+from factorio_circuit.ir.oracle import oracle_sources
 from factorio_circuit.ir.output import preserve_output_materializations
 from factorio_circuit.ir.physical import PhysicalCircuit
 from factorio_circuit.ir.semantic import (
@@ -31,10 +33,17 @@ from factorio_circuit.lowering.event_accumulator_physical import (
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.lowering.open_vector_pipeline import lower_normalized_vectors
 from factorio_circuit.optimize.pipeline import optimize_normalized_semantic
+from factorio_circuit.oracles import (
+    OracleBindingError,
+    OracleProvider,
+    materialize_oracle_providers,
+    validate_oracle_provider_bindings,
+)
 from factorio_circuit.progress import ProgressCallback, report_progress
+from factorio_circuit.sampling import SamplingPolicy
 from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
-from factorio_circuit.synthesis.placement import PlacementOptions
+from factorio_circuit.synthesis.placement import PlacementOptions, Position
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,11 +94,13 @@ def _lower_level(
     *,
     enable_packing: bool,
     state_timing: StateTimingPlan,
+    sampling_policy: SamplingPolicy,
 ) -> AbstractPhysicalCircuit:
     return lower_normalized_vectors(
         module,
         enable_packing=enable_packing,
         state_timing=state_timing,
+        sampling_policy=sampling_policy,
     )
 
 
@@ -98,12 +109,14 @@ def _synthesize(
     *,
     safe_wire_span: float,
     placement: PlacementOptions | None,
+    physical_anchors: Mapping[str, Position] | None,
     progress: ProgressCallback | None,
 ) -> Layout:
     return synthesize_vector_layout(
         circuit,
         safe_wire_span=safe_wire_span,
         placement=placement,
+        anchor_positions=physical_anchors,
         progress=progress,
     )
 
@@ -113,20 +126,41 @@ def lower_to_abstract_physical(
     *,
     optimize: bool = True,
     progress: ProgressCallback | None = None,
+    oracle_providers: Mapping[str, OracleProvider] | None = None,
+    sampling_policy: SamplingPolicy = SamplingPolicy.BEGINNING_OF_STEP,
 ) -> AbstractPhysicalLoweringResult:
     """Run the canonical compiler pipeline through abstract physical lowering only.
 
     This is the stable inspection boundary immediately before signal allocation, red/green
     assignment, physical-net coalescing, placement, and routing. It is useful for diagnostics and
     heavyweight benchmark census work that should not need to materialize a final layout.
+
+    Semantic oracles require exact physical-provider coverage. Providers are materialized into the
+    abstract physical graph before this function returns, so their entities and unresolved symbolic
+    placement requirements participate in the same joint synthesis/layout pass as ordinary
+    compiler-generated combinators.
+
+    ``sampling_policy`` controls when phase-zero external Level inputs and oracles are physically
+    observed inside one logical occurrence. The compatibility default snapshots them at the
+    beginning; ``SamplingPolicy.ALAP`` may observe the live net later to avoid transport delays.
     """
+
+    if not isinstance(sampling_policy, SamplingPolicy):
+        raise TypeError("sampling_policy must be a SamplingPolicy")
 
     report_progress(progress, "frontend", detail="elaborating and lowering source program")
     source_output = _source_output(source)
     semantic = preserve_output_materializations(lower_frontend(source), source_output)
+    providers = validate_oracle_provider_bindings(semantic, oracle_providers)
     clocked = contains_event_semantics(semantic)
 
     if clocked:
+        if sampling_policy is not SamplingPolicy.BEGINNING_OF_STEP:
+            raise ValueError("ALAP external sampling is currently supported for Level modules only")
+        if oracle_sources(semantic):
+            raise OracleBindingError(
+                "physical oracle providers are currently supported for Level modules only"
+            )
         optimized_semantic = semantic
         report_progress(progress, "timing", detail="analyzing clocked timing and throughput")
         state_timing = analyze_clocked_timing(optimized_semantic)
@@ -150,13 +184,18 @@ def lower_to_abstract_physical(
         report_progress(
             progress,
             "physical-lowering",
-            detail="lowering Level/state semantics to abstract physical IR",
+            detail=(
+                "lowering Level/state semantics to abstract physical IR "
+                f"with sampling={sampling_policy.value}"
+            ),
         )
         abstract_physical = _lower_level(
             optimized_semantic,
             enable_packing=optimize,
             state_timing=state_timing,
+            sampling_policy=sampling_policy,
         )
+        materialize_oracle_providers(optimized_semantic, abstract_physical, providers)
 
     return AbstractPhysicalLoweringResult(
         semantic_ir=semantic,
@@ -173,7 +212,10 @@ def compile_circuit(
     optimize: bool = True,
     blueprint_safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN,
     placement: PlacementOptions | None = None,
+    physical_anchors: Mapping[str, Position] | None = None,
     progress: ProgressCallback | None = None,
+    oracle_providers: Mapping[str, OracleProvider] | None = None,
+    sampling_policy: SamplingPolicy = SamplingPolicy.BEGINNING_OF_STEP,
 ) -> CompilationResult:
     """Compile semantic dataflow through physical synthesis to a final Layout and blueprint.
 
@@ -181,15 +223,33 @@ def compile_circuit(
     clock-aware timing and the physical Event lowerer; semantic Event optimization and packing
     remain disabled until those transforms carry explicit clock proofs.
 
+    Oracle providers are target-side bindings: they are absent from deterministic semantic
+    evaluation and are inserted into the abstract physical graph before joint physical synthesis.
+    ``physical_anchors`` resolves symbolic placement sites declared by providers. Abstract lowering
+    may leave those sites unresolved, but final placement requires a coordinate for every anchored
+    entity.
+
+    ``sampling_policy`` is a target-side observation policy. ``BEGINNING_OF_STEP`` preserves the
+    historical snapshot behavior. ``ALAP`` lets every phase-zero external Level input/oracle remain
+    live until its physical consumer, eliminating identity-delay transport when no explicit logical
+    reindexing requires an older sample.
+
     ``progress`` receives coarse compiler phases plus bounded placement/routing updates.
     Callbacks are observational only and do not affect deterministic compilation.
     """
 
-    lowered = lower_to_abstract_physical(source, optimize=optimize, progress=progress)
+    lowered = lower_to_abstract_physical(
+        source,
+        optimize=optimize,
+        progress=progress,
+        oracle_providers=oracle_providers,
+        sampling_policy=sampling_policy,
+    )
     layout = _synthesize(
         lowered.abstract_physical,
         safe_wire_span=blueprint_safe_wire_span,
         placement=placement,
+        physical_anchors=physical_anchors,
         progress=progress,
     )
 
@@ -207,11 +267,18 @@ def compile_circuit(
             lowered.optimized_ir,
             enable_packing=False,
             state_timing=lowered.state_timing,
+            sampling_policy=sampling_policy,
+        )
+        materialize_oracle_providers(
+            lowered.optimized_ir,
+            naive_abstract,
+            validate_oracle_provider_bindings(lowered.optimized_ir, oracle_providers),
         )
         naive_physical = _synthesize(
             naive_abstract,
             safe_wire_span=blueprint_safe_wire_span,
             placement=placement,
+            physical_anchors=physical_anchors,
             progress=progress,
         ).circuit
     else:

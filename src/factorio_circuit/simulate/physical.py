@@ -12,6 +12,7 @@ from factorio_circuit.ir.physical import (
     DeciderCombinator,
     Operand,
     PhysicalCircuit,
+    SelectorCombinator,
     SignalId,
     WireColor,
     WireEndpoint,
@@ -48,7 +49,18 @@ def simulate_stream(
     *,
     flush_ticks: int | None = None,
 ) -> list[tuple[object, ...]]:
-    """Simulate the physical circuit tick-by-tick."""
+    """Simulate the deterministic physical circuit subset tick-by-tick.
+
+    Selector providers are deliberately outside this simulator. In particular, Random Input is an
+    oracle implementation rather than a deterministic target operation; test that behavior through
+    scripted semantic oracle traces or in Factorio itself.
+    """
+
+    if any(isinstance(entity, SelectorCombinator) for entity in circuit.entities):
+        raise ValueError(
+            "deterministic physical simulation does not evaluate selector combinators; "
+            "use a scripted semantic oracle trace or target execution"
+        )
 
     networks = _build_networks(circuit)
     max_phase = max(circuit.output_phases, default=0)

@@ -1,38 +1,39 @@
 """Whole-vector physical synthesis extension."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
 from factorio_circuit.blueprint.routing import route_wires, routed_positions
 from factorio_circuit.ir import abstract_physical as abstract
-from factorio_circuit.ir.physical import DeciderCombinator, SignalId, WireColor
+from factorio_circuit.ir.physical import (
+    DeciderCombinator,
+    SelectorCombinator,
+    SignalId,
+    WireColor,
+)
 from factorio_circuit.lowering.vector_unary import VECTOR_EACH_PLACEHOLDER
 from factorio_circuit.progress import ProgressCallback, report_progress
 from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
 from factorio_circuit.synthesis.physical import PhysicalSynthesizer
-from factorio_circuit.synthesis.placement import PlacementOptions, plan_physical_circuit
+from factorio_circuit.synthesis.placement import PlacementOptions, Position, plan_physical_circuit
+from factorio_circuit.synthesis.placement_constraints import resolve_placement_constraints
 from factorio_circuit.synthesis.safe_crossbar import build_safe_crossbar_layout
 from factorio_circuit.synthesis.safe_folded_crossbar import build_safe_folded_crossbar_layout
+from factorio_circuit.synthesis.signal_coloring import allocate_abstract_signals_dsat
 
 
 def _placement_attempt_count(options: PlacementOptions) -> int:
     """Return deterministic synthesis attempts for the requested placement policy."""
 
-    # Row placement is invariant under target-fill/corridor retry parameters.  Greedy net-aware
-    # placement (iterations=0), however, *does* change when the candidate grid is made
-    # sparser, so it
+    # Row placement is invariant under target-fill/corridor retry parameters. Greedy net-aware
+    # placement (iterations=0), however, changes when the candidate grid is made sparser, so it
     # should retain deterministic retries instead of being forced to a single attempt.
     return 1 if options.strategy == "row" else options.restarts
 
 
 def _placement_attempt_options(options: PlacementOptions, restart: int) -> PlacementOptions:
-    """Make later deterministic attempts progressively easier to route.
-
-    Lower target fill supplies more unused grid slots.  When routing corridors are enabled, widen
-    them by the inverse factor as well.  This deliberately spends area after a routing failure
-    rather
-    than repeating nearly the same hostile geometry.
-    """
+    """Make later deterministic attempts progressively easier to route."""
 
     scale = options.retry_fill_scale**restart
     corridor_width = options.corridor_width
@@ -50,6 +51,22 @@ def _placement_attempt_options(options: PlacementOptions, restart: int) -> Place
 @dataclass(slots=True)
 class VectorPhysicalSynthesizer(PhysicalSynthesizer):
     progress: ProgressCallback | None = None
+    anchor_positions: Mapping[str, Position] | None = None
+
+    def _allocate_signals(self, net_groups: dict[int, int]) -> dict[int, SignalId]:
+        """Color abstract lanes with deterministic DSATUR.
+
+        Shared delay buses create dense interference cliques, so the vector path uses a dynamic
+        saturation ordering rather than the baseline synthesizer's historical static degree order.
+        """
+
+        return allocate_abstract_signals_dsat(
+            self.circuit,
+            net_groups,
+            signal_pool=self.signal_pool,
+            reserved=self._fixed_signal_ids(),
+            alias_roots=self._signal_alias_roots(),
+        )
 
     def synthesize(self) -> Layout:
         report_progress(self.progress, "synthesis", detail="validating abstract physical circuit")
@@ -65,7 +82,11 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
         report_progress(self.progress, "synthesis", detail="materializing physical combinators")
         physical = self._materialize_circuit(signal_allocation, net_colors)
 
-        selected = self.placement_options or PlacementOptions()
+        selected = resolve_placement_constraints(
+            self.circuit,
+            self.placement_options or PlacementOptions(),
+            self.anchor_positions,
+        )
         strategy = str(selected.strategy)
         if strategy in {"safe-crossbar", "safe-folded-crossbar"}:
             if selected.anchors:
@@ -211,6 +232,16 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
         net_colors: dict[int, WireColor],
         annotation_descriptions: dict[int, str],
     ) -> Any:
+        if isinstance(entity, abstract.SelectorCombinator):
+            return SelectorCombinator(
+                id=entity.id,
+                operation=entity.operation,
+                select_max=entity.select_max,
+                index=entity.index,
+                random_update_interval=entity.random_update_interval,
+                description=entity.description,
+            )
+
         result = super(VectorPhysicalSynthesizer, self)._materialize_entity(
             entity,
             signals,
@@ -230,6 +261,7 @@ def synthesize_vector_layout(
     *,
     safe_wire_span: float,
     placement: PlacementOptions | None = None,
+    anchor_positions: Mapping[str, Position] | None = None,
     progress: ProgressCallback | None = None,
 ) -> Layout:
     return VectorPhysicalSynthesizer(
@@ -237,4 +269,5 @@ def synthesize_vector_layout(
         safe_wire_span=safe_wire_span,
         placement_options=placement,
         progress=progress,
+        anchor_positions=anchor_positions,
     ).synthesize()

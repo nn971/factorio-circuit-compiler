@@ -18,8 +18,9 @@ from factorio_circuit.ir.semantic import (
     validate_canonical_module,
 )
 from factorio_circuit.ir.state import AccumulatorRegister, FreezeRegister, VectorRegisterRead
-from factorio_circuit.lowering.alap import AlapVectorLowerer
+from factorio_circuit.lowering.input_sampling import SamplingPolicyLowerer
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
+from factorio_circuit.sampling import SamplingPolicy
 
 _VECTOR_OUTPUTS = (
     VectorInput,
@@ -38,6 +39,7 @@ def lower_normalized_vectors(
     *,
     enable_packing: bool,
     state_timing: StateTimingPlan,
+    sampling_policy: SamplingPolicy = SamplingPolicy.BEGINNING_OF_STEP,
 ) -> AbstractPhysicalCircuit:
     """Lower a module that has already crossed the canonical Level boundary.
 
@@ -45,6 +47,12 @@ def lower_normalized_vectors(
     Level values also carry lowering-time validity proofs, so stable values can be reused directly;
     when exact transport remains necessary, scalar and vector delay prefixes are shared across
     consumers.
+
+    ``sampling_policy`` controls freshness freedom for live Level observations. Under ``ALAP``, an
+    ordinary external input/oracle and supported feed-forward Level logic derived from it may be
+    re-observed at a later consumer phase instead of transporting an earlier chosen token through
+    identity combinators. Different uses may therefore observe different physical ticks. Explicit
+    logical reindexing and explicit exact transport remain token-preserving boundaries.
     """
 
     reject_event_module(module)
@@ -61,10 +69,11 @@ def lower_normalized_vectors(
             f"unsupported register(s): {names}"
         )
 
-    lowerer = AlapVectorLowerer(
+    lowerer = SamplingPolicyLowerer(
         module,
         enable_packing=enable_packing,
         state_timing=state_timing,
+        sampling_policy=sampling_policy,
     )
     lowerer._create_input_markers()
     if module.state_registers:

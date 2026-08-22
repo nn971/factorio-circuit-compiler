@@ -12,6 +12,7 @@ from factorio_circuit.ir.physical import (
     ConstantCombinator,
     DeciderCombinator,
     Operand,
+    SelectorCombinator,
     SignalId,
     WireColor,
 )
@@ -32,12 +33,22 @@ def layout_to_blueprint_json(layout: Layout) -> dict[str, Any]:
         if entity.description:
             common["player_description"] = entity.description
 
-        if isinstance(entity, ArithmeticCombinator) and entity.operation == "select":
+        if isinstance(entity, SelectorCombinator):
             common.update(
                 {
                     "name": "selector-combinator",
                     "direction": 4,
                     "control_behavior": _selector_conditions(entity),
+                }
+            )
+        elif isinstance(entity, ArithmeticCombinator) and entity.operation == "select":
+            # Compatibility for the existing vector-select lowering. New target providers should
+            # emit the first-class SelectorCombinator above.
+            common.update(
+                {
+                    "name": "selector-combinator",
+                    "direction": 4,
+                    "control_behavior": _legacy_selector_conditions(entity),
                 }
             )
         elif isinstance(entity, ArithmeticCombinator):
@@ -95,7 +106,22 @@ def encode_layout_blueprint_string(layout: Layout) -> str:
     return "0" + base64.b64encode(compressed).decode("ascii")
 
 
-def _selector_conditions(entity: ArithmeticCombinator) -> dict[str, Any]:
+def _selector_conditions(entity: SelectorCombinator) -> dict[str, Any]:
+    if entity.operation == "select":
+        return {
+            "operation": "select",
+            "select_max": entity.select_max,
+            "index_constant": entity.index,
+        }
+    if entity.operation == "random":
+        return {
+            "operation": "random",
+            "random_update_interval": entity.random_update_interval,
+        }
+    raise ValueError(f"unsupported selector operation {entity.operation!r}")
+
+
+def _legacy_selector_conditions(entity: ArithmeticCombinator) -> dict[str, Any]:
     if entity.right.constant is None:
         raise ValueError("selector scaffold requires a constant index")
     return {

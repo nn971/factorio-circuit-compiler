@@ -31,14 +31,47 @@ class SignalDomain(StrEnum):
     FLUID = "fluid"
 
 
+class EntityPlacementMode(StrEnum):
+    """Spatial freedom carried by one abstract physical entity."""
+
+    FREE = "free"
+    ANCHORED = "anchored"
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class PhysicalAnchor:
+    """Symbolic deployment site resolved only when final placement is requested."""
+
+    name: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError("physical anchor name must be non-empty")
+
+
+@dataclass(frozen=True, slots=True)
+class EntityPlacementConstraint:
+    """Placement requirement for one abstract physical entity."""
+
+    entity: int
+    mode: EntityPlacementMode = EntityPlacementMode.FREE
+    anchor: PhysicalAnchor | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entity, int) or isinstance(self.entity, bool) or self.entity <= 0:
+            raise ValueError("placement constraint entity id must be a positive integer")
+        if not isinstance(self.mode, EntityPlacementMode):
+            raise ValueError("placement constraint mode must be an EntityPlacementMode")
+        if self.mode is EntityPlacementMode.FREE:
+            if self.anchor is not None:
+                raise ValueError("free placement constraints cannot name an anchor")
+        elif not isinstance(self.anchor, PhysicalAnchor):
+            raise ValueError("anchored placement constraints require a PhysicalAnchor")
+
+
 @dataclass(frozen=True, slots=True, order=True)
 class AbstractSignal:
-    """A late-allocated signal-lane variable.
-
-    ``id`` is IR identity, rather than a Factorio signal name. Physical synthesis may
-    map compatible abstract signals to the same concrete Factorio identity when their
-    electrical lifetimes permit it.
-    """
+    """A late-allocated signal-lane variable."""
 
     id: int
     label: str | None = None
@@ -56,17 +89,7 @@ class Endpoint:
 
 @dataclass(frozen=True, slots=True)
 class AbstractNet:
-    """One logical electrical-connectivity requirement.
-
-    ``signals`` records compiler-allocated abstract lanes known to coexist on this net.
-    ``fixed_signals`` records user/target-selected concrete lanes such as item signals.
-    ``carries_dynamic_vector`` means the net may additionally carry arbitrary runtime
-    lanes, as whole-vector external inputs do.
-
-    Signal identities and electrical connectivity remain independent resources: one
-    net may carry many lanes, and one lane identity may appear on several disconnected
-    nets.
-    """
+    """One logical electrical-connectivity requirement."""
 
     id: int
     signals: tuple[int, ...]
@@ -192,6 +215,33 @@ class DeciderCombinator:
 
 
 @dataclass(frozen=True, slots=True)
+class SelectorCombinator:
+    """Exact target selector combinator for modes supported by this compiler."""
+
+    id: int
+    operation: str
+    input_nets: tuple[int, ...]
+    select_max: bool = True
+    index: int = 0
+    random_update_interval: int = 1
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.operation not in {"select", "random"}:
+            raise ValueError(f"unsupported selector operation {self.operation!r}")
+        if not self.input_nets:
+            raise ValueError("selector combinator requires at least one input net")
+        if isinstance(self.index, bool) or not isinstance(self.index, int) or self.index < 0:
+            raise ValueError("selector index must be a non-negative integer")
+        if (
+            isinstance(self.random_update_interval, bool)
+            or not isinstance(self.random_update_interval, int)
+            or not 1 <= self.random_update_interval <= 0xFFFFFFFF
+        ):
+            raise ValueError("selector random_update_interval must be in [1, 2^32-1]")
+
+
+@dataclass(frozen=True, slots=True)
 class ConstantCombinator:
     id: int
     signals: tuple[tuple[SignalRef, int], ...] = ()
@@ -199,7 +249,7 @@ class ConstantCombinator:
     annotation_only: bool = False
 
 
-AbstractEntity = ArithmeticCombinator | DeciderCombinator | ConstantCombinator
+AbstractEntity = ArithmeticCombinator | DeciderCombinator | SelectorCombinator | ConstantCombinator
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +280,7 @@ class AbstractPhysicalCircuit:
     net_conflicts: list[NetConflict] = field(default_factory=list)
     inputs: list[InputPort] = field(default_factory=list)
     outputs: list[OutputPort] = field(default_factory=list)
+    placement_constraints: list[EntityPlacementConstraint] = field(default_factory=list)
 
     @property
     def combinator_count(self) -> int:
@@ -264,6 +315,15 @@ class AbstractPhysicalCircuit:
         entity_ids = _unique_ids("entity", (entity.id for entity in self.entities))
         signal_ids = _unique_ids("signal", (signal.id for signal in self.signals))
         net_ids = _unique_ids("net", (net.id for net in self.nets))
+
+        constrained_entities: set[int] = set()
+        for constraint in self.placement_constraints:
+            _require(entity_ids, constraint.entity, "entity")
+            if constraint.entity in constrained_entities:
+                raise ValueError(
+                    f"entity {constraint.entity} has multiple abstract placement constraints"
+                )
+            constrained_entities.add(constraint.entity)
 
         for net in self.nets:
             if len(set(net.signals)) != len(net.signals):
@@ -314,6 +374,8 @@ class AbstractPhysicalCircuit:
                 if entity.else_output_signal is not None:
                     self._validate_signal_ref(entity.else_output_signal, signal_ids)
                     self._validate_net_refs(entity.else_copy_count_nets, net_ids)
+            elif isinstance(entity, SelectorCombinator):
+                self._validate_net_refs(entity.input_nets, net_ids)
             else:
                 for signal_ref, _count in entity.signals:
                     self._validate_signal_ref(signal_ref, signal_ids)
@@ -359,7 +421,7 @@ class AbstractPhysicalCircuit:
     def _validate_signal_ref(signal: SignalRef, signal_ids: set[int]) -> None:
         if isinstance(signal, int):
             _require(signal_ids, signal, "signal")
-        elif not isinstance(signal, SignalId):  # pragma: no cover - defensive runtime check
+        elif not isinstance(signal, SignalId):
             raise TypeError(signal)
 
     @staticmethod

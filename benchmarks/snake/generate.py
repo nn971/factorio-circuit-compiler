@@ -2,9 +2,12 @@
 
 The default uses ``safe-folded-crossbar``: deterministic serpentine entity rows, row-local physical
 bus tracks chosen after fold portals are known, and search-free vertical stitches. Public inputs and
-outputs are clustered at the beginning of the first row. The simpler linear
-``safe-crossbar`` remains
-available explicitly as a canonical rollback path.
+outputs are clustered at the beginning of the first row. Food is proposed by a freely
+placed selector combinator in Random Input mode and latched by deterministic Snake state.
+
+External Level inputs/oracles use ALAP sampling by default for this benchmark, so their live circuit
+network value is observed at the latest consumer phase instead of transported from phase zero.
+``--sampling-policy beginning-of-step`` restores the historical snapshot baseline.
 
 Progress is printed to stderr. The final importable blueprint string is printed to stdout unless
 ``--output`` names a file. Greedy, full net-aware/annealing, row, and linear-safe layouts remain
@@ -18,8 +21,17 @@ import sys
 from pathlib import Path
 from time import monotonic
 
-from benchmarks.snake.model import DEFAULT_LOGICAL_STEPS_PER_MOVE, build_snake_circuit
-from factorio_circuit import CompilationResult, CompileProgress, compile_circuit
+from benchmarks.snake.random_model import (
+    DEFAULT_LOGICAL_STEPS_PER_MOVE,
+    FOOD_CANDIDATE_ORACLE,
+    build_random_snake_circuit,
+)
+from factorio_circuit import (
+    CompilationResult,
+    CompileProgress,
+    RandomSignalOracleProvider,
+    SamplingPolicy,
+)
 from factorio_circuit.analysis import census_abstract_physical, format_abstract_physical_census
 from factorio_circuit.ir.physical import WireColor
 from factorio_circuit.synthesis.placement import PlacementOptions
@@ -124,6 +136,15 @@ def main() -> None:
         help="enable vector packing; this also computes the compiler's unpacked comparison layout",
     )
     parser.add_argument(
+        "--sampling-policy",
+        choices=[policy.value for policy in SamplingPolicy],
+        default=SamplingPolicy.ALAP.value,
+        help=(
+            "external Level observation policy; ALAP is the benchmark default, while "
+            "beginning-of-step reproduces the phase-zero snapshot baseline"
+        ),
+    )
+    parser.add_argument(
         "--census",
         action="store_true",
         help="print the pre-synthesis Abstract Physical IR census after compilation",
@@ -186,11 +207,16 @@ def main() -> None:
 
     placement = _placement_from_args(args)
     terminal_progress = None if args.no_progress else _TerminalProgress()
+    circuit = build_random_snake_circuit(logical_steps_per_move=args.steps_per_move)
+    sampling_policy = SamplingPolicy(args.sampling_policy)
     try:
-        result = compile_circuit(
-            build_snake_circuit(logical_steps_per_move=args.steps_per_move),
+        result = circuit.compile(
             optimize=args.optimize,
             placement=placement,
+            oracle_providers={
+                FOOD_CANDIDATE_ORACLE: RandomSignalOracleProvider(update_interval=1),
+            },
+            sampling_policy=sampling_policy,
             progress=terminal_progress,
         )
     finally:
@@ -214,11 +240,24 @@ def main() -> None:
     if reset_port.signal is None:
         raise ValueError("scalar reset port unexpectedly has no concrete signal")
 
+    selectors = [
+        entity
+        for entity in result.blueprint_json["blueprint"]["entities"]  # type: ignore[index]
+        if isinstance(entity, dict) and entity.get("name") == "selector-combinator"
+    ]
+    if not any(
+        isinstance(entity.get("control_behavior"), dict)
+        and entity["control_behavior"].get("operation") == "random"
+        for entity in selectors
+    ):
+        raise ValueError("random-food Snake blueprint contains no Random Input selector")
+
     print(
         "snake: "
         f"combinators={result.physical_circuit.combinator_count}, "
         f"relays={len(result.layout.relays)}, "
-        f"state_period={result.state_timing.uniform_period}",
+        f"state_period={result.state_timing.uniform_period}, "
+        f"random_food=selector, sampling={sampling_policy.value}",
         file=sys.stderr,
     )
     print(

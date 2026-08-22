@@ -38,7 +38,7 @@ def test_pixel_catalogue_is_fixed_row_major_and_unique() -> None:
 def test_pixel_catalogue_prefers_display_only_virtual_signals() -> None:
     # The screen must not reserve the compiler's temporary allocation lanes: a compiled framebuffer
     # needs those virtual identities for its own intermediate arithmetic and predicates.
-    assert len(DEFAULT_VIRTUAL_SIGNAL_POOL) == 51
+    assert len(DEFAULT_VIRTUAL_SIGNAL_POOL) == 65
     assert len(DISPLAY_VIRTUAL_SIGNAL_POOL) == 81
     assert not set(DISPLAY_VIRTUAL_SIGNAL_POOL) & set(DEFAULT_VIRTUAL_SIGNAL_POOL)
     assert PIXEL_SIGNALS[: len(DISPLAY_VIRTUAL_SIGNAL_POOL)] == DISPLAY_VIRTUAL_SIGNAL_POOL
