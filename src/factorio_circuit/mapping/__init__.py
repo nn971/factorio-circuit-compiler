@@ -29,6 +29,7 @@ from .problem import (
     MappingUse,
 )
 from .solver import MappingOptimizationResult, solve_mapping_problem
+from .state_bus_solver import solve_periodic_state_bus_mapping_problem
 from .state_solver import (
     PeriodicStateMappingOptimizationResult,
     solve_periodic_state_mapping_problem,
@@ -93,6 +94,7 @@ __all__ = [
     "ordinary_freeze_state_candidates",
     "ordinary_state_candidates",
     "solve_mapping_problem",
+    "solve_periodic_state_bus_mapping_problem",
     "solve_periodic_state_mapping_problem",
     "validate_periodic_state_plan",
     "validate_realization_plan",
