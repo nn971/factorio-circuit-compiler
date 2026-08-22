@@ -17,13 +17,13 @@ from factorio_circuit.ir.abstract_physical import (
     DeciderCombinator,
     Endpoint,
 )
-from factorio_circuit.ir.semantic import CircuitModule
+from factorio_circuit.ir.semantic import CircuitModule, Constant, Select
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
 from factorio_circuit.lowering.open_vector import VectorLowerer
 from factorio_circuit.target.factorio.signals import SIGNAL_EVERYTHING
 
 from .plan import RealizationPlan
-from .problem import MappingProblem
+from .problem import MappingProblem, MappingProblemError
 from .state_lower import (
     PeriodicStatePhysicalLoweringResult as _BasePeriodicStatePhysicalLoweringResult,
 )
@@ -31,7 +31,7 @@ from .state_lower import (
     _MappedPeriodicStateLowerer,
 )
 from .state_templates import StateCellCandidate
-from .templates import ImplementationCandidate
+from .templates import ImplementationCandidate, ImplementationRecipe
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +89,62 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
         if value.phase == target_phase:
             return value
         return super().delay_vector_to(value, target_phase)
+
+    def _realize_select(self, select: Select) -> RealizedValue:
+        """Lower the exact Select recipe chosen by the temporal mapper."""
+
+        operation_id = self.operation_id_by_semantic.get(id(select))
+        if operation_id is None:
+            return super()._realize_select(select)
+        realization = self.realization_by_operation[operation_id]
+        candidate = self.candidate_by_id[realization.candidate]
+        if candidate.recipe is ImplementationRecipe.ORDINARY:
+            return super()._realize_select(select)
+
+        if not isinstance(select.when_true, Constant) or not isinstance(select.when_false, Constant):
+            raise MappingProblemError(
+                "specialized mapped Select recipe requires compile-time constant arms"
+            )
+        condition_phase = realization.output_phase + candidate.input_phase_offsets[0]
+        condition = self.delay_to(self.realize(select.condition), condition_phase)
+        true_value = select.when_true.value
+        false_value = select.when_false.value
+        label = select.name or f"op {operation_id}"
+
+        if candidate.recipe is ImplementationRecipe.SELECT_CONSTANT_ZERO_FALSE:
+            if false_value != 0 or candidate.entity_cost != 1:
+                raise MappingProblemError("invalid zero-false Select candidate metadata")
+            result = self._emit_binary_from_operands(
+                "*",
+                condition,
+                true_value,
+                description=f"Mapped Select {label}: constant gate ({true_value} when true)",
+            )
+        elif candidate.recipe is ImplementationRecipe.SELECT_CONSTANT_FOLDED:
+            if false_value == 0 or candidate.entity_cost != 2:
+                raise MappingProblemError("invalid folded-constant Select candidate metadata")
+            delta = true_value - false_value
+            gated = self._emit_binary_from_operands(
+                "*",
+                condition,
+                delta,
+                description=f"Mapped Select {label}: folded constant delta {delta}",
+            )
+            result = self._emit_binary_from_operands(
+                "+",
+                gated,
+                false_value,
+                description=f"Mapped Select {label}: add false constant {false_value}",
+            )
+        else:  # pragma: no cover - enum exhaustiveness guard
+            raise MappingProblemError(f"unsupported mapped Select recipe {candidate.recipe.value!r}")
+
+        if result.phase != realization.output_phase:
+            raise MappingProblemError(
+                f"specialized mapped Select realized at phase {result.phase}, "
+                f"expected {realization.output_phase}"
+            )
+        return result
 
     def _hold_framebuffer(self, payload: RealizedVector) -> RealizedVector:
         """Capture one coherent framebuffer once per mapped period and hold it continuously."""
