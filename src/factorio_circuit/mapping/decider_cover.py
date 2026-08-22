@@ -1,20 +1,22 @@
 """Conservative multi-operation decider-condition covers for temporal mapping.
 
-The current candidate model chooses one implementation per semantic operation.  A Factorio decider
-can nevertheless realize an entire homogeneous boolean tree such as ``c0 | c1 | c2 | c3`` when all
-leaves are scalar comparisons.  This module performs a deliberately narrow candidate-set rewrite:
+A Factorio decider can realize an entire homogeneous boolean tree such as
+``c0 | c1 | c2 | c3`` when all leaves are scalar comparisons. The cover remains an alternative to
+the ordinary per-operation implementations: one cross-operation coupling group makes the root
+one-decider candidate and all zero-cost covered-node candidates atomic in CP-SAT.
+
+This first milestone is deliberately conservative:
 
 * only homogeneous ``|`` or ``&`` trees are considered;
-* every internal node below the root must have exactly one semantic use, so nothing outside the
-  cover can observe an omitted intermediate boolean value;
-* only maximal non-overlapping covers are installed;
-* the root becomes one one-tick decider candidate;
-* covered compare/boolean nodes become zero-cost, zero-latency phantom candidates whose timing
+* every internal node below the root must have exactly one semantic use;
+* only maximal non-overlapping covers are offered;
+* direct runtime-open vector-lane comparison operands are excluded, so the one decider input can be
+  synthesized by safely coalescing its ordinary scalar nets;
+* the root costs one one-tick decider;
+* covered compare/boolean nodes are zero-cost, zero-latency phantom candidates whose timing
   equations propagate the decider input phase to the original comparison operands.
 
-Because the admitted shape has an exact Factorio realization, the first milestone replaces the
-ordinary candidates inside that proven-safe tree rather than introducing solver-level optional
-multi-operation coupling.  Non-coverable shapes retain their ordinary candidates unchanged.
+Non-coverable shapes and all ordinary implementations remain available unchanged.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from factorio_circuit.analysis.latency import FACTORIO_LATENCY
-from factorio_circuit.ir.semantic import BinaryOp, Compare
+from factorio_circuit.ir.semantic import BinaryOp, Compare, VectorSignal
 
 from .problem import MappingOperation, MappingProblem
 from .templates import (
@@ -61,6 +63,8 @@ def flatten_decider_condition_cover(value: object) -> tuple[str, tuple[Compare, 
     def visit(node: object) -> bool:
         if isinstance(node, Compare):
             if node.op not in _COMPARE_OPS:
+                return False
+            if isinstance(node.left, VectorSignal) or isinstance(node.right, VectorSignal):
                 return False
             comparisons.append(node)
             return True
@@ -115,7 +119,7 @@ def _candidate_cover(
         return None
     unique_ids = tuple(dict.fromkeys(operation_ids))
     if len(unique_ids) != len(operation_ids):
-        # Shared DAG nodes need optional-cover coupling; keep this milestone tree-only.
+        # Shared DAG nodes need a more general overlapping-cover resource model.
         return None
     if any(use_counts[item] != 1 for item in unique_ids if item != operation.id):
         return None
@@ -132,19 +136,16 @@ def find_decider_condition_covers(problem: MappingProblem) -> tuple[DeciderCondi
 
     semantic_id_to_operation = {id(item.semantic): item.id for item in problem.operations}
     use_counts = _use_counts(problem)
-    possible = [
-        cover
-        for operation in problem.operations
-        if (
-            cover := _candidate_cover(
-                problem,
-                operation,
-                semantic_id_to_operation=semantic_id_to_operation,
-                use_counts=use_counts,
-            )
+    possible: list[DeciderConditionCover] = []
+    for operation in problem.operations:
+        cover = _candidate_cover(
+            problem,
+            operation,
+            semantic_id_to_operation=semantic_id_to_operation,
+            use_counts=use_counts,
         )
-        is not None
-    ]
+        if cover is not None:
+            possible.append(cover)
 
     operation_sets = {cover.root_operation: frozenset(cover.operation_ids) for cover in possible}
     maximal = [
@@ -158,7 +159,7 @@ def find_decider_condition_covers(problem: MappingProblem) -> tuple[DeciderCondi
     ]
 
     # The exclusive-internal-use rule should make maximal covers disjoint. Keep an explicit guard
-    # because silently replacing overlapping operation candidates would make plan accounting opaque.
+    # because silently overlapping aggregate technologies would make selection coupling ambiguous.
     occupied: set[int] = set()
     result: list[DeciderConditionCover] = []
     for cover in sorted(maximal, key=lambda item: item.root_operation):
@@ -173,42 +174,49 @@ def add_decider_condition_cover_candidates(
     problem: MappingProblem,
     candidates: tuple[ImplementationCandidate, ...],
 ) -> tuple[ImplementationCandidate, ...]:
-    """Replace proven-safe homogeneous boolean trees by exact decider-cover candidates."""
+    """Append exact coupled decider-cover alternatives while retaining ordinary fallbacks."""
 
     covers = find_decider_condition_covers(problem)
     if not covers:
         return candidates
 
     next_id = max((item.id for item in candidates), default=0) + 1
-    replacements: dict[int, ImplementationCandidate] = {}
+    result = list(candidates)
     for cover in covers:
         root = problem.operation_by_id(cover.root_operation)
         latency = FACTORIO_LATENCY.operation_latency("compare", cover.boolean_op)
-        replacements[root.id] = ImplementationCandidate(
-            id=next_id,
-            operation=root.id,
-            name=f"decider {cover.boolean_op} condition cover ({len(cover.comparisons)} leaves)",
-            input_phase_offsets=(-latency,) * len(root.operands),
-            entity_cost=1,
-            recipe=ImplementationRecipe.DECIDER_CONDITION_COVER,
+        coupling_group = cover.root_operation
+        result.append(
+            ImplementationCandidate(
+                id=next_id,
+                operation=root.id,
+                name=(
+                    f"decider {cover.boolean_op} condition cover "
+                    f"({len(cover.comparisons)} leaves)"
+                ),
+                input_phase_offsets=(-latency,) * len(root.operands),
+                entity_cost=1,
+                recipe=ImplementationRecipe.DECIDER_CONDITION_COVER,
+                coupling_group=coupling_group,
+            )
         )
         next_id += 1
 
         for operation_id in cover.internal_operation_ids:
             operation = problem.operation_by_id(operation_id)
-            replacements[operation_id] = ImplementationCandidate(
-                id=next_id,
-                operation=operation_id,
-                name=f"covered by decider root {root.id}",
-                input_phase_offsets=(0,) * len(operation.operands),
-                entity_cost=0,
-                kind=ImplementationKind.COVERED,
-                recipe=ImplementationRecipe.COVERED_BY_DECIDER,
+            result.append(
+                ImplementationCandidate(
+                    id=next_id,
+                    operation=operation_id,
+                    name=f"covered by decider root {root.id}",
+                    input_phase_offsets=(0,) * len(operation.operands),
+                    entity_cost=0,
+                    kind=ImplementationKind.COVERED,
+                    recipe=ImplementationRecipe.COVERED_BY_DECIDER,
+                    coupling_group=coupling_group,
+                )
             )
             next_id += 1
-
-    result = [item for item in candidates if item.operation not in replacements]
-    result.extend(replacements[item] for item in sorted(replacements))
     return tuple(result)
 
 
