@@ -1,7 +1,8 @@
 """Physical state-cell implementation candidates for periodic technology mapping.
 
-State timing is target technology. The neutral recurrence IR records register occurrences and semantic
-transitions only; candidates in this module own the physical read/write port timing and entity cost.
+State timing is target technology. The neutral recurrence IR records register occurrences and
+semantic transitions only; candidates in this module own the physical read/write port timing and
+entity cost.
 """
 
 from __future__ import annotations
@@ -23,10 +24,16 @@ class StateTransitionPortTiming:
     when_phase_offset: int | None
 
     def __post_init__(self) -> None:
-        if isinstance(self.transition, bool) or not isinstance(self.transition, int) or self.transition <= 0:
+        if (
+            isinstance(self.transition, bool)
+            or not isinstance(self.transition, int)
+            or self.transition <= 0
+        ):
             raise MappingProblemError("state transition timing requires a positive transition id")
         for value in (self.value_phase_offset, self.when_phase_offset):
-            if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int)
+            ):
                 raise MappingProblemError("state transition port offsets must be integers")
             if value is not None and value >= 0:
                 raise MappingProblemError(
