@@ -1,9 +1,10 @@
 # Periodic state-cell technology mapping
 
 This note records the first stateful extension of the temporal technology mapper. Ordinary
-`FreezeRegister` and the one-add/one-clear `AccumulatorRegister` topology used by Snake now have
-candidate-owned timing contracts. Shared delay buses, mapped physical state lowering, and production
-compiler integration remain later steps.
+`FreezeRegister` and the one-add/one-clear `AccumulatorRegister` topology used by Snake have
+candidate-owned timing contracts, and the already validated scalar delay-bus resource can now
+participate in the same solve. Mapped physical state lowering and production compiler integration
+remain later steps.
 
 ## Boundary
 
@@ -109,16 +110,14 @@ phase `b` and logical period `P`, a `MappingStateRead` at offset `k` is freely r
 [b + kP, b + (k+1)P)
 ```
 
-A use after the last free phase may preserve the old token through ordinary exact transport. This
-availability interval is selected-implementation behavior, not part of the neutral `MappingStateRead`.
+A use after the last free phase may preserve the old token through exact transport. The residual
+vector lifetime starts at the selected window's final free phase. Because state reads are currently
+whole vectors, they remain private in the first scalar bus model; scalar operation/source lifetimes in
+the recurrence may use the shared bus.
 
-## First stateful solver
+## Private-only stateful solver
 
-`solve_periodic_state_mapping_problem()` is generic over `StateCellCandidate` port contracts. The
-current ordinary candidate set can now solve mixed Freeze/Accumulator recurrence graphs when supplied
-with `ordinary_state_candidates(problem)`.
-
-The solver jointly chooses:
+`solve_periodic_state_mapping_problem()` remains the stable baseline. It jointly chooses:
 
 ```text
 ordinary finite computation candidate selection
@@ -131,12 +130,23 @@ fixed source observation/reuse
 prefix-shared private exact transport
 ```
 
-It intentionally does not yet admit:
+`validate_periodic_state_plan()` independently reconstructs candidate timing, state read windows,
+deliveries, exact lifetimes, and both cost components from the selected plan.
+
+## Stateful shared-bus solver
+
+`solve_periodic_state_bus_mapping_problem()` adds the same parameterized scalar delay-bus model used by
+the stateless joint mapper. It does not run a fixed-placement bus pass after state timing. Instead, the
+single CP-SAT model jointly chooses:
 
 ```text
-wire-sum computation candidates
-shared delay buses
-state-cell physical lowering
+ordinary computation phases
+state-cell base phases
+transition port phases implied by selected cells
+exact lifetime lengths
+private vs bus transport
+bus membership
+bus middle span
 ```
 
 The objective is:
@@ -144,15 +154,33 @@ The objective is:
 ```text
 ordinary computation entity cost
 + selected state-cell entity cost
-+ prefix-shared residual exact transport
++ private residual exact transport
++ bus middle stages
++ bus ingress/use interfaces
 ```
 
-`validate_periodic_state_plan()` independently reconstructs candidate timing, state read windows,
-deliveries, exact lifetimes, and both cost components from the selected plan.
+The first implementation reuses the established bus model directly. In particular:
+
+- only scalar exact lifetimes may become bus lanes;
+- one producer lifetime is either private or assigned wholly to one bus;
+- a bus lane requires lifetime length at least three ticks;
+- an active bus contains at least two lanes;
+- one isolated interface is still charged per transported semantic use;
+- state-read vector lifetimes remain private.
+
+For validation, the selected stateful plan is first projected to an all-private shadow plan and checked
+by `validate_periodic_state_plan()`. The existing independent delay-bus validator then checks bus lane
+spans, interfaces, producer ownership, and cost. This keeps state-cell timing validation and bus
+resource validation independent of the CP-SAT extraction path.
+
+`tests/mapping/test_state_bus_mapping.py` contains a controlled two-Freeze recurrence where two long
+scalar control lifetimes cost 10 combinators privately and 7 through one shared bus. This confirms
+that the same physical resource model is selected inside a recurrence problem rather than only in the
+stateless mapper.
 
 ## Throughput implications
 
-Candidate port equations now determine minimum feasible cadence jointly with the transition expression
+Candidate port equations determine minimum feasible cadence jointly with the transition expression
 cones. For the ordinary Freeze cell, the raw condition must exist two ticks before the next read. For
 the ordinary one-add/one-clear Accumulator, both raw controls must exist three ticks before the next
 read, and their own semantic producer operations may impose additional lead time.
@@ -171,30 +199,45 @@ Default one-step Snake contains:
 ordinary state cells                  42 entities
 ```
 
-`tests/mapping/test_snake_state_candidates.py` checks this coverage structurally without invoking
-CP-SAT.
+The first private-only full recurrence solve at `P=60` found:
 
-The first full recurrence timing solve is available as a diagnostic:
+```text
+operation entities = 213
+state entities     = 42
+private transport  = 355
+total              = 610
+```
+
+with a proven optimum. The dominant remaining cost is therefore transport rather than state-cell
+hardware or semantic computation.
+
+The full recurrence diagnostic now admits the shared bus in the same solve:
 
 ```bash
 uv run --with 'ortools>=9.14,<10' \
   python -m benchmarks.snake.analyze_mapping \
   --period 60 \
-  --solve-full-state
+  --solve-full-state \
+  --compare-private
 ```
 
-That solve uses the full periodic recurrence graph, ordinary computation candidates, and the nine
-ordinary state-cell candidates. It does not consult `StateTimingPlan`, and it still uses private exact
-transport only. Its purpose is to validate the joint recurrence formulation before buses or mapped
-physical state lowering are added.
+`--max-delay-buses` and `--bus-capacity` apply to this full-state solve as well as to the output-cone
+diagnostic. The command prints the new transport objective, selected bus spans/lane counts, all state
+cell phases, and a fresh all-private comparison from the same stateful solver.
 
 ## Next step
 
-Once the full Snake recurrence solve is stable, the next two changes should be kept separate:
+After the full Snake state+bus solve is validated, the next implementation milestone is deterministic
+stateful `RealizationPlan -> AbstractPhysicalCircuit` lowering:
 
-1. compare the selected register phases and transport objective against the established 60-tick Snake
-   timing as a diagnostic, without importing old phases as constraints;
-2. teach mapped physical lowering to emit selected Freeze/Accumulator state cells from
-   `RealizationPlan` and independently verify the resulting Abstract Physical entity count/timing.
+1. emit selected Freeze and Accumulator state cells using the candidate-owned base phases and port
+   contracts;
+2. lower private exact transport and selected delay buses with the already validated abstract-signal
+   isolation rules;
+3. independently verify emitted entity counts and phases against the plan;
+4. compare the resulting abstract physical Snake implementation against the established accepted path
+   before generating a replacement in-game blueprint.
 
-Only after those checks should the shared delay-bus resource be reintroduced into the stateful solver.
+Wire-sum candidates, local fusion/rematerialization, and time-multiplexed functional units should stay
+out of this checkpoint so a physical state-lowering failure cannot be confused with another new
+technology choice.
