@@ -1,7 +1,9 @@
 import pytest
 
 from factorio_circuit import Circuit, SamplingPolicy, SignalId
-from factorio_circuit.ir.abstract_physical import DeciderCombinator
+from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
+from factorio_circuit.ir.abstract_physical import DeciderCombinator as AbstractDeciderCombinator
+from factorio_circuit.ir.physical import DeciderCombinator as PhysicalDeciderCombinator
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
     ImplementationKind,
@@ -14,6 +16,8 @@ from factorio_circuit.mapping import (
     ordinary_state_candidates,
     solve_periodic_state_bus_mapping_problem,
 )
+from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
+from factorio_circuit.synthesis.safe_crossbar import safe_crossbar_options
 
 _MEMORY_SIGNAL = SignalId("virtual", "signal-M")
 
@@ -43,6 +47,28 @@ def _covered_state_case(*, boolean_op: str = "|"):
         sampling_policy=SamplingPolicy.ALAP,
     )
     return module, problem
+
+
+def _solve_and_lower_cover(*, boolean_op: str = "|"):
+    pytest.importorskip("ortools.sat.python.cp_model")
+    module, problem = _covered_state_case(boolean_op=boolean_op)
+    candidates = add_decider_condition_cover_candidates(problem, ordinary_candidates(problem))
+    state_candidates = ordinary_state_candidates(problem)
+    solve = solve_periodic_state_bus_mapping_problem(
+        problem,
+        candidates=candidates,
+        state_candidates=state_candidates,
+        max_delay_buses=0,
+        time_limit_seconds=5.0,
+    )
+    lowered = lower_periodic_state_mapping_plan(
+        module,
+        problem,
+        candidates,
+        state_candidates,
+        solve.plan,
+    )
+    return candidates, solve, lowered
 
 
 def test_find_maximal_four_leaf_or_cover() -> None:
@@ -99,24 +125,7 @@ def test_cover_candidates_keep_ordinary_fallbacks_and_form_one_group() -> None:
 
 
 def test_periodic_lowerer_emits_one_four_condition_or_decider() -> None:
-    pytest.importorskip("ortools.sat.python.cp_model")
-    module, problem = _covered_state_case()
-    candidates = add_decider_condition_cover_candidates(problem, ordinary_candidates(problem))
-    state_candidates = ordinary_state_candidates(problem)
-    solve = solve_periodic_state_bus_mapping_problem(
-        problem,
-        candidates=candidates,
-        state_candidates=state_candidates,
-        max_delay_buses=0,
-        time_limit_seconds=5.0,
-    )
-    lowered = lower_periodic_state_mapping_plan(
-        module,
-        problem,
-        candidates,
-        state_candidates,
-        solve.plan,
-    )
+    candidates, solve, lowered = _solve_and_lower_cover()
 
     assert solve.proven_optimal
     assert lowered.cost_exact_after_known_surcharges
@@ -130,7 +139,7 @@ def test_periodic_lowerer_emits_one_four_condition_or_decider() -> None:
     cover_entities = [
         entity
         for entity in lowered.circuit.entities
-        if isinstance(entity, DeciderCombinator)
+        if isinstance(entity, AbstractDeciderCombinator)
         and (entity.description or "").startswith("Mapped Decider cover")
     ]
     assert len(cover_entities) == 1
@@ -140,29 +149,30 @@ def test_periodic_lowerer_emits_one_four_condition_or_decider() -> None:
 
 
 def test_periodic_lowerer_emits_and_conditions_for_and_cover() -> None:
-    pytest.importorskip("ortools.sat.python.cp_model")
-    module, problem = _covered_state_case(boolean_op="&")
-    candidates = add_decider_condition_cover_candidates(problem, ordinary_candidates(problem))
-    state_candidates = ordinary_state_candidates(problem)
-    solve = solve_periodic_state_bus_mapping_problem(
-        problem,
-        candidates=candidates,
-        state_candidates=state_candidates,
-        max_delay_buses=0,
-        time_limit_seconds=5.0,
-    )
-    lowered = lower_periodic_state_mapping_plan(
-        module,
-        problem,
-        candidates,
-        state_candidates,
-        solve.plan,
-    )
+    _candidates, _solve, lowered = _solve_and_lower_cover(boolean_op="&")
 
     entity = next(
         entity
         for entity in lowered.circuit.entities
-        if isinstance(entity, DeciderCombinator)
+        if isinstance(entity, AbstractDeciderCombinator)
         and (entity.description or "").startswith("Mapped Decider cover")
     )
     assert all(condition.compare_type == "and" for condition in entity.additional_conditions)
+
+
+def test_four_condition_cover_survives_physical_synthesis() -> None:
+    _candidates, _solve, lowered = _solve_and_lower_cover()
+
+    layout = synthesize_vector_layout(
+        lowered.circuit,
+        safe_wire_span=DEFAULT_SAFE_WIRE_SPAN,
+        placement=safe_crossbar_options(),
+    )
+
+    entity = next(
+        entity
+        for entity in layout.circuit.entities
+        if isinstance(entity, PhysicalDeciderCombinator)
+        and (entity.description or "").startswith("Mapped Decider cover")
+    )
+    assert len(entity.additional_conditions) == 3
