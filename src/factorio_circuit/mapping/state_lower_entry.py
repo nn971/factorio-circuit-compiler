@@ -67,8 +67,15 @@ class PeriodicStatePhysicalLoweringResult:
 class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
     """Keep mapped semantic uses exact and expose coherent public Level frames."""
 
-    def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        module: CircuitModule,
+        problem: MappingProblem,
+        candidates: tuple[ImplementationCandidate, ...],
+        state_candidates: tuple[StateCellCandidate, ...],
+        plan: RealizationPlan,
+    ) -> None:
+        super().__init__(module, problem, candidates, state_candidates, plan)
         self.output_materialization_entities = 0
 
     def delay_to(self, value: RealizedValue, target_phase: int) -> RealizedValue:
