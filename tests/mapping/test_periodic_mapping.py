@@ -41,6 +41,7 @@ def test_periodic_output_extractor_models_register_occurrence_as_boundary_window
         sampling_policy=SamplingPolicy.ALAP,
     )
 
+    assert problem.period == 8
     assert len(problem.sources) == 1
     assert problem.state_reads == ()
     assert problem.state_transitions == ()
@@ -50,7 +51,6 @@ def test_periodic_output_extractor_models_register_occurrence_as_boundary_window
     assert source.mode is MappingSourceMode.STABLE
     assert (source.start_phase, source.end_phase_exclusive) == (0, 8)
     assert problem.sinks[0].phase == 7
-    # Transition value/control cones are deliberately outside this diagnostic output-only problem.
     assert problem.operations == ()
 
 
@@ -108,6 +108,7 @@ def test_full_periodic_state_extractor_keeps_register_read_phase_unresolved() ->
         sampling_policy=SamplingPolicy.ALAP,
     )
 
+    assert problem.period == 8
     assert len(problem.state_reads) == 1
     read = problem.state_reads[0]
     assert isinstance(read, MappingStateRead)
@@ -135,13 +136,11 @@ def test_full_periodic_state_extractor_records_transition_cones_without_write_ph
     assert transition.value in problem.value_ids
     assert transition.when in problem.value_ids
     assert not hasattr(transition, "phase")
-    # The transition control/value expressions are now part of the semantic mapping graph rather
-    # than being hidden behind the established physical StateTimingPlan.
     assert problem.sources
     assert problem.operations
 
 
-def test_full_state_problem_refuses_physical_use_enumeration_without_state_cell_candidate() -> None:
+def test_full_state_problem_refuses_stateless_physical_use_enumeration() -> None:
     module = _state_module(step_before_output=False)
     problem = build_periodic_state_mapping_problem(
         module,
@@ -150,11 +149,11 @@ def test_full_state_problem_refuses_physical_use_enumeration_without_state_cell_
         sampling_policy=SamplingPolicy.ALAP,
     )
 
-    with pytest.raises(MappingProblemError, match="state-cell implementation candidates"):
+    with pytest.raises(MappingProblemError, match="periodic state solver"):
         problem.uses()
 
 
-def test_current_solver_rejects_full_state_problem_at_state_cell_boundary() -> None:
+def test_stateless_solver_still_rejects_full_state_problem() -> None:
     pytest.importorskip("ortools.sat.python.cp_model")
     module = _state_module(step_before_output=False)
     problem = build_periodic_state_mapping_problem(
@@ -165,7 +164,7 @@ def test_current_solver_rejects_full_state_problem_at_state_cell_boundary() -> N
     )
     candidates = ordinary_candidates(problem)
 
-    with pytest.raises(MappingProblemError, match="state-cell implementation candidates"):
+    with pytest.raises(MappingProblemError, match="periodic state solver"):
         solve_mapping_problem(problem, candidates=candidates, time_limit_seconds=5.0)
 
 
