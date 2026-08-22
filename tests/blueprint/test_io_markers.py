@@ -13,13 +13,13 @@ def test_blueprint_contains_described_io_markers_decider_and_wires() -> None:
     entities = blueprint["entities"]
 
     descriptions = [entity.get("player_description", "") for entity in entities]
-    assert any(text.startswith("INPUT a") for text in descriptions)
-    assert any(text.startswith("INPUT b") for text in descriptions)
-    assert any(text.startswith("OUTPUT x") for text in descriptions)
+    assert any(text.endswith("INPUT a — inject value on [signal-A] here") for text in descriptions)
+    assert any(text.endswith("INPUT b — inject value on [signal-B] here") for text in descriptions)
+    assert any(text.startswith("[FCC #") and "OUTPUT x" in text for text in descriptions)
     assert any(entity["name"] == "decider-combinator" for entity in entities)
     assert blueprint["wires"]
 
-    marker_count = sum(text.startswith(("INPUT", "OUTPUT")) for text in descriptions)
+    marker_count = sum(" | marker] " in text for text in descriptions)
     assert len(entities) >= result.physical_circuit.blueprint_entity_count
     assert (
         result.physical_circuit.blueprint_entity_count
