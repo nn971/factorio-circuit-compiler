@@ -13,6 +13,11 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any
 
+from .candidate_coupling import (
+    add_candidate_coupling_constraints,
+    validate_candidate_coupling_groups,
+    validate_selected_candidate_coupling,
+)
 from .plan import (
     DeliveryKind,
     ExactLifetime,
@@ -139,6 +144,7 @@ def solve_periodic_state_mapping_problem(
             choose[candidate.id] = variable
             operation_choices.append(variable)
         model.Add(sum(operation_choices) == 1)
+    add_candidate_coupling_constraints(model, choose, selected_candidates)
 
     state_choose: dict[int, Any] = {}
     state_base_phase: dict[str, Any] = {}
@@ -368,6 +374,7 @@ def _validate_operation_candidates(
         raise MappingProblemError(
             f"periodic operations have no implementation candidates: {sorted(missing)}"
         )
+    validate_candidate_coupling_groups(problem, candidates)
 
 
 def _validate_state_candidates(
@@ -547,6 +554,7 @@ def validate_periodic_state_plan(
 
     if problem.period is None:
         raise MappingProblemError("stateful realization plan has no prescribed period")
+    validate_selected_candidate_coupling(candidates, plan)
     period = problem.period
     uses = _stateful_uses(problem)
     deliveries = {
