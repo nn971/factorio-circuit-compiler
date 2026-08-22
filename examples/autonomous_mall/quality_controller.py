@@ -1,17 +1,8 @@
-"""Receding-horizon controller oracle for the first autonomous-mall quality prototype.
+"""Receding-horizon controller oracle for the first quality-mall prototype.
 
-This module is deliberately still Python/offline logic.  It closes the loop around the
-quality-policy LP so we can validate controller semantics with fake dispatch/workers
-before encoding the policy as circuit microcode.
-
-The important separation is:
-
-* ``solve_quality_policy`` may import Normal-quality raw material as an *economic*
-  variable when measuring the optimum;
-* the runtime controller dispatches only actions whose same-quality ingredients are
-  physically present in the supplied stock snapshot;
-* only one stochastic quality action is in flight in this first vertical slice, so a
-  real completion is observed before replanning.
+The LP remains an offline/economic oracle. Runtime dispatch only uses physically
+present same-quality ingredients, and the first vertical slice keeps one stochastic
+action in flight so actual outputs are observed before replanning.
 """
 
 from __future__ import annotations
@@ -28,8 +19,6 @@ from .quality_policy_graph import QualityAction, QualityActionGraph, QualityActi
 
 
 class QualityDecisionKind(Enum):
-    """Outcome of one controller decision."""
-
     DISPATCH = "dispatch"
     SATISFIED = "satisfied"
     BUSY = "busy"
@@ -38,12 +27,6 @@ class QualityDecisionKind(Enum):
 
 @dataclass(frozen=True)
 class QualityDispatchIntent:
-    """One physical action requested by the controller.
-
-    ``count`` is one for the first stochastic prototype: after every craft/recycle we
-    observe the actual result and replan.  Batching is a later dispatcher concern.
-    """
-
     action: QualityAction
     count: int = 1
 
@@ -54,8 +37,6 @@ class QualityDispatchIntent:
 
 @dataclass(frozen=True)
 class QualityDecision:
-    """Controller result together with useful oracle diagnostics."""
-
     kind: QualityDecisionKind
     intent: QualityDispatchIntent | None = None
     blocked_on: Mapping[Commodity, Amount] = field(default_factory=dict)
@@ -76,21 +57,12 @@ class QualityDecision:
 
 
 class RecedingHorizonQualityController:
-    """Gold-standard one-action-at-a-time controller backed by the exact LP oracle.
+    """Gold-standard one-action controller backed by the exact expected-flow LP.
 
-    The LP is intentionally recomputed from the current stock snapshot.  This class is
-    therefore a semantic oracle for the later compiled/circuit controller, not the
-    intended final in-game implementation.
-
-    Among actions that belong to the current optimum and are physically executable, we
-    prefer:
-
-    1. recycling a non-target-quality final product;
-    2. the furthest-downstream craft in the canonical recipe DAG;
-    3. the highest feasible input quality at that recipe.
-
-    If the optimum mixes module profiles for one recipe/quality lane, a tiny weighted
-    deficit scheduler realizes the LP ratio over repeated dispatches.
+    This is a semantic oracle for the later circuit controller. Among optimal actions
+    that are executable from current stock it prefers final-product recycling, then the
+    furthest-downstream craft, then the highest input quality. Fractional module-profile
+    mixtures use a weighted-deficit phase that advances only after dispatch acceptance.
     """
 
     def __init__(
@@ -125,8 +97,6 @@ class RecedingHorizonQualityController:
         *,
         busy: bool = False,
     ) -> QualityDecision:
-        """Choose at most one executable action from the current optimal policy."""
-
         normalized = _normalize_stock(stock)
         if normalized.get(self.target, Fraction(0)) >= self.target_amount:
             return QualityDecision(QualityDecisionKind.SATISFIED)
@@ -140,14 +110,11 @@ class RecedingHorizonQualityController:
             raw_costs=self.raw_costs,
         )
         positive = tuple(step for step in plan.steps if step.expected_runs > 0)
-        feasible = tuple(
-            step for step in positive if _is_feasible(step.action, normalized)
-        )
+        feasible = tuple(step for step in positive if _is_feasible(step.action, normalized))
         if not feasible:
-            blocked = self._blocked_requirements(positive, normalized)
             return QualityDecision(
                 QualityDecisionKind.BLOCKED,
-                blocked_on=blocked,
+                blocked_on=self._blocked_requirements(positive, normalized),
                 plan=plan,
             )
 
@@ -159,10 +126,17 @@ class RecedingHorizonQualityController:
             plan=plan,
         )
 
+    def record_dispatch(self, intent: QualityDispatchIntent) -> None:
+        """Advance mixture phase after a dispatcher has accepted ``intent``."""
+
+        action = intent.action
+        lane = (action.kind, action.recipe_name, action.base_quality)
+        self._lane_dispatches[lane] = self._lane_dispatches.get(lane, 0) + intent.count
+        self._action_dispatches[action.name] = self._action_dispatches.get(action.name, 0) + intent.count
+
     def _priority(self, action: QualityAction) -> tuple[int, int, int]:
         recycle_priority = 1 if action.kind is QualityActionKind.RECYCLE else 0
-        depth = self._depth[action.recipe_name]
-        return (recycle_priority, depth, int(action.base_quality))
+        return (recycle_priority, self._depth[action.recipe_name], int(action.base_quality))
 
     def _best_lane(self, steps):
         best_priority = max(self._priority(step.action) for step in steps)
@@ -177,37 +151,35 @@ class RecedingHorizonQualityController:
 
     def _choose_profile(self, steps) -> QualityAction:
         if len(steps) == 1:
-            chosen = steps[0].action
-        else:
-            lane_action = steps[0].action
-            lane = (lane_action.kind, lane_action.recipe_name, lane_action.base_quality)
-            dispatched = self._lane_dispatches.get(lane, 0)
-            total_weight = sum(
-                (Fraction(step.expected_runs) for step in steps),
-                start=Fraction(0),
-            )
-            if total_weight <= 0:
-                raise RuntimeError("positive policy lane has zero total weight")
+            return steps[0].action
 
-            def deficit(step) -> tuple[Fraction, str]:
-                share = Fraction(step.expected_runs) / total_weight
-                served = self._action_dispatches.get(step.action.name, 0)
-                desired_after_next = Fraction(dispatched + 1) * share
-                return (desired_after_next - served, step.action.name)
+        lane_action = steps[0].action
+        lane = (lane_action.kind, lane_action.recipe_name, lane_action.base_quality)
+        dispatched = self._lane_dispatches.get(lane, 0)
+        total_weight = sum(
+            (Fraction(step.expected_runs) for step in steps),
+            start=Fraction(0),
+        )
+        if total_weight <= 0:
+            raise RuntimeError("positive policy lane has zero total weight")
 
-            chosen = max(steps, key=deficit).action
+        def deficit(step) -> tuple[Fraction, str]:
+            share = Fraction(step.expected_runs) / total_weight
+            served = self._action_dispatches.get(step.action.name, 0)
+            desired_after_next = Fraction(dispatched + 1) * share
+            return (desired_after_next - served, step.action.name)
 
-        lane = (chosen.kind, chosen.recipe_name, chosen.base_quality)
-        self._lane_dispatches[lane] = self._lane_dispatches.get(lane, 0) + 1
-        self._action_dispatches[chosen.name] = self._action_dispatches.get(chosen.name, 0) + 1
-        return chosen
+        return max(steps, key=deficit).action
 
-    def _blocked_requirements(self, steps, stock: Mapping[Commodity, Amount]) -> dict[Commodity, Amount]:
+    def _blocked_requirements(
+        self,
+        steps,
+        stock: Mapping[Commodity, Amount],
+    ) -> dict[Commodity, Amount]:
         if not steps:
             return {}
-        # When no planned action can run, explain the earliest entry-side craft that
-        # would admit material into the plan.  Reporting a downstream recycle/craft
-        # would merely describe a consequence of the same upstream shortage.
+        # If no planned action can run, expose the earliest entry-side shortage rather
+        # than a downstream action whose ingredients depend on the same shortage.
         candidate = min(steps, key=lambda step: self._priority(step.action)).action
         return {
             commodity: Fraction(required) - stock.get(commodity, Fraction(0))
@@ -236,11 +208,11 @@ def _is_feasible(action: QualityAction, stock: Mapping[Commodity, Amount]) -> bo
 
 @dataclass
 class FakeQualityDispatcher:
-    """Single-worker fake dispatcher for controller-loop tests.
+    """Single-worker fake dispatcher used to close the first controller loop.
 
-    Inputs are removed at dispatch time, representing an atomic reservation plus pickup.
-    ``finish`` accepts externally chosen *actual* outputs, so tests may feed lucky or
-    unlucky quality outcomes without baking another simulator into the controller.
+    Inputs are removed at dispatch, representing atomic reservation/pickup. ``finish``
+    accepts caller-selected actual outputs so tests can inject lucky/unlucky quality
+    outcomes without coupling the controller to another simulator.
     """
 
     stock: dict[Commodity, Amount]
