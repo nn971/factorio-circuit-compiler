@@ -1,10 +1,10 @@
 """First joint periodic-state technology-mapping solver.
 
-This milestone makes ordinary Freeze recurrence timing a candidate-owned target choice. It jointly
-chooses ordinary computation phases, each selected Freeze cell's phase within the prescribed period,
-transition input phases implied by that candidate, free state-read reuse, and prefix-shared residual
-exact transport. Delay buses and non-ordinary computation candidates remain outside this first
-stateful checkpoint so state-cell timing can be validated in isolation.
+This solver jointly chooses operation implementations/phases, each selected state cell's phase
+within the prescribed period, transition input phases implied by that candidate, free state-read
+reuse, and prefix-shared residual exact transport. Operation implementations may be local candidates
+or explicitly coupled multi-operation covers. Delay buses remain outside this private-transport
+checkpoint; the companion state-bus solver adds that shared resource.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ def solve_periodic_state_mapping_problem(
     time_limit_seconds: float = 30.0,
     workers: int = 1,
 ) -> PeriodicStateMappingOptimizationResult:
-    """Jointly solve a periodic recurrence using the first ordinary Freeze state-cell family."""
+    """Jointly solve a periodic recurrence using candidate-owned operation and state timing."""
 
     if problem.period is None:
         raise MappingProblemError("periodic state solver requires a prescribed mapping period")
@@ -493,7 +493,7 @@ def _extract_plan(
             last_free = int(solver.Value(state_read_last_free[use.producer]))
             if phase < start:  # pragma: no cover - solver constraint
                 raise AssertionError("solver consumed a state read before its candidate read phase")
-            if phase <= last_free:
+            if delivery.phase <= last_free:
                 kind = DeliveryKind.REUSE
                 transport_start = None
             else:
