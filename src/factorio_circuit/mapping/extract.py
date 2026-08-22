@@ -4,7 +4,7 @@ The stateless extractor maps one Level occurrence with caller-supplied output ph
 output-cone extractor can externalize logical register occurrences as stable boundary sources for a
 caller-prescribed period. The full periodic-state extractor is stricter: register reads remain
 unresolved ``MappingStateRead`` values and state transitions carry no physical consume phase, so a
-future state-cell candidate—not the established state-timing analyzer—must own that timing.
+state-cell candidate—not the established state-timing analyzer—must own that timing.
 """
 
 from __future__ import annotations
@@ -131,9 +131,6 @@ def build_periodic_state_mapping_problem(
     :class:`MappingStateRead` values: only register identity and logical offset are retained. Every
     canonical periodic ``StateTransition`` contributes a :class:`MappingStateTransition` referencing
     the mapping ids of its value/control cones, but no transition input phase is invented.
-
-    The current joint solver intentionally rejects the resulting stateful problem until state-cell
-    implementation candidates provide read/write port timing equations.
     """
 
     _validate_periodic_request(module, period)
@@ -352,6 +349,7 @@ def _build_level_mapping_problem(
         sinks=sinks,
         state_reads=tuple(state_reads),
         state_transitions=mapped_transitions,
+        period=period,
     )
 
 
