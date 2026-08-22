@@ -192,7 +192,7 @@ def test_worker_pool_lowers_to_physical_ir() -> None:
     lowered = lower_to_abstract_physical(build_worker_pool(2))
 
     assert lowered.clocked is False
-    assert lowered.abstract_physical.combinators
+    assert lowered.abstract_physical.combinator_count > 0
 
 
 def test_two_worker_probe_contains_two_real_assembler_devices() -> None:
@@ -205,4 +205,7 @@ def test_two_worker_probe_contains_two_real_assembler_devices() -> None:
     assert sum(entity.get("name") == "active-provider-chest" for entity in entities) == 2
 
     entity_ids = {int(entity["entity_number"]) for entity in entities}
-    assert all(int(left) in entity_ids and int(right) in entity_ids for left, _lc, right, _rc in wires)
+    assert all(
+        int(left) in entity_ids and int(right) in entity_ids
+        for left, _lc, right, _rc in wires
+    )
