@@ -57,27 +57,42 @@ def test_find_maximal_four_leaf_or_cover() -> None:
     assert len(cover.operation_ids) == 7
 
 
-def test_cover_candidate_set_prices_one_decider_and_six_phantoms() -> None:
+def test_cover_candidates_keep_ordinary_fallbacks_and_form_one_group() -> None:
     _module, problem = _covered_state_case()
     candidates = add_decider_condition_cover_candidates(problem, ordinary_candidates(problem))
     cover = find_decider_condition_covers(problem)[0]
-    by_operation = {
-        operation_id: next(item for item in candidates if item.operation == operation_id)
-        for operation_id in cover.operation_ids
-    }
 
-    root = by_operation[cover.root_operation]
-    assert root.recipe is ImplementationRecipe.DECIDER_CONDITION_COVER
+    for operation_id in cover.operation_ids:
+        alternatives = [item for item in candidates if item.operation == operation_id]
+        assert any(item.recipe is ImplementationRecipe.ORDINARY for item in alternatives)
+        specialized = [
+            item
+            for item in alternatives
+            if item.recipe
+            in {
+                ImplementationRecipe.DECIDER_CONDITION_COVER,
+                ImplementationRecipe.COVERED_BY_DECIDER,
+            }
+        ]
+        assert len(specialized) == 1
+        assert specialized[0].coupling_group == cover.root_operation
+
+    root = next(
+        item
+        for item in candidates
+        if item.operation == cover.root_operation
+        and item.recipe is ImplementationRecipe.DECIDER_CONDITION_COVER
+    )
     assert root.entity_cost == 1
     assert root.input_phase_offsets == (-1, -1)
 
     covered = [
-        candidate
-        for operation_id, candidate in by_operation.items()
-        if operation_id != cover.root_operation
+        item
+        for item in candidates
+        if item.operation in cover.internal_operation_ids
+        and item.recipe is ImplementationRecipe.COVERED_BY_DECIDER
     ]
     assert len(covered) == 6
-    assert all(item.recipe is ImplementationRecipe.COVERED_BY_DECIDER for item in covered)
     assert all(item.kind is ImplementationKind.COVERED for item in covered)
     assert all(item.entity_cost == 0 for item in covered)
     assert all(set(item.input_phase_offsets) == {0} for item in covered)
