@@ -128,7 +128,7 @@ def test_positive_and_any_lower_to_factorio_wildcards() -> None:
     positive_json = next(
         entity
         for entity in cast(list[dict[str, Any]], blueprint["entities"])
-        if entity.get("player_description") == "runtime vector positive filter"
+        if entity.get("player_description", "").endswith("runtime vector positive filter")
     )
     output = positive_json["control_behavior"]["decider_conditions"]["outputs"][0]
     assert output["signal"]["name"] == "signal-each"
@@ -154,7 +154,7 @@ def test_max_lowers_to_one_factorio_selector_combinator() -> None:
     selector = next(
         entity
         for entity in cast(list[dict[str, Any]], blueprint["entities"])
-        if entity.get("player_description") == "runtime vector max"
+        if entity.get("player_description", "").endswith("runtime vector max")
     )
     assert selector["name"] == "selector-combinator"
     assert selector["control_behavior"] == {
