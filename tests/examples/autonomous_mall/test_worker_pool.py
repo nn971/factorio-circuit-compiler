@@ -1,3 +1,5 @@
+import pytest
+
 from factorio_circuit import SignalId, lower_to_abstract_physical
 from factorio_circuit.simulate.semantic import simulate_stream
 
@@ -195,6 +197,7 @@ def test_worker_pool_lowers_to_physical_ir() -> None:
     assert lowered.abstract_physical.combinator_count > 0
 
 
+@pytest.mark.slow
 def test_two_worker_probe_contains_two_real_assembler_devices() -> None:
     blueprint = build_worker_pool_probe_blueprint(2)
     entities = blueprint["entities"]
