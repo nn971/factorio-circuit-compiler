@@ -13,7 +13,10 @@ from .factorio_data import load_catalog
 from .quality_policy_graph import QualityPolicyConfig, build_quality_action_graph
 from .quality_policy_rom import compile_quality_policy_rom, estimate_signal_keyed_storage
 from .recipe_graph import build_recipe_dag
-from .signal_keyed_policy_rom import build_signal_keyed_policy_pages
+from .signal_keyed_policy_rom import (
+    build_recipe_address_vector,
+    build_signal_keyed_policy_pages,
+)
 
 
 def _fraction_argument(value: str) -> Fraction:
@@ -87,7 +90,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     book = compile_quality_policy_book(graph)
     rom = compile_quality_policy_rom(graph, book)
     pages = build_signal_keyed_policy_pages(rom)
+    addresses = build_recipe_address_vector(graph, rom)
     estimate = estimate_signal_keyed_storage(rom)
+    address_constants = len(addresses.constant_chunks())
 
     document = rom.to_json_dict()
     document["summary"] = {
@@ -99,11 +104,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "packed_words": estimate.packed_words,
         "max_records_per_target": estimate.max_records_per_target,
         "signal_keyed_pages": len(pages.pages),
-        "constant_combinators_exact_at_20_slots": pages.constant_combinator_count,
-        "constant_combinators_rectangular_estimate_at_20_slots": (
+        "policy_page_constant_combinators_exact_at_20_slots": pages.constant_combinator_count,
+        "recipe_address_constant_combinators_at_20_slots": address_constants,
+        "static_rom_constant_combinators_exact_at_20_slots": (
+            pages.constant_combinator_count + address_constants
+        ),
+        "policy_page_constant_combinators_rectangular_estimate_at_20_slots": (
             estimate.constant_combinators_at_20_slots
         ),
     }
+    document["recipe_address_vector"] = dict(sorted(addresses.entries.items()))
     document["extraction"] = {
         "total_recipe_prototypes": extraction.total_prototypes,
         "accepted": extraction.accepted,
