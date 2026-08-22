@@ -7,12 +7,17 @@ ROM without turning this example milestone into a general vector-lowering change
 Circuit:
 
     selected one-hot item --(one color)--\
-                                      Each * Each -> Each -> Each + 0 -> signal-I
+                                      Each * Each -> Each -> Each != 0 -> signal-I
     ROM item:value page ----(other color)--/
 
 The two input nets are declared conflicting, forcing physical synthesis to assign them
 opposite wire colors.  Operand network selection then serializes the pairwise operation
 as Each(red) * Each(green).
+
+The masked result is one-hot, so a decider can reduce it to a fixed signal-I while
+copying the surviving input count.  We intentionally use a decider here because the
+current abstract arithmetic IR only allows abstract signal ids as fixed outputs, while
+decider outputs already accept concrete SignalId values.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from factorio_circuit.ir.abstract_physical import (
     ArithmeticCombinator,
     Connector,
     ConstantCombinator,
+    DeciderCombinator,
     Endpoint,
     NetConflict,
     Operand,
@@ -85,13 +91,14 @@ def build_rom_lookup_probe(
                 output_each=True,
                 description="ROM lookup: Each(net A) * Each(net B) -> Each",
             ),
-            ArithmeticCombinator(
+            DeciderCombinator(
                 id=reduce_id,
-                operation="+",
+                comparator="!=",
                 left=Operand(each=True, nets=(3,)),
                 right=Operand(constant=0),
-                output_each=False,
                 output_signal=INFO,
+                output_copy_count_from_input=True,
+                copy_count_nets=(3,),
                 description="Reduce selected packed word to signal-I",
             ),
             ConstantCombinator(
@@ -120,8 +127,10 @@ def build_rom_lookup_probe(
                 id=2,
                 signals=(),
                 endpoints=tuple(
-                    [*(Endpoint(entity_id, Connector.SINGLE) for entity_id in rom_ids),
-                     Endpoint(pairwise_id, Connector.INPUT)]
+                    [
+                        *(Endpoint(entity_id, Connector.SINGLE) for entity_id in rom_ids),
+                        Endpoint(pairwise_id, Connector.INPUT),
+                    ]
                 ),
                 label="ROM target-keyed page",
                 fixed_signals=all_rom_signals,
