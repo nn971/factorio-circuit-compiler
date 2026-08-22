@@ -2,6 +2,7 @@ import pytest
 
 from factorio_circuit import Circuit, SamplingPolicy, SignalId
 from factorio_circuit.ir.abstract_physical import DeciderCombinator
+from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
     ImplementationKind,
     ImplementationRecipe,
@@ -13,7 +14,6 @@ from factorio_circuit.mapping import (
     ordinary_state_candidates,
     solve_periodic_state_bus_mapping_problem,
 )
-from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 
 _MEMORY_SIGNAL = SignalId("virtual", "signal-M")
 
