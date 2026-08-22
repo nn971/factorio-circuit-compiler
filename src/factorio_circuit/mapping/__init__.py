@@ -34,7 +34,7 @@ from .problem import (
     MappingUse,
 )
 from .solver import MappingOptimizationResult, solve_mapping_problem
-from .state_lower import (
+from .state_lower_entry import (
     PeriodicStatePhysicalLoweringResult,
     lower_periodic_state_mapping_plan,
 )
