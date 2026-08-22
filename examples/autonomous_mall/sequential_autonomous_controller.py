@@ -12,6 +12,11 @@ runtime uses only:
 There is no LP and no runtime ingredient table.  Demand is re-evaluated every microstep.
 A target change invalidates any outstanding recipe-reader response, and an exhausted
 blocked target never prevents another active target from being scanned.
+
+One scan uses a transactional stock snapshot.  This avoids both starvation from noisy
+roboport updates and internally inconsistent decisions where later candidates see a
+different inventory than earlier candidates.  If the snapshot becomes stale before a
+scan exhausts, exhaustion causes a restart on fresh stock rather than a false BLOCKED.
 """
 
 from __future__ import annotations
@@ -90,6 +95,7 @@ class SequentialAutonomousQualityController:
         self._blocked_targets: set[Commodity] = set()
         self._observation_fingerprint: tuple[object, ...] | None = None
         self._last_missing: dict[Commodity, Amount] = {}
+        self._scan_stock_snapshot: dict[Commodity, Amount] | None = None
 
     def step(
         self,
@@ -123,18 +129,18 @@ class SequentialAutonomousQualityController:
             if normalized_stock.get(target, Fraction(0)) < desired
         }
         if not deficits:
-            self.scanner.reset()
+            self._reset_scan()
             self._blocked_targets.clear()
             return SequentialControllerDecision(SequentialControllerDecisionKind.SATISFIED)
 
         if busy:
-            self.scanner.reset()
+            self._reset_scan()
             return SequentialControllerDecision(SequentialControllerDecisionKind.BUSY)
 
         ordered = self._ordered_targets(deficits, normalized_demands)
         available = tuple(target for target in ordered if target not in self._blocked_targets)
         if not available:
-            self.scanner.reset()
+            self._reset_scan()
             return SequentialControllerDecision(
                 SequentialControllerDecisionKind.BLOCKED,
                 blocked_targets=tuple(ordered),
@@ -142,17 +148,20 @@ class SequentialAutonomousQualityController:
             )
 
         selected = available[0]
-        # A reader response belongs to a latched target/candidate.  If live demand has
-        # changed target selection since the request, discard the stale response and
-        # restart immediately rather than forcing completion of an obsolete campaign.
+        # A reader response belongs to one latched target scan.  A target switch is an
+        # explicit transaction boundary: discard any stale response and snapshot again.
         if self.scanner.target is not None and self.scanner.target != selected:
             reader_response = None
-            self.scanner.reset()
+            self._reset_scan()
+
+        if self._scan_stock_snapshot is None:
+            self._scan_stock_snapshot = dict(normalized_stock)
+        scan_stock = self._scan_stock_snapshot
 
         before_pending = self.scanner.pending_read
         scanner_decision = self.scanner.step(
             target=selected,
-            stock=normalized_stock,
+            stock=scan_stock,
             reader_response=reader_response,
         )
 
@@ -169,8 +178,16 @@ class SequentialAutonomousQualityController:
                 intent=scanner_decision.intent,
             )
         if scanner_decision.kind is ScannerDecisionKind.EXHAUSTED:
+            # If logistics changed while we were scanning the snapshot, restart against
+            # the fresh stock rather than declaring a stale shortage authoritative.
+            if scan_stock != normalized_stock:
+                self._reset_scan()
+                return SequentialControllerDecision(
+                    SequentialControllerDecisionKind.SCANNING,
+                    selected_target=selected,
+                )
             self._blocked_targets.add(selected)
-            self.scanner.reset()
+            self._reset_scan()
             return SequentialControllerDecision(
                 SequentialControllerDecisionKind.SCANNING,
                 selected_target=selected,
@@ -181,13 +198,13 @@ class SequentialAutonomousQualityController:
             ScannerDecisionKind.IDLE,
         }:
             # If a response just proved a candidate infeasible, retain its missing
-            # vector for diagnostics.  This state is informational only; target
-            # scheduling remains based on current stock/demand.
+            # vector for diagnostics.  Use the scan snapshot because that is the stock
+            # state against which the candidate was actually judged.
             if reader_response is not None and before_pending is not None:
                 missing = {
-                    commodity: Fraction(required) - normalized_stock.get(commodity, Fraction(0))
+                    commodity: Fraction(required) - scan_stock.get(commodity, Fraction(0))
                     for commodity, required in reader_response.ingredients.items()
-                    if normalized_stock.get(commodity, Fraction(0)) < Fraction(required)
+                    if scan_stock.get(commodity, Fraction(0)) < Fraction(required)
                 }
                 if missing:
                     self._last_missing = missing
@@ -196,6 +213,7 @@ class SequentialAutonomousQualityController:
                 selected_target=selected,
             )
         if scanner_decision.kind is ScannerDecisionKind.BUSY:  # pragma: no cover
+            self._reset_scan()
             return SequentialControllerDecision(SequentialControllerDecisionKind.BUSY)
         raise AssertionError(scanner_decision.kind)
 
@@ -203,10 +221,15 @@ class SequentialAutonomousQualityController:
         """Commit fairness/schedule state after the worker conveyor accepts a job."""
 
         self.scanner.record_dispatch(intent)
+        self._scan_stock_snapshot = None
         target = intent.demand_target
         self._target_dispatches[target] = self._target_dispatches.get(target, 0) + 1
         self._blocked_targets.clear()
         self._last_missing.clear()
+
+    def _reset_scan(self) -> None:
+        self.scanner.reset()
+        self._scan_stock_snapshot = None
 
     def _ordered_targets(
         self,
