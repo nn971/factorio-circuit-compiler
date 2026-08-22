@@ -186,11 +186,12 @@ def add_decider_condition_cover_candidates(
         root = problem.operation_by_id(cover.root_operation)
         latency = FACTORIO_LATENCY.operation_latency("compare", cover.boolean_op)
         coupling_group = cover.root_operation
+        leaf_count = len(cover.comparisons)
         result.append(
             ImplementationCandidate(
                 id=next_id,
                 operation=root.id,
-                name=f"decider {cover.boolean_op} condition cover ({len(cover.comparisons)} leaves)",
+                name=f"decider {cover.boolean_op} condition cover ({leaf_count} leaves)",
                 input_phase_offsets=(-latency,) * len(root.operands),
                 entity_cost=1,
                 recipe=ImplementationRecipe.DECIDER_CONDITION_COVER,
