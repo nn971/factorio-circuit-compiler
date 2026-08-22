@@ -18,6 +18,7 @@ import argparse
 from factorio_circuit.ir.abstract_physical import ConstantCombinator
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
+    add_decider_condition_cover_candidates,
     add_select_constant_candidates,
     build_periodic_state_mapping_problem,
     lower_periodic_state_mapping_plan,
@@ -83,7 +84,9 @@ def main() -> None:
         output_phases=(output_phase,) * len(module.output.values),
         sampling_policy=SamplingPolicy.ALAP,
     )
-    operation_candidates = add_select_constant_candidates(problem, ordinary_candidates(problem))
+    operation_candidates = ordinary_candidates(problem)
+    operation_candidates = add_select_constant_candidates(problem, operation_candidates)
+    operation_candidates = add_decider_condition_cover_candidates(problem, operation_candidates)
     state_candidates = ordinary_state_candidates(problem)
     solve = solve_periodic_state_bus_mapping_problem(
         problem,
