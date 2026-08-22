@@ -1,9 +1,9 @@
 """Analyze Snake with the implementation-neutral temporal technology-mapping prototypes.
 
 The default mode maps only Snake's post-update output cone. ``--extract-full-state`` traverses the
-phase-neutral recurrence and stops. ``--solve-full-state`` goes one step further: it supplies the
-ordinary Freeze/Accumulator state-cell candidate families and jointly solves their physical phases
-with ordinary computation timing, still without consulting ``StateTimingPlan``.
+phase-neutral recurrence and stops. ``--solve-full-state`` supplies ordinary Freeze/Accumulator
+state-cell candidates and jointly solves state phases, ordinary computation timing, exact transport,
+and optional shared scalar delay buses, without consulting ``StateTimingPlan``.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from factorio_circuit.mapping import (
     ordinary_candidates,
     ordinary_state_candidates,
     solve_mapping_problem,
-    solve_periodic_state_mapping_problem,
+    solve_periodic_state_bus_mapping_problem,
 )
 from factorio_circuit.sampling import SamplingPolicy
 
@@ -39,13 +39,13 @@ def _parser() -> argparse.ArgumentParser:
         "--max-delay-buses",
         type=int,
         default=1,
-        help="maximum shared scalar delay buses in the output-cone solve (default: 1)",
+        help="maximum shared scalar delay buses in the selected solve (default: 1)",
     )
     parser.add_argument(
         "--bus-capacity",
         type=int,
         default=256,
-        help="maximum scalar lanes assigned to one output-cone shared bus (default: 256)",
+        help="maximum scalar lanes assigned to one shared bus (default: 256)",
     )
     parser.add_argument(
         "--time-limit",
@@ -72,7 +72,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--compare-private",
         action="store_true",
-        help="also solve the output-cone problem with shared delay buses disabled",
+        help="also solve the same problem with shared delay buses disabled",
     )
     state_mode = parser.add_mutually_exclusive_group()
     state_mode.add_argument(
@@ -83,7 +83,7 @@ def _parser() -> argparse.ArgumentParser:
     state_mode.add_argument(
         "--solve-full-state",
         action="store_true",
-        help="jointly solve full recurrence timing with ordinary Freeze/Accumulator cells",
+        help="jointly solve full recurrence timing with ordinary state cells and delay buses",
     )
     return parser
 
@@ -123,13 +123,23 @@ def _print_full_state_extraction(problem, *, period: int, output_phase: int) -> 
     print(f"  transition_occurrences={transition_offset_summary or 'none'}")
 
 
-def _solve_full_state(problem, *, time_limit: float, workers: int) -> None:
+def _solve_full_state(
+    problem,
+    *,
+    max_delay_buses: int,
+    bus_capacity: int,
+    compare_private: bool,
+    time_limit: float,
+    workers: int,
+) -> None:
     operation_candidates = ordinary_candidates(problem)
     state_candidates = ordinary_state_candidates(problem)
-    result = solve_periodic_state_mapping_problem(
+    result = solve_periodic_state_bus_mapping_problem(
         problem,
         candidates=operation_candidates,
         state_candidates=state_candidates,
+        max_delay_buses=max_delay_buses,
+        delay_bus_capacity=bus_capacity,
         time_limit_seconds=time_limit,
         workers=workers,
     )
@@ -157,12 +167,36 @@ def _solve_full_state(problem, *, time_limit: float, workers: int) -> None:
     )
     print(f"  deliveries={delivery_summary or 'none'}")
     print(f"  exact_lifetimes={len(result.plan.exact_lifetimes)}")
+    print(f"  delay_buses={len(result.plan.delay_buses)}")
+    for bus in result.plan.delay_buses:
+        print(
+            f"    bus {bus.index}: middle=[{bus.middle_start_phase}, "
+            f"{bus.middle_end_phase}); stages={bus.middle_stages}; "
+            f"interfaces={bus.interface_combinators}; lanes={len(bus.lanes)}"
+        )
     print("  selected_state_cells:")
     for cell in sorted(result.plan.state_cells, key=lambda item: item.register_name):
         candidate = state_candidate_by_id[cell.candidate]
         print(
             f"    {cell.register_name}: {candidate.name}; "
             f"base_read_phase={cell.base_read_phase}; entities={cell.entity_cost}"
+        )
+
+    if compare_private:
+        private = solve_periodic_state_bus_mapping_problem(
+            problem,
+            candidates=operation_candidates,
+            state_candidates=state_candidates,
+            max_delay_buses=0,
+            delay_bus_capacity=bus_capacity,
+            time_limit_seconds=time_limit,
+            workers=workers,
+        )
+        print(
+            "  all-private comparison: "
+            f"status={private.status}; transport={private.plan.transport_cost}; "
+            f"total={private.plan.total_cost}; "
+            f"joint_delta={result.plan.total_cost - private.plan.total_cost:+d}"
         )
 
 
@@ -189,6 +223,9 @@ def main() -> None:
             return
         _solve_full_state(
             problem,
+            max_delay_buses=args.max_delay_buses,
+            bus_capacity=args.bus_capacity,
+            compare_private=args.compare_private,
             time_limit=args.time_limit,
             workers=args.workers,
         )
