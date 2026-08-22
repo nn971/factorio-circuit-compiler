@@ -190,6 +190,7 @@ def test_blocked_envelope_remains_pending_until_worker_becomes_idle() -> None:
     assert trace[4]["promised"] == {CABLE: 2}
 
 
+@pytest.mark.slow
 def test_worker_pool_lowers_to_physical_ir() -> None:
     lowered = lower_to_abstract_physical(build_worker_pool(2))
 
