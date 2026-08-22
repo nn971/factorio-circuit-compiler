@@ -101,7 +101,9 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
         if candidate.recipe is ImplementationRecipe.ORDINARY:
             return super()._realize_select(select)
 
-        if not isinstance(select.when_true, Constant) or not isinstance(select.when_false, Constant):
+        if not isinstance(select.when_true, Constant) or not isinstance(
+            select.when_false, Constant
+        ):
             raise MappingProblemError(
                 "specialized mapped Select recipe requires compile-time constant arms"
             )
@@ -137,7 +139,9 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
                 description=f"Mapped Select {label}: add false constant {false_value}",
             )
         else:  # pragma: no cover - enum exhaustiveness guard
-            raise MappingProblemError(f"unsupported mapped Select recipe {candidate.recipe.value!r}")
+            raise MappingProblemError(
+                f"unsupported mapped Select recipe {candidate.recipe.value!r}"
+            )
 
         if result.phase != realization.output_phase:
             raise MappingProblemError(
