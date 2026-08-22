@@ -152,7 +152,8 @@ def compile_quality_policy_book(
 
     The recipe DAG may contain several roots.  ``target_items`` selects which of those
     roots become autonomously demandable at runtime; by default every DAG target is
-    compiled.  All LP calls happen here, offline.
+    compiled.  Every target is optimized on its own ancestry plus its own final recycle
+    loop, so another mall root can never become an accidental intermediate route.
     """
 
     roots = tuple(dict.fromkeys(target_items or graph.recipe_dag.targets))
@@ -174,35 +175,27 @@ def compile_quality_policy_book(
         if target_recipe is None:
             raise ValueError(f"mall target {item!r} lies on the raw boundary")
         ancestry = _recipe_ancestry(graph, item)
-        baseline = solve_quality_policy(
+        target_graph = _target_subgraph(
             graph,
+            final_recipe_name=target_recipe.name,
+            ancestry=ancestry,
+        )
+        baseline = solve_quality_policy(
+            target_graph,
             targets={target: Fraction(1)},
             stock={},
             raw_costs=raw_costs,
         )
         active_by_lane: dict[PolicyLane, list[tuple[QualityAction, Fraction]]] = {}
         for step in baseline.steps:
-            action = step.action
-            if not _action_relevant_to_target(
-                action,
-                final_recipe_name=target_recipe.name,
-                ancestry=ancestry,
-            ):
-                continue
-            lane = _lane_of(action)
+            lane = _lane_of(step.action)
             active_by_lane.setdefault(lane, []).append(
-                (action, Fraction(step.expected_runs))
+                (step.action, Fraction(step.expected_runs))
             )
 
         lane_actions: dict[PolicyLane, tuple[WeightedPolicyAction, ...]] = {}
         candidates_by_lane: dict[PolicyLane, list[QualityAction]] = {}
-        for action in graph.actions:
-            if not _action_relevant_to_target(
-                action,
-                final_recipe_name=target_recipe.name,
-                ancestry=ancestry,
-            ):
-                continue
+        for action in target_graph.actions:
             candidates_by_lane.setdefault(_lane_of(action), []).append(action)
 
         for lane, candidates in candidates_by_lane.items():
@@ -215,13 +208,13 @@ def compile_quality_policy_book(
                 continue
 
             # This lane is absent from the zero-stock optimum, but may become valuable
-            # when live stock appears there.  Inputs are identical among candidates in
+            # when live stock appears there. Inputs are identical among candidates in
             # one lane, so compare only the expected continuation cost of their output.
             best_cost: Fraction | None = None
             best_action: QualityAction | None = None
             for action in sorted(candidates, key=lambda candidate: candidate.name):
                 continuation = solve_quality_policy(
-                    graph,
+                    target_graph,
                     targets={target: Fraction(1)},
                     stock=action.outputs,
                     raw_costs=raw_costs,
@@ -266,6 +259,29 @@ def _recipe_ancestry(graph: QualityActionGraph, target_item: str) -> frozenset[s
     return frozenset(result)
 
 
+def _target_subgraph(
+    graph: QualityActionGraph,
+    *,
+    final_recipe_name: str,
+    ancestry: frozenset[str],
+) -> QualityActionGraph:
+    actions = tuple(
+        action
+        for action in graph.actions
+        if _action_relevant_to_target(
+            action,
+            final_recipe_name=final_recipe_name,
+            ancestry=ancestry,
+        )
+    )
+    return QualityActionGraph(
+        recipe_dag=graph.recipe_dag,
+        config=graph.config,
+        commodities=graph.commodities,
+        actions=actions,
+    )
+
+
 def _action_relevant_to_target(
     action: QualityAction,
     *,
@@ -277,7 +293,7 @@ def _action_relevant_to_target(
     if action.kind is QualityActionKind.CRAFT:
         return True
     # One target policy never consumes another target's reject merely because they
-    # share an intermediate.  Cross-target recycling/allocation belongs to the future
+    # share an intermediate. Cross-target recycling/allocation belongs to the future
     # global allocator.
     return action.recipe_name == final_recipe_name
 
