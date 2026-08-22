@@ -37,8 +37,11 @@ from .state_solver import (
 from .state_templates import (
     StateCellCandidate,
     StateTransitionPortTiming,
+    ordinary_accumulator_state_candidate,
+    ordinary_accumulator_state_candidates,
     ordinary_freeze_state_candidate,
     ordinary_freeze_state_candidates,
+    ordinary_state_candidates,
 )
 from .templates import (
     CandidateOutputMode,
@@ -82,10 +85,13 @@ __all__ = [
     "build_periodic_state_mapping_problem",
     "build_stateless_level_mapping_problem",
     "lower_stateless_mapping_plan",
+    "ordinary_accumulator_state_candidate",
+    "ordinary_accumulator_state_candidates",
     "ordinary_candidate",
     "ordinary_candidates",
     "ordinary_freeze_state_candidate",
     "ordinary_freeze_state_candidates",
+    "ordinary_state_candidates",
     "solve_mapping_problem",
     "solve_periodic_state_mapping_problem",
     "validate_periodic_state_plan",
