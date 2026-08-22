@@ -14,6 +14,7 @@ from .plan import (
     PlannedDelivery,
     RealizationPlan,
     SelectedRealization,
+    SelectedStateCell,
     WireSumResource,
 )
 from .problem import (
@@ -28,6 +29,17 @@ from .problem import (
     MappingUse,
 )
 from .solver import MappingOptimizationResult, solve_mapping_problem
+from .state_solver import (
+    PeriodicStateMappingOptimizationResult,
+    solve_periodic_state_mapping_problem,
+    validate_periodic_state_plan,
+)
+from .state_templates import (
+    StateCellCandidate,
+    StateTransitionPortTiming,
+    ordinary_freeze_state_candidate,
+    ordinary_freeze_state_candidates,
+)
 from .templates import (
     CandidateOutputMode,
     ImplementationCandidate,
@@ -57,9 +69,13 @@ __all__ = [
     "MappingStateRead",
     "MappingStateTransition",
     "MappingUse",
+    "PeriodicStateMappingOptimizationResult",
     "PlannedDelivery",
     "RealizationPlan",
     "SelectedRealization",
+    "SelectedStateCell",
+    "StateCellCandidate",
+    "StateTransitionPortTiming",
     "WireSumResource",
     "add_wire_sum_candidates",
     "build_periodic_level_mapping_problem",
@@ -68,7 +84,11 @@ __all__ = [
     "lower_stateless_mapping_plan",
     "ordinary_candidate",
     "ordinary_candidates",
+    "ordinary_freeze_state_candidate",
+    "ordinary_freeze_state_candidates",
     "solve_mapping_problem",
+    "solve_periodic_state_mapping_problem",
+    "validate_periodic_state_plan",
     "validate_realization_plan",
     "wire_sum_candidate",
 ]
