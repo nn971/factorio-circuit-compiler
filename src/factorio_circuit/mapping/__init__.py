@@ -34,6 +34,10 @@ from .problem import (
     MappingUse,
 )
 from .solver import MappingOptimizationResult, solve_mapping_problem
+from .state_lower import (
+    PeriodicStatePhysicalLoweringResult,
+    lower_periodic_state_mapping_plan,
+)
 from .state_solver import PeriodicStateMappingOptimizationResult
 from .state_templates import (
     StateCellCandidate,
@@ -79,6 +83,7 @@ __all__ = [
     "MappingUse",
     "PeriodicCommitResource",
     "PeriodicStateMappingOptimizationResult",
+    "PeriodicStatePhysicalLoweringResult",
     "PlannedDelivery",
     "RealizationPlan",
     "SelectedRealization",
@@ -90,6 +95,7 @@ __all__ = [
     "build_periodic_level_mapping_problem",
     "build_periodic_state_mapping_problem",
     "build_stateless_level_mapping_problem",
+    "lower_periodic_state_mapping_plan",
     "lower_stateless_mapping_plan",
     "ordinary_accumulator_state_candidate",
     "ordinary_accumulator_state_candidates",
