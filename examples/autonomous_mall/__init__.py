@@ -1,8 +1,8 @@
-"""Offline research scaffold for a future autonomous quality mall.
+"""Offline research scaffold for autonomous-mall policy experiments.
 
-No circuit-side autonomous controller is currently accepted as the project architecture.
-The retained modules cover real-data recipe extraction, canonical recipe DAG construction,
-quality/recycling mechanics, and an exact offline material-efficiency oracle.
+The package retains the earlier quality/recycling oracle and now also contains a deliberately small
+reference scheduler for the deterministic, quality-free multi-worker milestone. Circuit-side
+realization remains a separate design step.
 """
 
 from .model import Commodity, Quality
@@ -26,12 +26,16 @@ from .recipe_graph import (
     RecipeGraphError,
     build_recipe_dag,
 )
+from .scheduler import DeterministicMallScheduler, DispatchPlan, MallJob, complete_jobs
 
 __all__ = [
     "AmbiguousProducerError",
     "Commodity",
+    "DeterministicMallScheduler",
+    "DispatchPlan",
     "InvalidRecipeOverrideError",
     "ItemRecipe",
+    "MallJob",
     "MissingProducerError",
     "ModuleProfile",
     "Quality",
@@ -48,5 +52,6 @@ __all__ = [
     "RecipeGraphError",
     "build_quality_action_graph",
     "build_recipe_dag",
+    "complete_jobs",
     "solve_quality_policy",
 ]
