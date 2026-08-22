@@ -62,7 +62,8 @@ def test_ordinary_accumulator_candidate_owns_add_clear_port_timing() -> None:
     assert len(candidates) == 1
     candidate = candidates[0]
     assert candidate.register_name == "count"
-    assert candidate.entity_cost == 6
+    assert candidate.entity_cost == 4
+    assert candidate.commit_phase_offset == -2
     assert len(candidate.transition_ports) == 2
 
     ports = {
@@ -70,9 +71,9 @@ def test_ordinary_accumulator_candidate_owns_add_clear_port_timing() -> None:
         for port in candidate.transition_ports
     }
     assert ports["add"].value_phase_offset == -1
-    assert ports["add"].when_phase_offset == -3
+    assert ports["add"].when_phase_offset == -2
     assert ports["clear"].value_phase_offset is None
-    assert ports["clear"].when_phase_offset == -3
+    assert ports["clear"].when_phase_offset == -2
 
 
 def test_accumulator_recurrence_solves_with_candidate_owned_timing() -> None:
@@ -96,10 +97,12 @@ def test_accumulator_recurrence_solves_with_candidate_owned_timing() -> None:
     cell = result.plan.state_cells[0]
     assert cell.register_name == "count"
     assert 0 <= cell.base_read_phase < 8
-    assert cell.entity_cost == 6
+    assert cell.entity_cost == 4
+    assert result.plan.periodic_commit is not None
+    assert result.plan.periodic_commit.entity_cost == 3
 
-    # Two semantic compare operations (enable!=0, reset!=0) plus the six-entity state cell.
-    assert result.plan.entity_cost == 8
+    # Two semantic compares + four local state entities + three shared commit entities.
+    assert result.plan.entity_cost == 9
     assert result.plan.transport_cost == 0
 
     transitions = {item.kind: item for item in problem.state_transitions}
@@ -108,8 +111,8 @@ def test_accumulator_recurrence_solves_with_candidate_owned_timing() -> None:
         (item.consumer, item.operand_index): item for item in result.plan.deliveries
     }
     assert deliveries[(transitions["add"].id, 0)].phase == next_read - 1
-    assert deliveries[(transitions["add"].id, 1)].phase == next_read - 3
-    assert deliveries[(transitions["clear"].id, 1)].phase == next_read - 3
+    assert deliveries[(transitions["add"].id, 1)].phase == next_read - 2
+    assert deliveries[(transitions["clear"].id, 1)].phase == next_read - 2
 
 
 def test_combined_ordinary_state_candidates_cover_mixed_register_families() -> None:
@@ -125,4 +128,4 @@ def test_combined_ordinary_state_candidates_cover_mixed_register_families() -> N
     assert {item.register_name for item in candidates} == {"count", "flag"}
     assert len({item.id for item in candidates}) == 2
     costs = {item.register_name: item.entity_cost for item in candidates}
-    assert costs == {"count": 6, "flag": 4}
+    assert costs == {"count": 4, "flag": 4}
