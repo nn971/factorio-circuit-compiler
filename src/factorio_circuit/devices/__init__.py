@@ -19,6 +19,10 @@ from factorio_circuit.devices.assembler import (
     build_assembler_device_blueprint,
     generate_assembler_device_blueprint_string,
 )
+from factorio_circuit.devices.compiled_anchors import (
+    CompiledAnchorBinding,
+    compiled_module_as_anchored_blueprint,
+)
 from factorio_circuit.devices.lamp_screen import (
     DISPLAY_VIRTUAL_SIGNAL_POOL,
     PIXEL_SIGNALS,
@@ -52,7 +56,9 @@ __all__ = [
     "AnchoredBlueprint",
     "BoundAnchor",
     "ComposedAnchoredBlueprint",
+    "CompiledAnchorBinding",
     "compose_anchored_blueprints",
+    "compiled_module_as_anchored_blueprint",
     "device_as_anchored_blueprint",
     "require_all_anchors_bound",
     "ASSEMBLER_DEVICE_PROTOCOL",
