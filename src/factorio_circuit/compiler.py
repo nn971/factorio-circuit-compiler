@@ -277,7 +277,12 @@ def compile_circuit(
         naive_physical = _synthesize(
             naive_abstract,
             safe_wire_span=blueprint_safe_wire_span,
-            placement=placement,
+            # The unpacked circuit is a structural comparison baseline only. Reusing exact
+            # module-interface anchors here can make an otherwise valid optimized module fail
+            # solely because the larger unpacked comparison cannot satisfy production geometry.
+            # Placement does not affect ``PhysicalCircuit.combinator_count``, which is the only
+            # statistic consumed from this baseline.
+            placement=None,
             physical_anchors=physical_anchors,
             progress=progress,
         ).circuit
