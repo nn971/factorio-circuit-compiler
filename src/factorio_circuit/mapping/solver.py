@@ -15,6 +15,10 @@ from typing import Any
 
 from factorio_circuit.ir.semantic import PayloadShape
 
+from .candidate_coupling import (
+    add_candidate_coupling_constraints,
+    validate_candidate_coupling_groups,
+)
 from .plan import (
     DelayBusLane,
     DelayBusResource,
@@ -137,6 +141,7 @@ def solve_mapping_problem(
             choose[candidate.id] = variable
             choices.append(variable)
         model.Add(sum(choices) == 1)
+    add_candidate_coupling_constraints(model, choose, selected_candidates)
 
     for use in problem.uses():
         if use.operand_index is None:
@@ -420,6 +425,7 @@ def _validate_candidate_set(
         raise MappingProblemError(
             f"operations have no implementation candidates: {sorted(missing)}"
         )
+    validate_candidate_coupling_groups(problem, candidates)
 
 
 def _candidates_by_operation(
