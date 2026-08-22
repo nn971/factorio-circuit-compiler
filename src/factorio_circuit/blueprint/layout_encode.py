@@ -20,18 +20,42 @@ from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.target.factorio.decider import FACTORIO_COMPARATOR
 
 
+def _entity_annotation(entity: object) -> tuple[int, str, str | None]:
+    """Return the stable diagnostic header fields for one concrete blueprint entity."""
+
+    if isinstance(entity, SelectorCombinator):
+        return entity.id, f"selector {entity.operation}", entity.description
+    if isinstance(entity, ArithmeticCombinator) and entity.operation == "select":
+        return entity.id, "selector select", entity.description
+    if isinstance(entity, ArithmeticCombinator):
+        return entity.id, f"arithmetic {entity.operation}", entity.description
+    if isinstance(entity, DeciderCombinator):
+        return entity.id, f"decider {entity.comparator}", entity.description
+    if isinstance(entity, ConstantCombinator):
+        kind = "marker" if entity.annotation_only else "constant"
+        return entity.id, kind, entity.description
+    raise TypeError(f"unsupported physical entity {type(entity).__name__}")
+
+
+def _format_entity_description(entity_id: int, kind: str, role: str | None) -> str:
+    """Format one in-game diagnostic annotation without changing circuit semantics."""
+
+    header = f"[FCC #{entity_id} | {kind}]"
+    return header if not role else f"{header} {role}"
+
+
 def layout_to_blueprint_json(layout: Layout) -> dict[str, Any]:
     """Serialize an already-final layout without making placement/routing decisions."""
 
     entities: list[dict[str, Any]] = []
     for entity in layout.circuit.entities:
         x, y = layout.positions[entity.id]
+        entity_id, kind, role = _entity_annotation(entity)
         common: dict[str, Any] = {
             "entity_number": entity.id,
             "position": {"x": x, "y": y},
+            "player_description": _format_entity_description(entity_id, kind, role),
         }
-        if entity.description:
-            common["player_description"] = entity.description
 
         if isinstance(entity, SelectorCombinator):
             common.update(
@@ -84,7 +108,9 @@ def layout_to_blueprint_json(layout: Layout) -> dict[str, Any]:
                 "entity_number": relay.entity_id,
                 "name": "constant-combinator",
                 "position": {"x": x, "y": y},
-                "player_description": relay.description,
+                "player_description": _format_entity_description(
+                    relay.entity_id, "relay", relay.description
+                ),
             }
         )
 
