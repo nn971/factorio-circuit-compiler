@@ -93,9 +93,7 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
             return value
         return super().delay_vector_to(value, target_phase)
 
-    def _selected_candidate(
-        self, semantic: object
-    ) -> tuple[int, ImplementationCandidate] | None:
+    def _selected_candidate(self, semantic: object) -> tuple[int, ImplementationCandidate] | None:
         operation_id = self.operation_id_by_semantic.get(id(semantic))
         if operation_id is None:
             return None
