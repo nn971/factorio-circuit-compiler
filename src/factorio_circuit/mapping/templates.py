@@ -40,6 +40,7 @@ class ImplementationKind(StrEnum):
 
     ORDINARY = "ordinary"
     ZERO_COST_VIEW = "zero-cost-view"
+    COVERED = "covered"
     WIRE_SUM = "wire-sum"
 
 
@@ -54,6 +55,8 @@ class ImplementationRecipe(StrEnum):
     ORDINARY = "ordinary"
     SELECT_CONSTANT_FOLDED = "select-constant-folded"
     SELECT_CONSTANT_ZERO_FALSE = "select-constant-zero-false"
+    DECIDER_CONDITION_COVER = "decider-condition-cover"
+    COVERED_BY_DECIDER = "covered-by-decider"
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +68,10 @@ class ImplementationCandidate:
     a zero-delay wire aggregation candidate uses zero offsets. Compile-time operands may use offset
     zero when a specialized recipe consumes their literal value during lowering rather than a
     physical wire.
+
+    ``coupling_group`` links alternatives that must be selected together across several semantic
+    operations.  This is used by multi-operation technology covers while retaining each operation's
+    ordinary fallback candidate.
     """
 
     id: int
@@ -75,6 +82,7 @@ class ImplementationCandidate:
     output_mode: CandidateOutputMode = CandidateOutputMode.EXACT
     kind: ImplementationKind = ImplementationKind.ORDINARY
     recipe: ImplementationRecipe = ImplementationRecipe.ORDINARY
+    coupling_group: int | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.id, bool) or not isinstance(self.id, int) or self.id <= 0:
@@ -103,6 +111,12 @@ class ImplementationCandidate:
             raise MappingProblemError("candidate kind must be an ImplementationKind")
         if not isinstance(self.recipe, ImplementationRecipe):
             raise MappingProblemError("candidate recipe must be an ImplementationRecipe")
+        if self.coupling_group is not None and (
+            isinstance(self.coupling_group, bool)
+            or not isinstance(self.coupling_group, int)
+            or self.coupling_group <= 0
+        ):
+            raise MappingProblemError("candidate coupling group must be a positive integer")
 
 
 def ordinary_candidate(

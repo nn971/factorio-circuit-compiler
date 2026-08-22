@@ -4,6 +4,12 @@ from .clocked_state_solver import (
     solve_periodic_state_bus_mapping_problem,
     solve_periodic_state_mapping_problem,
 )
+from .decider_cover import (
+    DeciderConditionCover,
+    add_decider_condition_cover_candidates,
+    find_decider_condition_covers,
+    flatten_decider_condition_cover,
+)
 from .extract import (
     build_periodic_level_mapping_problem,
     build_periodic_state_mapping_problem,
@@ -68,6 +74,7 @@ from .validate import validate_realization_plan
 
 __all__ = [
     "CandidateOutputMode",
+    "DeciderConditionCover",
     "DelayBusLane",
     "DelayBusResource",
     "DeliveryKind",
@@ -95,11 +102,14 @@ __all__ = [
     "StateCellCandidate",
     "StateTransitionPortTiming",
     "WireSumResource",
+    "add_decider_condition_cover_candidates",
     "add_select_constant_candidates",
     "add_wire_sum_candidates",
     "build_periodic_level_mapping_problem",
     "build_periodic_state_mapping_problem",
     "build_stateless_level_mapping_problem",
+    "find_decider_condition_covers",
+    "flatten_decider_condition_cover",
     "lower_periodic_state_mapping_plan",
     "lower_stateless_mapping_plan",
     "ordinary_accumulator_state_candidate",

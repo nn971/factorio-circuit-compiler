@@ -18,6 +18,7 @@ from typing import Any
 
 from factorio_circuit.ir.semantic import PayloadShape
 
+from .candidate_coupling import add_candidate_coupling_constraints
 from .plan import (
     DelayBusLane,
     DelayBusResource,
@@ -128,6 +129,7 @@ def solve_periodic_state_bus_mapping_problem(
             choose[candidate.id] = variable
             choices.append(variable)
         model.Add(sum(choices) == 1)
+    add_candidate_coupling_constraints(model, choose, selected_candidates)
 
     state_choose: dict[int, Any] = {}
     state_base_phase: dict[str, Any] = {}

@@ -26,6 +26,7 @@ from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
 from factorio_circuit.ir.physical import WireColor
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
+    add_decider_condition_cover_candidates,
     add_select_constant_candidates,
     build_periodic_state_mapping_problem,
     lower_periodic_state_mapping_plan,
@@ -160,7 +161,9 @@ def main() -> None:
         output_phases=(output_phase,) * len(module.output.values),
         sampling_policy=SamplingPolicy.ALAP,
     )
-    operation_candidates = add_select_constant_candidates(problem, ordinary_candidates(problem))
+    operation_candidates = ordinary_candidates(problem)
+    operation_candidates = add_select_constant_candidates(problem, operation_candidates)
+    operation_candidates = add_decider_condition_cover_candidates(problem, operation_candidates)
     state_candidates = ordinary_state_candidates(problem)
 
     print("solving mapped Snake recurrence...", file=sys.stderr)

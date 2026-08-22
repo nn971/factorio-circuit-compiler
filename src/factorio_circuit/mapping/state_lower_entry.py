@@ -15,13 +15,16 @@ from factorio_circuit.ir.abstract_physical import (
     AbstractPhysicalCircuit,
     Connector,
     DeciderCombinator,
+    DeciderCondition,
     Endpoint,
+    Operand,
 )
-from factorio_circuit.ir.semantic import CircuitModule, Constant, Select
+from factorio_circuit.ir.semantic import BinaryOp, CircuitModule, Compare, Constant, Select, Value
 from factorio_circuit.lowering.ir_to_abstract_physical import RealizedValue, RealizedVector
 from factorio_circuit.lowering.open_vector import VectorLowerer
 from factorio_circuit.target.factorio.signals import SIGNAL_EVERYTHING
 
+from .decider_cover import flatten_decider_condition_cover
 from .plan import RealizationPlan
 from .problem import MappingProblem, MappingProblemError
 from .state_lower import (
@@ -89,6 +92,128 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
         if value.phase == target_phase:
             return value
         return super().delay_vector_to(value, target_phase)
+
+    def _selected_candidate(self, semantic: object) -> tuple[int, ImplementationCandidate] | None:
+        operation_id = self.operation_id_by_semantic.get(id(semantic))
+        if operation_id is None:
+            return None
+        realization = self.realization_by_operation[operation_id]
+        candidate = self.candidate_by_id[realization.candidate]
+        return operation_id, candidate
+
+    def _realize_binary(self, op: BinaryOp) -> RealizedValue:
+        selected = self._selected_candidate(op)
+        if selected is None:
+            return super()._realize_binary(op)
+        operation_id, candidate = selected
+        if candidate.recipe is ImplementationRecipe.DECIDER_CONDITION_COVER:
+            return self._realize_decider_condition_cover(op, operation_id, candidate)
+        if candidate.recipe is ImplementationRecipe.COVERED_BY_DECIDER:
+            raise MappingProblemError(
+                f"covered boolean operation {operation_id} escaped its decider-cover root"
+            )
+        return super()._realize_binary(op)
+
+    def _realize_compare(self, comparison: Compare) -> RealizedValue:
+        selected = self._selected_candidate(comparison)
+        if selected is not None and selected[1].recipe is ImplementationRecipe.COVERED_BY_DECIDER:
+            raise MappingProblemError(
+                f"covered comparison {selected[0]} escaped its decider-cover root"
+            )
+        return super()._realize_compare(comparison)
+
+    @staticmethod
+    def _normalize_compare_values(
+        left: Value,
+        right: Value,
+        op: str,
+    ) -> tuple[Value, Value, str]:
+        if not isinstance(left, Constant) or isinstance(right, Constant):
+            return left, right, op
+        swapped = {
+            "==": "==",
+            "!=": "!=",
+            "<": ">",
+            "<=": ">=",
+            ">": "<",
+            ">=": "<=",
+        }[op]
+        return right, left, swapped
+
+    def _realize_decider_condition_cover(
+        self,
+        root: BinaryOp,
+        operation_id: int,
+        candidate: ImplementationCandidate,
+    ) -> RealizedValue:
+        flattened = flatten_decider_condition_cover(root)
+        if flattened is None:
+            raise MappingProblemError("selected decider cover no longer matches its semantic tree")
+        boolean_op, comparisons = flattened
+        if candidate.entity_cost != 1 or len(set(candidate.input_phase_offsets)) != 1:
+            raise MappingProblemError("decider cover candidate metadata is inconsistent")
+        output_phase = self.realization_by_operation[operation_id].output_phase
+        input_phase = output_phase + candidate.input_phase_offsets[0]
+
+        prepared: list[tuple[str, Operand, Operand]] = []
+        dynamic_nets: list[int] = []
+        for comparison in comparisons:
+            left_value, right_value, comparator = self._normalize_compare_values(
+                comparison.left,
+                comparison.right,
+                comparison.op,
+            )
+            left = self._realize_operand_value(left_value)
+            right = self._realize_operand_value(right_value)
+            if isinstance(left, RealizedValue):
+                left = self.delay_to(left, input_phase)
+                dynamic_nets.append(left.net)
+            if isinstance(right, RealizedValue):
+                right = self.delay_to(right, input_phase)
+                dynamic_nets.append(right.net)
+            left_operand, right_operand = self._scalar_operand_layout(left, right)
+            prepared.append((comparator, left_operand, right_operand))
+
+        if not prepared:  # pragma: no cover - cover finder requires at least two leaves
+            raise AssertionError("empty decider condition cover")
+        primary_comparator, primary_left, primary_right = prepared[0]
+        compare_type = "or" if boolean_op == "|" else "and"
+        additional = tuple(
+            DeciderCondition(
+                comparator=comparator,
+                left=left,
+                right=right,
+                compare_type=compare_type,
+            )
+            for comparator, left, right in prepared[1:]
+        )
+        output_signal = self._new_signal(root.name or f"decider cover {operation_id}")
+        entity = DeciderCombinator(
+            id=self._take_entity_id(),
+            comparator=primary_comparator,
+            left=primary_left,
+            right=primary_right,
+            output_signal=output_signal,
+            output_constant=1,
+            additional_conditions=additional,
+            description=(
+                f"Mapped Decider cover op {operation_id}: "
+                f"{len(comparisons)}-condition {'OR' if boolean_op == '|' else 'AND'}"
+            ),
+        )
+        self.circuit.entities.append(entity)
+        endpoint = Endpoint(entity.id, Connector.INPUT)
+        for net in dict.fromkeys(dynamic_nets):
+            self._attach(net, endpoint)
+        output_net = self._new_net(
+            (output_signal,),
+            Endpoint(entity.id, Connector.OUTPUT),
+            label=root.name or f"decider cover {operation_id}",
+        )
+        result = RealizedValue(output_signal, output_net, output_phase)
+        if input_phase + 1 != output_phase:
+            raise MappingProblemError("decider cover must have exactly one tick of target latency")
+        return result
 
     def _realize_select(self, select: Select) -> RealizedValue:
         """Lower the exact Select recipe chosen by the temporal mapper."""
