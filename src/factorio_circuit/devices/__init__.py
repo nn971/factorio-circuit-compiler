@@ -1,5 +1,24 @@
-"""Reusable generators for fixed external Factorio devices."""
+"""Reusable protocols and generators for external Factorio devices."""
 
+from factorio_circuit.devices.anchors import (
+    AnchorBinding,
+    AnchorSpec,
+    AnchoredBlueprint,
+    BoundAnchor,
+    ComposedAnchoredBlueprint,
+    compose_anchored_blueprints,
+    device_as_anchored_blueprint,
+    require_all_anchors_bound,
+)
+from factorio_circuit.devices.assembler import (
+    ASSEMBLER_DEVICE_PROTOCOL,
+    ASSEMBLER_ENABLE_SIGNAL,
+    ASSEMBLER_FINISHED_SIGNAL,
+    ASSEMBLER_WORKING_SIGNAL,
+    AssemblerDevice,
+    build_assembler_device_blueprint,
+    generate_assembler_device_blueprint_string,
+)
 from factorio_circuit.devices.lamp_screen import (
     DISPLAY_VIRTUAL_SIGNAL_POOL,
     PIXEL_SIGNALS,
@@ -16,16 +35,49 @@ from factorio_circuit.devices.player_movement_detector import (
     build_player_movement_detector_blueprint,
     generate_player_movement_detector_blueprint_string,
 )
+from factorio_circuit.devices.protocol import (
+    BoundDevicePort,
+    DeviceAttachment,
+    DeviceEndpoint,
+    DevicePortDirection,
+    DevicePortSpec,
+    DeviceProtocol,
+    DeviceSide,
+    ExternalDeviceBlueprint,
+)
 
 __all__ = [
+    "AnchorBinding",
+    "AnchorSpec",
+    "AnchoredBlueprint",
+    "BoundAnchor",
+    "ComposedAnchoredBlueprint",
+    "compose_anchored_blueprints",
+    "device_as_anchored_blueprint",
+    "require_all_anchors_bound",
+    "ASSEMBLER_DEVICE_PROTOCOL",
+    "ASSEMBLER_ENABLE_SIGNAL",
+    "ASSEMBLER_FINISHED_SIGNAL",
+    "ASSEMBLER_WORKING_SIGNAL",
+    "AssemblerDevice",
+    "BoundDevicePort",
     "DIRECTION_ORDER",
     "DIRECTION_SIGNALS",
     "DISPLAY_VIRTUAL_SIGNAL_POOL",
+    "DeviceAttachment",
+    "DeviceEndpoint",
+    "DevicePortDirection",
+    "DevicePortSpec",
+    "DeviceProtocol",
+    "DeviceSide",
+    "ExternalDeviceBlueprint",
     "PIXEL_SIGNALS",
     "SCREEN_HEIGHT",
     "SCREEN_WIDTH",
+    "build_assembler_device_blueprint",
     "build_lamp_screen_blueprint",
     "build_player_movement_detector_blueprint",
+    "generate_assembler_device_blueprint_string",
     "generate_lamp_screen_blueprint_string",
     "generate_player_movement_detector_blueprint_string",
     "pixel_signal",
