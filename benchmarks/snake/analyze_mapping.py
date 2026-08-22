@@ -1,9 +1,9 @@
 """Analyze Snake with the implementation-neutral temporal technology-mapping prototypes.
 
-The default mode maps only Snake's post-update output cone. The caller prescribes a logical period;
-the script never imports ``StateTimingPlan`` phases or an inferred period into the mapping problem.
-``--extract-full-state`` instead stops after extracting phase-neutral register-read and state-transition
-obligations, before any unsupported physical state-cell timing is invented.
+The default mode maps only Snake's post-update output cone. ``--extract-full-state`` traverses the
+phase-neutral recurrence and stops. ``--solve-full-state`` goes one step further: it supplies the
+ordinary Freeze/Accumulator state-cell candidate families and jointly solves their physical phases
+with ordinary computation timing, still without consulting ``StateTimingPlan``.
 """
 
 from __future__ import annotations
@@ -18,7 +18,9 @@ from factorio_circuit.mapping import (
     build_periodic_level_mapping_problem,
     build_periodic_state_mapping_problem,
     ordinary_candidates,
+    ordinary_state_candidates,
     solve_mapping_problem,
+    solve_periodic_state_mapping_problem,
 )
 from factorio_circuit.sampling import SamplingPolicy
 
@@ -37,13 +39,13 @@ def _parser() -> argparse.ArgumentParser:
         "--max-delay-buses",
         type=int,
         default=1,
-        help="maximum shared scalar delay buses in the joint solve (default: 1)",
+        help="maximum shared scalar delay buses in the output-cone solve (default: 1)",
     )
     parser.add_argument(
         "--bus-capacity",
         type=int,
         default=256,
-        help="maximum scalar lanes assigned to one shared bus (default: 256)",
+        help="maximum scalar lanes assigned to one output-cone shared bus (default: 256)",
     )
     parser.add_argument(
         "--time-limit",
@@ -60,7 +62,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--without-wire-sum",
         action="store_true",
-        help="disable the conservative zero-delay wire-sum alternatives",
+        help="disable conservative zero-delay wire-sum alternatives in output-cone mode",
     )
     parser.add_argument(
         "--without-framebuffer",
@@ -70,14 +72,98 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--compare-private",
         action="store_true",
-        help="also solve the same output-cone problem with shared delay buses disabled",
+        help="also solve the output-cone problem with shared delay buses disabled",
     )
-    parser.add_argument(
+    state_mode = parser.add_mutually_exclusive_group()
+    state_mode.add_argument(
         "--extract-full-state",
         action="store_true",
         help="extract the full phase-neutral recurrence graph and stop before solving",
     )
+    state_mode.add_argument(
+        "--solve-full-state",
+        action="store_true",
+        help="jointly solve full recurrence timing with ordinary Freeze/Accumulator cells",
+    )
     return parser
+
+
+def _full_state_problem(module, *, period: int, output_phase: int):
+    return build_periodic_state_mapping_problem(
+        module,
+        period=period,
+        output_phases=(output_phase,) * len(module.output.values),
+        sampling_policy=SamplingPolicy.ALAP,
+    )
+
+
+def _print_full_state_extraction(problem, *, period: int, output_phase: int) -> None:
+    read_offsets = Counter(read.logical_offset for read in problem.state_reads)
+    transition_kinds = Counter(item.kind for item in problem.state_transitions)
+    transition_offsets = Counter(item.logical_offset for item in problem.state_transitions)
+    print("Snake phase-neutral recurrence extraction")
+    print(f"  prescribed_period={period}; output_phase={output_phase}")
+    print(
+        "  problem: "
+        f"fixed_sources={len(problem.sources)}; state_reads={len(problem.state_reads)}; "
+        f"operations={len(problem.operations)}; sinks={len(problem.sinks)}; "
+        f"state_transitions={len(problem.state_transitions)}"
+    )
+    read_summary = ", ".join(
+        f"offset{offset}:{count}" for offset, count in sorted(read_offsets.items())
+    )
+    transition_summary = ", ".join(
+        f"{kind}:{count}" for kind, count in sorted(transition_kinds.items())
+    )
+    transition_offset_summary = ", ".join(
+        f"offset{offset}:{count}" for offset, count in sorted(transition_offsets.items())
+    )
+    print(f"  state_read_occurrences={read_summary or 'none'}")
+    print(f"  transition_kinds={transition_summary or 'none'}")
+    print(f"  transition_occurrences={transition_offset_summary or 'none'}")
+
+
+def _solve_full_state(problem, *, time_limit: float, workers: int) -> None:
+    operation_candidates = ordinary_candidates(problem)
+    state_candidates = ordinary_state_candidates(problem)
+    result = solve_periodic_state_mapping_problem(
+        problem,
+        candidates=operation_candidates,
+        state_candidates=state_candidates,
+        time_limit_seconds=time_limit,
+        workers=workers,
+    )
+
+    state_candidate_by_id = {item.id: item for item in state_candidates}
+    operation_entity_cost = sum(item.entity_cost for item in result.plan.realizations)
+    state_entity_cost = sum(item.entity_cost for item in result.plan.state_cells)
+    delivery_kinds = Counter(item.kind.value for item in result.plan.deliveries)
+
+    print("Snake full recurrence mapping")
+    print(f"  prescribed_period={problem.period}; horizon={problem.horizon}")
+    print(
+        "  problem: "
+        f"fixed_sources={len(problem.sources)}; state_reads={len(problem.state_reads)}; "
+        f"operations={len(problem.operations)}; sinks={len(problem.sinks)}; "
+        f"state_transitions={len(problem.state_transitions)}"
+    )
+    print(
+        f"  solve: status={result.status}; wall={result.wall_time_seconds:.3f}s; "
+        f"operation_entities={operation_entity_cost}; state_entities={state_entity_cost}; "
+        f"transport={result.plan.transport_cost}; total={result.plan.total_cost}"
+    )
+    delivery_summary = ", ".join(
+        f"{kind}:{count}" for kind, count in sorted(delivery_kinds.items())
+    )
+    print(f"  deliveries={delivery_summary or 'none'}")
+    print(f"  exact_lifetimes={len(result.plan.exact_lifetimes)}")
+    print("  selected_state_cells:")
+    for cell in sorted(result.plan.state_cells, key=lambda item: item.register_name):
+        candidate = state_candidate_by_id[cell.candidate]
+        print(
+            f"    {cell.register_name}: {candidate.name}; "
+            f"base_read_phase={cell.base_read_phase}; entities={cell.entity_cost}"
+        )
 
 
 def main() -> None:
@@ -91,37 +177,21 @@ def main() -> None:
     output_phase = 2 * args.period - 1
     output_phases = (output_phase,) * len(module.output.values)
 
-    if args.extract_full_state:
-        problem = build_periodic_state_mapping_problem(
-            module,
-            period=args.period,
-            output_phases=output_phases,
-            sampling_policy=SamplingPolicy.ALAP,
+    if args.extract_full_state or args.solve_full_state:
+        problem = _full_state_problem(module, period=args.period, output_phase=output_phase)
+        if args.extract_full_state:
+            _print_full_state_extraction(
+                problem,
+                period=args.period,
+                output_phase=output_phase,
+            )
+            print("  solve=not attempted; physical state-cell port timing is intentionally unresolved")
+            return
+        _solve_full_state(
+            problem,
+            time_limit=args.time_limit,
+            workers=args.workers,
         )
-        read_offsets = Counter(read.logical_offset for read in problem.state_reads)
-        transition_kinds = Counter(item.kind for item in problem.state_transitions)
-        transition_offsets = Counter(item.logical_offset for item in problem.state_transitions)
-        print("Snake phase-neutral recurrence extraction")
-        print(f"  prescribed_period={args.period}; output_phase={output_phase}")
-        print(
-            "  problem: "
-            f"fixed_sources={len(problem.sources)}; state_reads={len(problem.state_reads)}; "
-            f"operations={len(problem.operations)}; sinks={len(problem.sinks)}; "
-            f"state_transitions={len(problem.state_transitions)}"
-        )
-        read_summary = ", ".join(
-            f"offset{offset}:{count}" for offset, count in sorted(read_offsets.items())
-        )
-        transition_summary = ", ".join(
-            f"{kind}:{count}" for kind, count in sorted(transition_kinds.items())
-        )
-        transition_offset_summary = ", ".join(
-            f"offset{offset}:{count}" for offset, count in sorted(transition_offsets.items())
-        )
-        print(f"  state_read_occurrences={read_summary or 'none'}")
-        print(f"  transition_kinds={transition_summary or 'none'}")
-        print(f"  transition_occurrences={transition_offset_summary or 'none'}")
-        print("  solve=not attempted; physical state-cell port timing is intentionally unresolved")
         return
 
     problem = build_periodic_level_mapping_problem(
