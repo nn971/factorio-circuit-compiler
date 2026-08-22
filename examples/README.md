@@ -40,8 +40,7 @@ uv run python -m examples.event_basics occurrence_step
 ```
 
 Checks `source.step(1)`. The source events have unequal physical spacing; the first occurrence is
-suppressed and the later occurrences survive unchanged. `.step(1)` counts occurrences, not game
-ticks.
+suppressed and the later occurrences survive unchanged. `.step(1)` counts occurrences, not game ticks.
 
 ## 4. Derived subclock
 
@@ -108,3 +107,23 @@ the documented **driver phase** and ordering repeat every cycle and are what mat
 
 If a case fails, prefer debugging the earliest failing example in this list. Every later example
 assumes the earlier contracts.
+
+## Application prototype: autonomous mall
+
+The larger autonomous-mall work lives in `examples/autonomous_mall/`. Its Python reference model solves
+raw-material-efficient quality planning. The convenient physical generator now emits complete tileable
+production cells rather than controller-only modules:
+
+```bash
+uv run python -m examples.autonomous_mall.complete_controller \
+  > autonomous-mall-complete-blueprint.txt
+```
+
+The book's first entry is a complete `[HEAD][P0][P1][Q0][Q1][R0]` row. P workers include fixed
+productivity-module assemblers, Q workers include fixed quality-module assemblers, and R includes a
+quality-module recycler. Requester chests, exact-one-attempt feeders, output chests, working feedback,
+and durable completion latches are generated and wired locally. The only circuit hookup needed for the
+basic in-game test is roboport stock into HEAD; ordinary electric coverage is still external.
+
+The older `manual_controller.py` generator remains as a controller-only diagnostic. See
+`examples/autonomous_mall/manual_in_game.md` for the complete staged acceptance procedure.

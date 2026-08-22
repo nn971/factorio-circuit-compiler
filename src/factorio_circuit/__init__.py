@@ -67,6 +67,7 @@ from .simulate.events import (
 )
 from .simulate.oracle import simulate_stream_with_oracles
 from .simulate.output_materialization import MaterializedOutputTrace, materialize_output_trace
+from .synthesis.interface import ModuleInterface, compile_module
 from .synthesis.placement import PlacementMetrics, PlacementOptions, placement_metrics
 
 __all__ = [
@@ -99,6 +100,7 @@ __all__ = [
     "MaterializedEventTrace",
     "MaterializedOutputTrace",
     "MaterializedReturnValue",
+    "ModuleInterface",
     "Oracle",
     "OracleBindingError",
     "OraclePhysicalContext",
@@ -125,6 +127,7 @@ __all__ = [
     "VectorConstantOracleProvider",
     "VectorEvent",
     "compile_circuit",
+    "compile_module",
     "lower_to_abstract_physical",
     "materialize_event_trace",
     "materialize_output_trace",

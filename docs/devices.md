@@ -84,6 +84,37 @@ combinator to the left of the top row is labelled `DISPLAY INPUT: 16x16 packed-R
 only the wire color used by the compiled `OUTPUT framebuffer` port; the unused parallel color remains
 empty, so RGB counts are not doubled.
 
+## Open design note: external-device wire direction convention
+
+A promising general convention for reusable external devices is:
+
+```text
+GREEN = signals entering the device
+RED   = signals leaving the device
+```
+
+The motivation is to make device boundaries visually obvious and mechanically checkable. A caller can
+infer signal direction from wire color without knowing the device's internal entity configuration, and
+the device implementation can use isolation combinators internally whenever the raw Factorio entity
+cannot satisfy that convention directly.
+
+The current assembler-device work already fits this idea naturally: recipe, enable, and requester
+demand are commands into the device, while ingredients, working/finished status, requester contents,
+and provider contents are observations emitted by the device.
+
+This is intentionally recorded as an **open design principle rather than a finalized ABI rule**. Before
+making it mandatory, revisit at least:
+
+- devices that are naturally one-way and currently expose both colors for color-agnostic attachment;
+- devices with several independent input/output buses;
+- Factorio entities whose circuit behavior mixes commands and observations on one physical connector;
+- whether protocol adapters should always enforce the convention, or whether some low-level raw-device
+  generators should remain color-agnostic;
+- how the convention should interact with physical synthesis, named ports, and future device composition.
+
+If adopted, the compiler/device boundary should encode input/output direction explicitly and validate
+that exported physical ports obey this color convention rather than relying on documentation alone.
+
 ## Organization rule
 
 Add future fixed peripherals as sibling generator modules under `factorio_circuit.devices`. Shared raw
