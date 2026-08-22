@@ -22,8 +22,6 @@ def productivity_route(
         raise ValueError(
             f"productivity_bonus must lie in [0, {recipe.maximum_productivity}]"
         )
-    if bonus and not recipe.allow_productivity:
-        raise ValueError(f"recipe {recipe.name!r} does not allow productivity")
     inputs = {
         Commodity(item, quality): Fraction(amount)
         for item, amount in recipe.ingredients.items()
@@ -47,9 +45,6 @@ def quality_route(
 ) -> ProductionRoute:
     """Expected route for one craft on a fixed quality worker."""
 
-    chance = Fraction(quality_chance)
-    if chance and not recipe.allow_quality:
-        raise ValueError(f"recipe {recipe.name!r} does not allow quality")
     inputs = {
         Commodity(item, base_quality): Fraction(amount)
         for item, amount in recipe.ingredients.items()
@@ -58,7 +53,7 @@ def quality_route(
         item=recipe.product,
         base_quality=base_quality,
         output_amount=recipe.product_amount,
-        quality_chance=chance,
+        quality_chance=quality_chance,
     )
     return ProductionRoute(
         name=f"q:{recipe.name}:{base_quality.name.lower()}",
