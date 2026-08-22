@@ -115,7 +115,7 @@ def _candidate_cover(
         return None
     unique_ids = tuple(dict.fromkeys(operation_ids))
     if len(unique_ids) != len(operation_ids):
-        # Shared DAG nodes would need explicit optional-cover coupling; keep this milestone tree-only.
+        # Shared DAG nodes need optional-cover coupling; keep this milestone tree-only.
         return None
     if any(use_counts[item] != 1 for item in unique_ids if item != operation.id):
         return None
