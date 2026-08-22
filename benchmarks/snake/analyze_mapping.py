@@ -1,9 +1,10 @@
 """Analyze Snake with the implementation-neutral temporal technology-mapping prototypes.
 
 The default mode maps only Snake's post-update output cone. ``--extract-full-state`` traverses the
-phase-neutral recurrence and stops. ``--solve-full-state`` supplies ordinary Freeze/Accumulator
-state-cell candidates and jointly solves state phases, ordinary computation timing, exact transport,
-and optional shared scalar delay buses, without consulting ``StateTimingPlan``.
+phase-neutral recurrence and stops. ``--solve-full-state`` supplies ordinary clocked
+Freeze/Accumulator state-cell candidates plus the shared periodic commit resource and jointly solves
+state phases, ordinary computation timing, exact transport, and optional shared scalar delay buses,
+without consulting ``StateTimingPlan``.
 """
 
 from __future__ import annotations
@@ -83,7 +84,7 @@ def _parser() -> argparse.ArgumentParser:
     state_mode.add_argument(
         "--solve-full-state",
         action="store_true",
-        help="jointly solve full recurrence timing with ordinary state cells and delay buses",
+        help="jointly solve full recurrence timing with clocked state cells and delay buses",
     )
     return parser
 
@@ -147,6 +148,9 @@ def _solve_full_state(
     state_candidate_by_id = {item.id: item for item in state_candidates}
     operation_entity_cost = sum(item.entity_cost for item in result.plan.realizations)
     state_entity_cost = sum(item.entity_cost for item in result.plan.state_cells)
+    commit_entity_cost = (
+        0 if result.plan.periodic_commit is None else result.plan.periodic_commit.entity_cost
+    )
     delivery_kinds = Counter(item.kind.value for item in result.plan.deliveries)
 
     print("Snake full recurrence mapping")
@@ -160,8 +164,16 @@ def _solve_full_state(
     print(
         f"  solve: status={result.status}; wall={result.wall_time_seconds:.3f}s; "
         f"operation_entities={operation_entity_cost}; state_entities={state_entity_cost}; "
-        f"transport={result.plan.transport_cost}; total={result.plan.total_cost}"
+        f"commit_entities={commit_entity_cost}; transport={result.plan.transport_cost}; "
+        f"total={result.plan.total_cost}"
     )
+    if result.plan.periodic_commit is not None:
+        print(
+            "  periodic_commit: "
+            f"period={result.plan.periodic_commit.period}; "
+            f"ready_phase={result.plan.periodic_commit.ready_phase}; "
+            f"entities={result.plan.periodic_commit.entity_cost}"
+        )
     delivery_summary = ", ".join(
         f"{kind}:{count}" for kind, count in sorted(delivery_kinds.items())
     )
