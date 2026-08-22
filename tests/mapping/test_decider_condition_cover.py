@@ -130,9 +130,7 @@ def test_periodic_lowerer_emits_one_four_condition_or_decider() -> None:
     assert solve.proven_optimal
     assert lowered.cost_exact_after_known_surcharges
     candidate_by_id = {item.id: item for item in candidates}
-    selected_recipes = [
-        candidate_by_id[item.candidate].recipe for item in solve.plan.realizations
-    ]
+    selected_recipes = [candidate_by_id[item.candidate].recipe for item in solve.plan.realizations]
     assert selected_recipes.count(ImplementationRecipe.DECIDER_CONDITION_COVER) == 1
     assert selected_recipes.count(ImplementationRecipe.COVERED_BY_DECIDER) == 6
 
