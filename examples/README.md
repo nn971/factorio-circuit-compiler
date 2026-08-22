@@ -108,22 +108,19 @@ the documented **driver phase** and ordering repeat every cycle and are what mat
 If a case fails, prefer debugging the earliest failing example in this list. Every later example
 assumes the earlier contracts.
 
-## Application prototype: autonomous mall
+## Research scaffold: autonomous mall
 
-The larger autonomous-mall work lives in `examples/autonomous_mall/`. Its Python reference model solves
-raw-material-efficient quality planning. The convenient physical generator now emits complete tileable
-production cells rather than controller-only modules:
+`examples/autonomous_mall/` currently contains only the retained offline research core: real Factorio
+recipe extraction, canonical recipe-DAG construction, exact quality/recycling mechanics, and an exact
+expected-flow material-efficiency oracle. The earlier manual worker rows, runtime controllers, ROMs,
+and scanners were exploratory and have been removed.
+
+There is currently no accepted circuit-side autonomous-mall architecture. See
+`examples/autonomous_mall/README.md` for the retained assumptions and validation commands.
+
+Generic device work developed during those experiments remains reusable and has separate examples:
 
 ```bash
-uv run python -m examples.autonomous_mall.complete_controller \
-  > autonomous-mall-complete-blueprint.txt
+uv run python -m examples.assembler_device_probe
+uv run python -m examples.assembler_device_anchor_probe
 ```
-
-The book's first entry is a complete `[HEAD][P0][P1][Q0][Q1][R0]` row. P workers include fixed
-productivity-module assemblers, Q workers include fixed quality-module assemblers, and R includes a
-quality-module recycler. Requester chests, exact-one-attempt feeders, output chests, working feedback,
-and durable completion latches are generated and wired locally. The only circuit hookup needed for the
-basic in-game test is roboport stock into HEAD; ordinary electric coverage is still external.
-
-The older `manual_controller.py` generator remains as a controller-only diagnostic. See
-`examples/autonomous_mall/manual_in_game.md` for the complete staged acceptance procedure.
