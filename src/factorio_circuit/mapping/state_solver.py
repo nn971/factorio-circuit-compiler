@@ -68,6 +68,15 @@ def _stateful_uses(problem: MappingProblem) -> tuple[MappingUse, ...]:
     return tuple(result)
 
 
+def _state_register_names(problem: MappingProblem) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            [item.register_name for item in problem.state_reads]
+            + [item.register_name for item in problem.state_transitions]
+        )
+    )
+
+
 def solve_periodic_state_mapping_problem(
     problem: MappingProblem,
     *,
@@ -110,13 +119,14 @@ def solve_periodic_state_mapping_problem(
         )
         for operation in problem.operations
     }
+    register_names = _state_register_names(problem)
     state_candidates_by_register = {
         register_name: tuple(
             item
             for item in selected_state_candidates
             if item.register_name == register_name
         )
-        for register_name in _state_register_names(problem)
+        for register_name in register_names
     }
 
     choose: dict[int, Any] = {}
@@ -136,7 +146,7 @@ def solve_periodic_state_mapping_problem(
 
     state_choose: dict[int, Any] = {}
     state_base_phase: dict[str, Any] = {}
-    for register_name in _state_register_names(problem):
+    for register_name in register_names:
         state_base_phase[register_name] = model.NewIntVar(
             0,
             period - 1,
@@ -164,7 +174,11 @@ def solve_periodic_state_mapping_problem(
     for operation in problem.operations:
         for candidate in candidates_by_operation[operation.id]:
             for operand_index, offset in enumerate(candidate.input_phase_offsets):
-                use = MappingUse(operation.operands[operand_index], operation.id, operand_index)
+                use = MappingUse(
+                    operation.operands[operand_index],
+                    operation.id,
+                    operand_index,
+                )
                 model.Add(
                     use_phase[use] == output_phase[operation.id] + offset
                 ).OnlyEnforceIf(choose[candidate.id])
@@ -188,14 +202,17 @@ def solve_periodic_state_mapping_problem(
                 if transition.when is not None:
                     if port.when_phase_offset is None:
                         raise MappingProblemError(
-                            "selected state-cell candidate has no condition timing for a condition transition"
+                            "selected state-cell candidate has no condition timing for a "
+                            "condition transition"
                         )
                     use = MappingUse(transition.when, transition.id, 1)
                     model.Add(
                         use_phase[use] == next_read + port.when_phase_offset
                     ).OnlyEnforceIf(selected)
 
-    outgoing: dict[int, list[MappingUse]] = {value_id: [] for value_id in problem.value_ids}
+    outgoing: dict[int, list[MappingUse]] = {
+        value_id: [] for value_id in problem.value_ids
+    }
     state_read_start: dict[int, Any] = {}
     state_read_last_free: dict[int, Any] = {}
     for read in problem.state_reads:
@@ -216,24 +233,27 @@ def solve_periodic_state_mapping_problem(
             model.Add(phase >= sources[use.producer].start_phase)
         elif use.producer in state_reads:
             model.Add(phase >= state_read_start[use.producer])
-        else:  # pragma: no cover - MappingProblem validation owns the value namespace
+        else:  # pragma: no cover - MappingProblem validates the value namespace
             raise AssertionError(use.producer)
 
-    lifetime_start: dict[int, Any] = {}
-    lifetime_end: dict[int, Any] = {}
     transport_terms: list[Any] = []
-
     for operation in problem.operations:
         operation_uses = tuple(outgoing[operation.id])
-        end = model.NewIntVar(0, problem.horizon, f"state_mapping_end_{operation.id}")
+        end = model.NewIntVar(
+            0,
+            problem.horizon,
+            f"state_mapping_end_{operation.id}",
+        )
         model.AddMaxEquality(
             end,
             [output_phase[operation.id], *(use_phase[use] for use in operation_uses)],
         )
-        length = model.NewIntVar(0, problem.horizon, f"state_mapping_length_{operation.id}")
+        length = model.NewIntVar(
+            0,
+            problem.horizon,
+            f"state_mapping_length_{operation.id}",
+        )
         model.Add(length == end - output_phase[operation.id])
-        lifetime_start[operation.id] = output_phase[operation.id]
-        lifetime_end[operation.id] = end
         transport_terms.append(length)
 
     for source in problem.sources:
@@ -241,32 +261,47 @@ def solve_periodic_state_mapping_problem(
         source_uses = tuple(outgoing[source.id])
         if anchor is None or not source_uses:
             continue
-        end = model.NewIntVar(anchor, problem.horizon, f"state_mapping_source_end_{source.id}")
+        end = model.NewIntVar(
+            anchor,
+            problem.horizon,
+            f"state_mapping_source_end_{source.id}",
+        )
         model.AddMaxEquality(
             end,
             [model.NewConstant(anchor), *(use_phase[use] for use in source_uses)],
         )
-        length = model.NewIntVar(0, problem.horizon, f"state_mapping_source_length_{source.id}")
+        length = model.NewIntVar(
+            0,
+            problem.horizon,
+            f"state_mapping_source_length_{source.id}",
+        )
         model.Add(length == end - anchor)
-        lifetime_start[source.id] = model.NewConstant(anchor)
-        lifetime_end[source.id] = end
         transport_terms.append(length)
 
     for read in problem.state_reads:
         read_uses = tuple(outgoing[read.id])
         if not read_uses:
             continue
-        anchor = state_read_last_free[read.id]
-        end = model.NewIntVar(0, problem.horizon, f"state_mapping_read_end_{read.id}")
-        model.AddMaxEquality(end, [anchor, *(use_phase[use] for use in read_uses)])
-        length = model.NewIntVar(0, problem.horizon, f"state_mapping_read_length_{read.id}")
-        model.Add(length == end - anchor)
-        lifetime_start[read.id] = anchor
-        lifetime_end[read.id] = end
+        last_use = model.NewIntVar(
+            0,
+            problem.horizon,
+            f"state_mapping_read_last_use_{read.id}",
+        )
+        model.AddMaxEquality(last_use, [use_phase[use] for use in read_uses])
+        length = model.NewIntVar(
+            0,
+            problem.horizon,
+            f"state_mapping_read_length_{read.id}",
+        )
+        model.AddMaxEquality(
+            length,
+            [0, last_use - state_read_last_free[read.id]],
+        )
         transport_terms.append(length)
 
     entity_terms = [
-        candidate.entity_cost * choose[candidate.id] for candidate in selected_candidates
+        candidate.entity_cost * choose[candidate.id]
+        for candidate in selected_candidates
     ]
     entity_terms.extend(
         candidate.entity_cost * state_choose[candidate.id]
@@ -309,15 +344,6 @@ def solve_periodic_state_mapping_problem(
     )
 
 
-def _state_register_names(problem: MappingProblem) -> tuple[str, ...]:
-    return tuple(
-        dict.fromkeys(
-            [item.register_name for item in problem.state_reads]
-            + [item.register_name for item in problem.state_transitions]
-        )
-    )
-
-
 def _validate_operation_candidates(
     problem: MappingProblem,
     candidates: tuple[ImplementationCandidate, ...],
@@ -330,13 +356,21 @@ def _validate_operation_candidates(
     for candidate in candidates:
         operation = operations.get(candidate.operation)
         if operation is None:
-            raise MappingProblemError("periodic operation candidate references an unknown operation")
+            raise MappingProblemError(
+                "periodic operation candidate references an unknown operation"
+            )
         if candidate.output_mode is not CandidateOutputMode.EXACT:
-            raise MappingProblemError("first periodic state solver requires exact operation outputs")
+            raise MappingProblemError(
+                "first periodic state solver requires exact operation outputs"
+            )
         if candidate.kind is ImplementationKind.WIRE_SUM:
-            raise MappingProblemError("first periodic state solver does not yet admit wire-sum candidates")
+            raise MappingProblemError(
+                "first periodic state solver does not yet admit wire-sum candidates"
+            )
         if len(candidate.input_phase_offsets) != len(operation.operands):
-            raise MappingProblemError("periodic operation candidate has the wrong input port count")
+            raise MappingProblemError(
+                "periodic operation candidate has the wrong input port count"
+            )
         covered.add(operation.id)
     missing = set(operations) - covered
     if missing:
@@ -355,10 +389,15 @@ def _validate_state_candidates(
     expected_registers = set(_state_register_names(problem))
     covered_registers = {item.register_name for item in candidates}
     missing = expected_registers - covered_registers
+    extra = covered_registers - expected_registers
     if missing:
         raise MappingProblemError(
             "periodic registers have no supported state-cell implementation candidates: "
             f"{sorted(missing)}"
+        )
+    if extra:
+        raise MappingProblemError(
+            f"state-cell candidates reference unknown periodic registers: {sorted(extra)}"
         )
     transition_ids = {item.id for item in problem.state_transitions}
     for candidate in candidates:
@@ -370,7 +409,8 @@ def _validate_state_candidates(
         }
         if ports != expected_ports:
             raise MappingProblemError(
-                f"state-cell candidate {candidate.name!r} does not cover exactly its register transitions"
+                f"state-cell candidate {candidate.name!r} does not cover exactly its "
+                "register transitions"
             )
         if not ports <= transition_ids:  # pragma: no cover - implied by equality above
             raise MappingProblemError("state-cell candidate references an unknown transition")
@@ -409,7 +449,12 @@ def _extract_plan(
         phase = int(solver.Value(output_phase[operation.id]))
         output_values[operation.id] = phase
         realizations.append(
-            SelectedRealization(operation.id, selected.id, phase, selected.entity_cost)
+            SelectedRealization(
+                operation=operation.id,
+                candidate=selected.id,
+                output_phase=phase,
+                entity_cost=selected.entity_cost,
+            )
         )
 
     state_cells: list[SelectedStateCell] = []
@@ -437,22 +482,28 @@ def _extract_plan(
         phase = int(solver.Value(use_phase[use]))
         if use.producer in operations:
             start = output_values[use.producer]
-            kind = DeliveryKind.REUSE if phase == start else DeliveryKind.PRIVATE_TRANSPORT
-            transport_start = None if phase == start else start
+            if phase == start:
+                kind = DeliveryKind.REUSE
+                transport_start = None
+            else:
+                kind = DeliveryKind.PRIVATE_TRANSPORT
+                transport_start = start
         elif use.producer in sources:
             kind, transport_start = source_delivery_kind(sources[use.producer], phase)
         elif use.producer in reads:
             start = int(solver.Value(state_read_start[use.producer]))
             last_free = int(solver.Value(state_read_last_free[use.producer]))
-            if phase < start:
-                raise AssertionError("solver consumed a state read before its candidate read phase")
+            if phase < start:  # pragma: no cover - solver constraint
+                raise AssertionError(
+                    "solver consumed a state read before its candidate read phase"
+                )
             if phase <= last_free:
                 kind = DeliveryKind.REUSE
                 transport_start = None
             else:
                 kind = DeliveryKind.PRIVATE_TRANSPORT
                 transport_start = last_free
-        else:  # pragma: no cover
+        else:  # pragma: no cover - MappingProblem validates the namespace
             raise AssertionError(use.producer)
 
         deliveries.append(
@@ -467,24 +518,11 @@ def _extract_plan(
         )
         if transport_start is not None:
             current = transport_taps.setdefault(use.producer, (transport_start, []))
-            if current[0] != transport_start:
+            if current[0] != transport_start:  # pragma: no cover - one availability contract
                 raise AssertionError("one producer acquired inconsistent transport anchors")
             current[1].append(phase)
 
-    exact_lifetimes = tuple(
-        sorted(
-            (
-                ExactLifetime(
-                    producer=producer,
-                    start_phase=start,
-                    end_phase=max(taps),
-                    tap_phases=tuple(sorted(set(taps))),
-                )
-                for producer, (start, taps) in transport_taps.items()
-            ),
-            key=lambda item: (item.start_phase, item.end_phase, item.producer),
-        )
-    )
+    exact_lifetimes = _lifetimes_from_transport(transport_taps)
     entity_cost = sum(item.entity_cost for item in realizations) + sum(
         item.entity_cost for item in state_cells
     )
@@ -527,61 +565,91 @@ def validate_periodic_state_plan(
         for item in plan.deliveries
     }
     if len(deliveries) != len(plan.deliveries) or set(deliveries) != set(uses):
-        raise MappingProblemError("periodic state plan must satisfy every semantic use exactly once")
+        raise MappingProblemError(
+            "periodic state plan must satisfy every semantic use exactly once"
+        )
 
     candidate_by_id = {item.id: item for item in candidates}
     realization_by_operation = {item.operation: item for item in plan.realizations}
     if set(realization_by_operation) != {item.id for item in problem.operations}:
-        raise MappingProblemError("periodic state plan must realize every operation exactly once")
+        raise MappingProblemError(
+            "periodic state plan must realize every operation exactly once"
+        )
     entity_cost = 0
     for operation in problem.operations:
         realization = realization_by_operation[operation.id]
         candidate = candidate_by_id.get(realization.candidate)
         if candidate is None or candidate.operation != operation.id:
-            raise MappingProblemError("periodic realization selects the wrong operation candidate")
+            raise MappingProblemError(
+                "periodic realization selects the wrong operation candidate"
+            )
         if realization.entity_cost != candidate.entity_cost:
-            raise MappingProblemError("periodic operation realization cost disagrees with candidate")
+            raise MappingProblemError(
+                "periodic operation realization cost disagrees with candidate"
+            )
         entity_cost += realization.entity_cost
         for operand_index, offset in enumerate(candidate.input_phase_offsets):
-            use = MappingUse(operation.operands[operand_index], operation.id, operand_index)
+            use = MappingUse(
+                operation.operands[operand_index],
+                operation.id,
+                operand_index,
+            )
             if deliveries[use].phase != realization.output_phase + offset:
-                raise MappingProblemError("periodic operation candidate timing equation is violated")
+                raise MappingProblemError(
+                    "periodic operation candidate timing equation is violated"
+                )
 
     state_candidate_by_id = {item.id: item for item in state_candidates}
     state_cell_by_register = {item.register_name: item for item in plan.state_cells}
     expected_registers = set(_state_register_names(problem))
     if set(state_cell_by_register) != expected_registers:
-        raise MappingProblemError("periodic state plan must select exactly one cell per register")
+        raise MappingProblemError(
+            "periodic state plan must select exactly one cell per register"
+        )
     transitions = {item.id: item for item in problem.state_transitions}
     for register_name, cell in state_cell_by_register.items():
         candidate = state_candidate_by_id.get(cell.candidate)
         if candidate is None or candidate.register_name != register_name:
-            raise MappingProblemError("periodic state plan selects the wrong state-cell candidate")
+            raise MappingProblemError(
+                "periodic state plan selects the wrong state-cell candidate"
+            )
         if cell.entity_cost != candidate.entity_cost:
             raise MappingProblemError("state-cell realization cost disagrees with candidate")
         if not 0 <= cell.base_read_phase < period:
-            raise MappingProblemError("state-cell base read phase lies outside one logical period")
+            raise MappingProblemError(
+                "state-cell base read phase lies outside one logical period"
+            )
         entity_cost += cell.entity_cost
         for port in candidate.transition_ports:
             transition = transitions[port.transition]
             next_read = cell.base_read_phase + (transition.logical_offset + 1) * period
             if transition.value is not None:
                 if port.value_phase_offset is None:
-                    raise MappingProblemError("state-cell candidate is missing data port timing")
+                    raise MappingProblemError(
+                        "state-cell candidate is missing data port timing"
+                    )
                 use = MappingUse(transition.value, transition.id, 0)
                 if deliveries[use].phase != next_read + port.value_phase_offset:
-                    raise MappingProblemError("state-cell data port timing equation is violated")
+                    raise MappingProblemError(
+                        "state-cell data port timing equation is violated"
+                    )
             if transition.when is not None:
                 if port.when_phase_offset is None:
-                    raise MappingProblemError("state-cell candidate is missing condition port timing")
+                    raise MappingProblemError(
+                        "state-cell candidate is missing condition port timing"
+                    )
                 use = MappingUse(transition.when, transition.id, 1)
                 if deliveries[use].phase != next_read + port.when_phase_offset:
-                    raise MappingProblemError("state-cell condition port timing equation is violated")
+                    raise MappingProblemError(
+                        "state-cell condition port timing equation is violated"
+                    )
 
     for sink in problem.sinks:
         delivery = deliveries[MappingUse(sink.value, sink.id, None)]
         if delivery.phase != sink.phase:
-            raise MappingProblemError("periodic sink delivery phase violates its fixed contract")
+            raise MappingProblemError(
+                "periodic sink delivery phase violates its fixed contract"
+            )
 
     operations = {item.id: item for item in problem.operations}
     sources = {item.id: item for item in problem.sources}
@@ -589,17 +657,23 @@ def validate_periodic_state_plan(
     expected_transport: dict[int, tuple[int, list[int]]] = {}
     for use, delivery in deliveries.items():
         if not 0 <= delivery.phase <= problem.horizon:
-            raise MappingProblemError("periodic delivery lies outside the mapping horizon")
+            raise MappingProblemError(
+                "periodic delivery lies outside the mapping horizon"
+            )
         if use.producer in operations:
             start = realization_by_operation[use.producer].output_phase
             if delivery.phase < start:
-                raise MappingProblemError("periodic operation result is consumed before production")
+                raise MappingProblemError(
+                    "periodic operation result is consumed before production"
+                )
             transport_start = start if delivery.phase > start else None
             free_kind = DeliveryKind.REUSE
         elif use.producer in sources:
             source = sources[use.producer]
             if delivery.phase < source.start_phase:
-                raise MappingProblemError("periodic source is consumed before availability")
+                raise MappingProblemError(
+                    "periodic source is consumed before availability"
+                )
             free_kind, transport_start = source_delivery_kind(source, delivery.phase)
         elif use.producer in reads:
             read = reads[use.producer]
@@ -607,30 +681,64 @@ def validate_periodic_state_plan(
             start = cell.base_read_phase + read.logical_offset * period
             last_free = start + period - 1
             if delivery.phase < start:
-                raise MappingProblemError("state value is consumed before the selected read phase")
+                raise MappingProblemError(
+                    "state value is consumed before the selected read phase"
+                )
             if delivery.phase <= last_free:
                 free_kind = DeliveryKind.REUSE
                 transport_start = None
             else:
                 free_kind = DeliveryKind.PRIVATE_TRANSPORT
                 transport_start = last_free
-        else:  # pragma: no cover
+        else:  # pragma: no cover - MappingProblem validates the namespace
             raise AssertionError(use.producer)
 
         if transport_start is None:
             if delivery.kind is not free_kind or delivery.transport_start_phase is not None:
-                raise MappingProblemError("periodic free delivery disagrees with availability")
+                raise MappingProblemError(
+                    "periodic free delivery disagrees with availability"
+                )
             continue
         if delivery.kind is not DeliveryKind.PRIVATE_TRANSPORT:
-            raise MappingProblemError("first periodic state solver requires private exact transport")
+            raise MappingProblemError(
+                "first periodic state solver requires private exact transport"
+            )
         if delivery.transport_start_phase != transport_start:
-            raise MappingProblemError("periodic transport start disagrees with availability")
+            raise MappingProblemError(
+                "periodic transport start disagrees with availability"
+            )
         current = expected_transport.setdefault(use.producer, (transport_start, []))
         if current[0] != transport_start:
-            raise MappingProblemError("periodic producer acquired inconsistent transport anchors")
+            raise MappingProblemError(
+                "periodic producer acquired inconsistent transport anchors"
+            )
         current[1].append(delivery.phase)
 
-    expected_lifetimes = tuple(
+    expected_lifetimes = _lifetimes_from_transport(expected_transport)
+    actual_lifetimes = tuple(
+        sorted(
+            plan.exact_lifetimes,
+            key=lambda item: (item.start_phase, item.end_phase, item.producer),
+        )
+    )
+    if actual_lifetimes != expected_lifetimes:
+        raise MappingProblemError(
+            "periodic exact lifetimes disagree with planned deliveries"
+        )
+    if plan.wire_sums or plan.delay_buses:
+        raise MappingProblemError(
+            "first periodic state plan cannot contain shared resources"
+        )
+    if plan.entity_cost != entity_cost:
+        raise MappingProblemError("periodic state plan entity cost is inconsistent")
+    if plan.transport_cost != sum(item.length for item in expected_lifetimes):
+        raise MappingProblemError("periodic state plan transport cost is inconsistent")
+
+
+def _lifetimes_from_transport(
+    transport: dict[int, tuple[int, list[int]]],
+) -> tuple[ExactLifetime, ...]:
+    return tuple(
         sorted(
             (
                 ExactLifetime(
@@ -639,22 +747,8 @@ def validate_periodic_state_plan(
                     end_phase=max(taps),
                     tap_phases=tuple(sorted(set(taps))),
                 )
-                for producer, (start, taps) in expected_transport.items()
+                for producer, (start, taps) in transport.items()
             ),
             key=lambda item: (item.start_phase, item.end_phase, item.producer),
         )
     )
-    actual_lifetimes = tuple(
-        sorted(
-            plan.exact_lifetimes,
-            key=lambda item: (item.start_phase, item.end_phase, item.producer),
-        )
-    )
-    if actual_lifetimes != expected_lifetimes:
-        raise MappingProblemError("periodic exact lifetimes disagree with planned deliveries")
-    if plan.wire_sums or plan.delay_buses:
-        raise MappingProblemError("first periodic state plan cannot contain shared resources")
-    if plan.entity_cost != entity_cost:
-        raise MappingProblemError("periodic state plan entity cost is inconsistent")
-    if plan.transport_cost != sum(item.length for item in expected_lifetimes):
-        raise MappingProblemError("periodic state plan transport cost is inconsistent")
