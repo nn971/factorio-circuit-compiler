@@ -127,7 +127,7 @@ def test_only_nonlegendary_final_product_is_recycled() -> None:
     assert all(action.module_profile.name == "0p4q" for action in recycler_actions)
 
 
-def test_productivity_cap_can_make_lower_quality_profiles_materially_dominated() -> None:
+def test_pruning_requires_true_componentwise_material_dominance() -> None:
     recipe = ItemRecipe(
         "gear",
         "gear",
@@ -135,12 +135,11 @@ def test_productivity_cap_can_make_lower_quality_profiles_materially_dominated()
         {"iron": 2},
         allow_productivity=True,
         allow_quality=True,
-        maximum_productivity=Fraction(1, 2),
     )
     config = QualityPolicyConfig(
         module_slots=4,
         productivity_bonus_per_module=Fraction(1, 4),
-        quality_chance_per_module=Fraction(1, 16),
+        quality_chance_per_module=0,
     )
     graph = build_quality_action_graph(_dag(recipe, target="gear", raw={"iron"}), config=config)
 
@@ -149,7 +148,7 @@ def test_productivity_cap_can_make_lower_quality_profiles_materially_dominated()
         for action in graph.actions_for("gear", Quality.NORMAL)
         if action.kind is QualityActionKind.CRAFT
     }
-    assert names == {"0p4q", "1p3q", "2p2q"}
+    assert names == {"4p0q"}
 
 
 def test_vanilla_assembling_machine_2_shape_has_77_actions() -> None:
