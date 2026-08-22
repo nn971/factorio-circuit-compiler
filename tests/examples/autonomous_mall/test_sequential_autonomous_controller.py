@@ -59,7 +59,6 @@ def _drive_until_dispatch(controller, reader, *, stock, demands, limit: int = 20
 
 
 def test_sequential_controller_matches_direct_rom_action() -> None:
-    _, _, sequential, reader, direct = _fixture_two_shared_targets()
     target = Commodity("machine-a", Quality.LEGENDARY)
     cases = [
         {Commodity("iron", Quality.NORMAL): 100},
@@ -71,7 +70,7 @@ def test_sequential_controller_matches_direct_rom_action() -> None:
     ]
 
     for stock in cases:
-        sequential.scanner.reset()
+        _, _, sequential, reader, direct = _fixture_two_shared_targets()
         decision, _ = _drive_until_dispatch(
             sequential,
             reader,
@@ -118,6 +117,7 @@ def test_live_demand_change_discards_stale_reader_response() -> None:
 
     response = None
     if switched.kind is SequentialControllerDecisionKind.READ_RECIPE:
+        assert switched.read_request is not None
         response = reader.read(switched.read_request)
     terminal = None
     for _ in range(100):
@@ -128,6 +128,7 @@ def test_live_demand_change_discards_stale_reader_response() -> None:
         )
         response = None
         if decision.kind is SequentialControllerDecisionKind.READ_RECIPE:
+            assert decision.read_request is not None
             response = reader.read(decision.read_request)
         elif decision.kind is SequentialControllerDecisionKind.DISPATCH:
             terminal = decision
@@ -171,6 +172,7 @@ def test_blocked_high_priority_target_does_not_stall_other_demand() -> None:
         saw_a |= decision.selected_target == a
         saw_b |= decision.selected_target == b
         if decision.kind is SequentialControllerDecisionKind.READ_RECIPE:
+            assert decision.read_request is not None
             response = reader.read(decision.read_request)
         elif decision.kind is SequentialControllerDecisionKind.DISPATCH:
             terminal = decision
@@ -215,6 +217,57 @@ def test_stock_change_reactivates_previously_exhausted_target() -> None:
     assert recovered.kind is SequentialControllerDecisionKind.DISPATCH
     assert recovered.intent is not None
     assert recovered.intent.action.recipe_name == "machine"
+
+
+def test_stock_arrival_during_scan_restarts_after_stale_exhaustion() -> None:
+    recipes = [ItemRecipe("machine", "machine", 1, {"iron": 2})]
+    dag = build_recipe_dag(
+        RecipeCatalog(recipes),
+        targets=["machine"],
+        raw_items={"iron"},
+    )
+    graph = build_quality_action_graph(dag)
+    book = compile_quality_policy_book(graph)
+    rom = compile_quality_policy_rom(graph, book)
+    addresses = build_recipe_address_vector(graph, rom)
+    controller = SequentialAutonomousQualityController(graph, rom, addresses=addresses)
+    reader = GraphRecipeReader(graph, addresses)
+    target = Commodity("machine", Quality.LEGENDARY)
+
+    # Begin on an empty-stock snapshot and let the scanner get as far as a recipe read.
+    response = None
+    saw_read = False
+    for _ in range(40):
+        decision = controller.step(stock={}, demands={target: 1}, reader_response=response)
+        response = None
+        if decision.kind is SequentialControllerDecisionKind.READ_RECIPE:
+            assert decision.read_request is not None
+            response = reader.read(decision.read_request)
+            saw_read = True
+            break
+    assert saw_read
+
+    # Material arrives while the old transaction is still scanning.  The controller may
+    # finish that snapshot, but it must not declare BLOCKED from stale evidence.
+    live_stock = {Commodity("iron", Quality.NORMAL): 10}
+    terminal = None
+    for _ in range(120):
+        decision = controller.step(
+            stock=live_stock,
+            demands={target: 1},
+            reader_response=response,
+        )
+        response = None
+        assert decision.kind is not SequentialControllerDecisionKind.BLOCKED
+        if decision.kind is SequentialControllerDecisionKind.READ_RECIPE:
+            assert decision.read_request is not None
+            response = reader.read(decision.read_request)
+        elif decision.kind is SequentialControllerDecisionKind.DISPATCH:
+            terminal = decision
+            break
+    assert terminal is not None
+    assert terminal.intent is not None
+    assert terminal.intent.action.recipe_name == "machine"
 
 
 def test_equal_demand_targets_round_robin_after_accepted_dispatch() -> None:
