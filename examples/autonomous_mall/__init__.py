@@ -31,6 +31,18 @@ from .quality_policy_graph import (
     QualityPolicyConfig,
     build_quality_action_graph,
 )
+from .quality_policy_rom import (
+    QualityPolicyRom,
+    QualityPolicyRomError,
+    RomModuleProfile,
+    RomRecipeRecord,
+    RomSchedule,
+    RomScheduleChoice,
+    RomStorageEstimate,
+    RomTargetPolicy,
+    compile_quality_policy_rom,
+    estimate_signal_keyed_storage,
+)
 from .recipe_graph import (
     AmbiguousProducerError,
     InvalidRecipeOverrideError,
@@ -42,8 +54,21 @@ from .recipe_graph import (
     RecipeGraphError,
     build_recipe_dag,
 )
+from .rom_quality_controller import (
+    RomAutonomousQualityController,
+    RomDecision,
+    RomDecisionKind,
+    RomDispatchIntent,
+)
 from .routes import productivity_route, quality_route, recycler_route
 from .scheduler import Job, ReservationError, Scheduler, Worker
+from .signal_keyed_policy_rom import (
+    SignalKeyedPolicyPages,
+    SignalKeyedRomPage,
+    build_signal_keyed_policy_pages,
+    pairwise_each_lookup,
+    reduce_single_signal,
+)
 
 __all__ = [
     "AmbiguousProducerError",
@@ -77,6 +102,8 @@ __all__ = [
     "QualityPlanStep",
     "QualityPolicyConfig",
     "QualityPolicyError",
+    "QualityPolicyRom",
+    "QualityPolicyRomError",
     "RecipeBook",
     "RecipeCatalog",
     "RecipeCycleError",
@@ -84,15 +111,32 @@ __all__ = [
     "RecipeGraphError",
     "RecedingHorizonQualityController",
     "ReservationError",
+    "RomAutonomousQualityController",
+    "RomDecision",
+    "RomDecisionKind",
+    "RomDispatchIntent",
+    "RomModuleProfile",
+    "RomRecipeRecord",
+    "RomSchedule",
+    "RomScheduleChoice",
+    "RomStorageEstimate",
+    "RomTargetPolicy",
     "Scheduler",
+    "SignalKeyedPolicyPages",
+    "SignalKeyedRomPage",
     "WeightedPolicyAction",
     "Worker",
     "WorkerKind",
     "build_quality_action_graph",
     "build_recipe_dag",
+    "build_signal_keyed_policy_pages",
     "compile_quality_policy_book",
+    "compile_quality_policy_rom",
+    "estimate_signal_keyed_storage",
+    "pairwise_each_lookup",
     "productivity_route",
     "quality_route",
     "recycler_route",
+    "reduce_single_signal",
     "solve_quality_policy",
 ]
