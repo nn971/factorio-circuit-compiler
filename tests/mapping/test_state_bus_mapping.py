@@ -59,7 +59,10 @@ def test_state_bus_solver_matches_private_baseline_when_disabled() -> None:
 
     assert baseline.proven_optimal
     assert result.proven_optimal
-    assert result.plan.entity_cost == baseline.plan.entity_cost == 10
+    # Two compares + two four-entity Freeze cells + three shared commit entities.
+    assert result.plan.entity_cost == baseline.plan.entity_cost == 13
+    assert result.plan.periodic_commit is not None
+    assert result.plan.periodic_commit.ready_phase == 6
     assert result.plan.transport_cost == baseline.plan.transport_cost == 10
     assert result.plan.total_cost == baseline.plan.total_cost
     assert result.plan.delay_buses == ()
@@ -86,7 +89,7 @@ def test_state_bus_solver_selects_same_shared_resource_inside_recurrence() -> No
 
     assert private.proven_optimal
     assert shared.proven_optimal
-    assert private.plan.entity_cost == shared.plan.entity_cost == 10
+    assert private.plan.entity_cost == shared.plan.entity_cost == 13
     assert private.plan.transport_cost == 10
     assert shared.plan.transport_cost == 7
     assert shared.plan.total_cost == private.plan.total_cost - 3
