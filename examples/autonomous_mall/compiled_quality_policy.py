@@ -170,6 +170,9 @@ def compile_quality_policy_book(
     policies: dict[Commodity, CompiledTargetPolicy] = {}
     for item in roots:
         target = Commodity(item, Quality.LEGENDARY)
+        target_recipe = graph.recipe_dag.recipe_for(item)
+        if target_recipe is None:
+            raise ValueError(f"mall target {item!r} lies on the raw boundary")
         ancestry = _recipe_ancestry(graph, item)
         baseline = solve_quality_policy(
             graph,
@@ -180,7 +183,11 @@ def compile_quality_policy_book(
         active_by_lane: dict[PolicyLane, list[tuple[QualityAction, Fraction]]] = {}
         for step in baseline.steps:
             action = step.action
-            if not _action_relevant_to_target(action, item, ancestry):
+            if not _action_relevant_to_target(
+                action,
+                final_recipe_name=target_recipe.name,
+                ancestry=ancestry,
+            ):
                 continue
             lane = _lane_of(action)
             active_by_lane.setdefault(lane, []).append(
@@ -190,7 +197,11 @@ def compile_quality_policy_book(
         lane_actions: dict[PolicyLane, tuple[WeightedPolicyAction, ...]] = {}
         candidates_by_lane: dict[PolicyLane, list[QualityAction]] = {}
         for action in graph.actions:
-            if not _action_relevant_to_target(action, item, ancestry):
+            if not _action_relevant_to_target(
+                action,
+                final_recipe_name=target_recipe.name,
+                ancestry=ancestry,
+            ):
                 continue
             candidates_by_lane.setdefault(_lane_of(action), []).append(action)
 
@@ -223,8 +234,6 @@ def compile_quality_policy_book(
                 raise RuntimeError(f"no fallback action for lane {lane}")
             lane_actions[lane] = (WeightedPolicyAction(best_action.name, Fraction(1)),)
 
-        # Keep action-name validation close to compilation so a serialized policy never
-        # references an action absent from the graph that will execute it.
         for weighted_actions in lane_actions.values():
             for weighted in weighted_actions:
                 if weighted.action_name not in actions_by_name:
@@ -259,23 +268,18 @@ def _recipe_ancestry(graph: QualityActionGraph, target_item: str) -> frozenset[s
 
 def _action_relevant_to_target(
     action: QualityAction,
-    target_item: str,
+    *,
+    final_recipe_name: str,
     ancestry: frozenset[str],
 ) -> bool:
     if action.recipe_name not in ancestry:
         return False
     if action.kind is QualityActionKind.CRAFT:
         return True
-    # The first quality policy recycles only the final requested item.  A policy for
-    # one mall target never consumes another target's reject just because they share an
-    # intermediate; that cross-target allocation problem remains with the future global
-    # allocator.
-    recipe = next(
-        recipe
-        for recipe in ()
-    ) if False else None
-    del recipe
-    return action.recipe_name == target_item
+    # One target policy never consumes another target's reject merely because they
+    # share an intermediate.  Cross-target recycling/allocation belongs to the future
+    # global allocator.
+    return action.recipe_name == final_recipe_name
 
 
 def _lane_of(action: QualityAction) -> PolicyLane:
