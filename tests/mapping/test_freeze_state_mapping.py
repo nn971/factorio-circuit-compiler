@@ -43,6 +43,7 @@ def test_ordinary_freeze_candidate_owns_state_port_timing() -> None:
     candidate = candidates[0]
     assert candidate.register_name == "memory"
     assert candidate.entity_cost == 4
+    assert candidate.commit_phase_offset == -2
     assert len(candidate.transition_ports) == 1
     port = candidate.transition_ports[0]
     assert port.value_phase_offset == -1
@@ -66,7 +67,11 @@ def test_freeze_recurrence_is_solved_without_state_timing_plan() -> None:
     assert cell.register_name == "memory"
     assert 0 <= cell.base_read_phase < 8
     assert cell.entity_cost == 4
-    assert result.plan.entity_cost == 5
+    assert result.plan.periodic_commit is not None
+    assert result.plan.periodic_commit.period == 8
+    assert result.plan.periodic_commit.ready_phase == 6
+    # One semantic compare + four local state entities + three shared commit entities.
+    assert result.plan.entity_cost == 8
     assert result.plan.transport_cost == 0
 
     transition = problem.state_transitions[0]
@@ -84,7 +89,7 @@ def test_freeze_recurrence_is_solved_without_state_timing_plan() -> None:
     assert sink_delivery.phase == 15
 
 
-def test_freeze_period_one_is_infeasible_for_current_cell_topology() -> None:
+def test_clocked_state_solver_rejects_period_below_three() -> None:
     pytest.importorskip("ortools.sat.python.cp_model")
     problem = build_periodic_state_mapping_problem(
         _freeze_module(),
@@ -93,7 +98,7 @@ def test_freeze_period_one_is_infeasible_for_current_cell_topology() -> None:
         sampling_policy=SamplingPolicy.ALAP,
     )
 
-    with pytest.raises(MappingProblemError, match="failed with status INFEASIBLE"):
+    with pytest.raises(MappingProblemError, match="period >= 3"):
         solve_periodic_state_mapping_problem(problem, time_limit_seconds=5.0)
 
 
