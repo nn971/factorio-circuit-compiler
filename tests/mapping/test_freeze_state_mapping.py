@@ -7,6 +7,7 @@ from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
     MappingProblemError,
     build_periodic_state_mapping_problem,
+    ordinary_candidates,
     ordinary_freeze_state_candidates,
     solve_periodic_state_mapping_problem,
     validate_periodic_state_plan,
@@ -104,9 +105,11 @@ def test_state_plan_validator_rejects_tampered_cell_phase() -> None:
         output_phases=(15,),
         sampling_policy=SamplingPolicy.ALAP,
     )
+    operation_candidates = ordinary_candidates(problem)
     state_candidates = ordinary_freeze_state_candidates(problem)
     result = solve_periodic_state_mapping_problem(
         problem,
+        candidates=operation_candidates,
         state_candidates=state_candidates,
         time_limit_seconds=5.0,
     )
@@ -119,10 +122,7 @@ def test_state_plan_validator_rejects_tampered_cell_phase() -> None:
     with pytest.raises(MappingProblemError, match="state-cell .* timing equation"):
         validate_periodic_state_plan(
             problem,
-            tuple(
-                __import__("factorio_circuit.mapping", fromlist=["ordinary_candidates"])
-                .ordinary_candidates(problem)
-            ),
+            operation_candidates,
             state_candidates,
             tampered,
         )
