@@ -205,10 +205,10 @@ class RecedingHorizonQualityController:
     def _blocked_requirements(self, steps, stock: Mapping[Commodity, Amount]) -> dict[Commodity, Amount]:
         if not steps:
             return {}
-        # Explain the missing inputs for the most downstream action that the optimum
-        # would like to execute.  This is diagnostic only; the eventual circuit will
-        # expose blocked-demand signals rather than carry the whole LP plan.
-        candidate = max(steps, key=lambda step: self._priority(step.action)).action
+        # When no planned action can run, explain the earliest entry-side craft that
+        # would admit material into the plan.  Reporting a downstream recycle/craft
+        # would merely describe a consequence of the same upstream shortage.
+        candidate = min(steps, key=lambda step: self._priority(step.action)).action
         return {
             commodity: Fraction(required) - stock.get(commodity, Fraction(0))
             for commodity, required in candidate.inputs.items()
