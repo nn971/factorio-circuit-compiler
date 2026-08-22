@@ -205,7 +205,9 @@ def select_constant_candidate(
     semantic = operation.semantic
     if not isinstance(semantic, Select):
         raise MappingProblemError("constant-arm Select candidate requires Select semantics")
-    if not isinstance(semantic.when_true, Constant) or not isinstance(semantic.when_false, Constant):
+    if not isinstance(semantic.when_true, Constant) or not isinstance(
+        semantic.when_false, Constant
+    ):
         raise MappingProblemError("constant-arm Select candidate requires two constant arms")
     if len(operation.operands) != 3:
         raise MappingProblemError("constant-arm Select candidate requires exactly three operands")
