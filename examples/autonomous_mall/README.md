@@ -1,155 +1,142 @@
 # Autonomous mall research scaffold
 
-This directory is intentionally a research area rather than an accepted final circuit architecture.
-The earlier manual worker rows, runtime controllers, compiled policy ROMs, and sequential scanners
-were exploratory implementations and have been removed. They should not be treated as architectural
-precedent.
+This directory is a research area rather than an accepted final circuit architecture. Earlier
+manual worker rows, compiled policy ROMs, and sequential scanners were exploratory implementations
+and should not be treated as architectural precedent.
 
-Two independent reference layers now live here:
+The retained pieces now form three deliberately separate layers:
 
-- a small deterministic, quality-free multi-worker scheduler prototype in `scheduler.py`;
-- the retained offline quality/material-efficiency oracle used for later quality-policy experiments.
+- `scheduler.py`: an offline deterministic, quality-free multi-worker scheduling oracle;
+- `worker_pool.py`: the first circuit-facing anonymous-worker dispatch/execution protocol;
+- the older quality/recycling modules: an offline material-efficiency oracle for later milestones.
 
-Generic `AssemblerDevice`, anchor-composition, and `ModuleInterface` functionality developed during
-mall experiments lives under `src/factorio_circuit/` and remains reusable compiler infrastructure.
+Generic `AssemblerDevice`, exact-overlap anchors, and `ModuleInterface` live under
+`src/factorio_circuit/` and remain reusable compiler infrastructure.
 
-## Deterministic multi-worker scheduler prototype
+## Deterministic scheduler
 
-`scheduler.py` is the first reference policy for the simplified milestone where recipes are
-deterministic and quality is irrelevant. It deliberately contains no raw-material objective and no
-configured raw-material boundary.
+`scheduler.py` models the simplified milestone where recipes are deterministic and quality is
+irrelevant. It contains no raw-material objective and no configured raw-material boundary.
 
-Its inputs are:
+Its inputs are a target-stock vector, observed physical stock, already-active jobs, and a deterministic
+`RecipeCatalog`. Items with no supported producer are inferred to be external inputs. Multiple
+producers use the catalog's canonical selection/override rule.
 
-- a target stock vector;
-- one observed physical stock vector;
-- the jobs already active on the anonymous worker pool;
-- a deterministic `RecipeCatalog` with one canonical producer selected for each producible item.
+Each planning pass:
 
-Items with no supported producer are inferred to be external inputs. Multiple producers retain the
-existing deterministic `RecipeCatalog` rule: an explicit override wins, otherwise a unique producer
-or the conventional same-name producer is selected, and unresolved ambiguity is reported.
-
-For every planning pass the scheduler:
-
-1. subtracts the input reservations of active jobs from usable physical stock;
-2. adds their deterministic outputs as promised future stock;
-3. recursively expands target shortages through the selected recipes;
-4. records any shortage that bottoms out at an unproducible item as `blocked_external`;
-5. orders required recipes from upstream dependencies toward consumers;
+1. subtracts active-job input reservations from usable stock;
+2. adds active-job deterministic outputs as promised future stock;
+3. recursively expands target shortages through selected recipes;
+4. reports shortages that bottom out at an unproducible item as `blocked_external`;
+5. orders required recipes from dependencies toward consumers;
 6. dispatches only recipes whose direct ingredients can be reserved immediately;
-7. splits work into bounded batches and fills at most the currently free worker slots;
-8. reserves every newly dispatched batch before considering the next worker.
+7. splits work into bounded batches and fills at most the free worker slots;
+8. reserves each newly dispatched batch before considering the next worker.
 
-The two anti-oscillation ledgers are therefore explicit:
+The anti-oscillation ledgers are explicit:
 
 ```text
 reserved input   = material already committed to active/new jobs
 promised output  = deterministic output already committed by active/new jobs
 ```
 
-A target already covered by promised output does not launch duplicate work, and two workers cannot
-reserve the same physical ingredient stock.
+For this offline reference, `stock` means mall-owned physical inventory before subtracting active-job
+reservations. A future Factorio integration must reconstruct that logical quantity from the roboport
+view plus worker-local holdings according to the chosen device protocol.
 
-`max_batch_crafts` is only an execution bound. It does not represent an optimization objective. A
-later controller may replace it with a better batching policy without changing the reservation and
-promise semantics.
+## Circuit-facing worker pool
 
-### Stock snapshot contract
+`worker_pool.py` implements the next layer down. It accepts one already-formed deterministic craft
+job and routes it to the first idle anonymous worker.
 
-For this first offline prototype, `stock` means mall-owned physical inventory **before** subtracting
-active-job reservations. Active-job inputs remain part of that snapshot until the reference
-`complete_jobs()` transition consumes them. This makes the accounting model unambiguous and lets the
-scheduler reject inconsistent snapshots where active reservations exceed physical stock.
+### One-craft job envelope
 
-A future Factorio integration must map roboport stock plus any worker-local holdings to this logical
-quantity according to the actual device protocol. That mapping is deliberately outside this offline
-scheduler.
+The first physical protocol intentionally makes one accepted envelope equal to **one craft**:
 
-### Small example
-
-```python
-from examples.autonomous_mall import (
-    DeterministicMallScheduler,
-    ItemRecipe,
-    RecipeCatalog,
-)
-
-catalog = RecipeCatalog(
-    [
-        ItemRecipe("cable", "cable", 2, {"copper": 1}),
-        ItemRecipe("circuit", "circuit", 1, {"iron": 1, "cable": 3}),
-    ]
-)
-
-scheduler = DeterministicMallScheduler(
-    catalog,
-    worker_count=2,
-    max_batch_crafts=2,
-)
-plan = scheduler.plan(
-    targets={"circuit": 2},
-    stock={"iron": 2, "copper": 3},
-)
+```text
+offer_valid    scalar Level
+offer_recipe   vector Level
+offer_inputs   vector Level   exact ingredients for one craft
+offer_product  vector Level   exact deterministic products for one craft
 ```
 
-With no cable initially present, both free workers are assigned cable batches first. The circuit jobs
-remain planned but undispatched until their direct cable inputs physically exist.
+`AssemblerDevice.requester_demand` is a steady-state logistic setpoint. Using a whole multi-craft
+batch as that setpoint while the machine consumes ingredients would cause continued replenishment.
+Keeping the first protocol one-craft makes the requester semantics exact. Batching can later be added
+with an explicit preload/escrow protocol while preserving the same reservation/promise accounting.
+
+### Offer handshake
+
+The producer may hold one envelope high until it observes `offer_accepted`. It must then drop
+`offer_valid` before presenting the next envelope. An internal `offer_seen` latch prevents a held-high
+envelope from being claimed twice.
+
+If every worker is busy, `offer_blocked` remains asserted. The unseen envelope stays pending and is
+claimed automatically when a worker becomes idle.
+
+### Worker state
+
+Each worker stores exactly three whole vectors:
+
+```text
+held recipe
+held reservation
+held promise
+```
+
+A nonempty promise means the worker is busy. While its held recipe is nonempty, the controller drives
+that recipe and the one-craft requester demand into `AssemblerDevice`. When `working=1` is observed,
+the recipe/request demand are withdrawn. The validated Factorio Set-recipe behavior lets the active
+craft finish while preventing a second craft from starting. Reservation and promise remain held until
+`working` later returns to zero.
+
+The pool publishes additive whole-vector buses:
+
+```text
+reserved = sum(worker reservations)
+promised = sum(worker promises)
+```
+
+A newly claimed envelope appears on these buses immediately in the claim reaction and then from held
+worker state, so central accounting has no dispatch gap.
+
+Adding workers changes worker-local state and one `working` observation per worker. The shared job
+envelope stays constant-size and does not depend on the number of item or recipe prototypes.
+
+### Generate the physical probe
+
+The default generator compiles the controller and attaches real `AssemblerDevice` instances using the
+typed exact-overlap anchor ABI:
+
+```bash
+uv run python -m examples.autonomous_mall.worker_pool --workers 2 > mall-workers.txt
+```
+
+For the controller alone:
+
+```bash
+uv run python -m examples.autonomous_mall.worker_pool \
+  --workers 2 \
+  --controller-only > mall-worker-controller.txt
+```
+
+The composed probe deliberately leaves the external job-envelope and aggregate-ledger anchors exposed
+for manual wiring. Unused worker observation ports also remain available for inspection.
 
 ## Retained quality oracle
 
-The older offline quality oracle remains useful as a separate future reference. Its conventions are
-specific to that oracle and are not requirements of the simplified deterministic scheduler.
+The older offline quality oracle remains useful for a later milestone, but its economic conventions
+are separate from the simplified deterministic scheduler/worker pool.
 
-The retained pieces are:
-
-- `factorio_data.py`: extracts a conservative deterministic item-recipe subset from a real Factorio
+- `factorio_data.py` extracts a conservative deterministic item-recipe subset from a real Factorio
   `data-raw-dump.json`;
-- `recipe_graph.py`: canonical recipe selection and explicit recipe DAG construction;
-- `quality_mechanics.py`: exact expected-value helpers for quality rolls and recycler return;
-- `quality_policy_graph.py`: quality-qualified craft/recycle actions for an explicitly supplied
-  machine/module profile;
-- `linear.py`: the exact rational LP helper;
-- `quality_policy.py`: minimum expected prescribed-raw-material use for a stock/target snapshot.
+- `recipe_graph.py` performs canonical recipe selection and DAG construction;
+- `quality_mechanics.py` contains exact expected-value helpers for quality and recycling;
+- `quality_policy_graph.py` expands the DAG into quality-qualified actions;
+- `linear.py` provides the exact rational LP helper;
+- `quality_policy.py` computes the older prescribed-raw-material expected-flow optimum.
 
-### Quality-oracle economic conventions
-
-These conventions describe only the retained quality oracle:
-
-- raw materials are a prescribed set of base item names;
-- external replenishment is available only for Normal-quality instances of prescribed raw items;
-- existing stock at any quality is a free/sunk initial endowment and may be consumed when doing so
-  does not violate final requested balances;
-- crafting time is outside the objective;
-- the first recipe model uses solid item ingredients, one deterministic item product, and one
-  canonical recipe per item with explicit overrides for ambiguity;
-- craft actions consume ingredients at one exact base quality and may roll higher-quality outputs;
-- the current action graph gives recycle actions only to non-Legendary final target products;
-- the LP is an expected-flow oracle, so fractional action counts are not physical jobs.
-
-## Real Factorio recipe data
-
-Generate a prototype dump with the target Factorio installation, then point the example tools at
-`data-raw-dump.json`. `factorio_data.py` deliberately rejects unsupported recipe shapes instead of
-silently approximating them.
-
-For example, the older explicit-boundary DAG tool can be run with:
-
-```bash
-uv run python -m examples.autonomous_mall.factorio_data \
-  --dump data/data-raw-dump.json \
-  --target assembling-machine-2 \
-  --raw iron-plate \
-  --raw copper-plate \
-  --raw steel-plate
-```
-
-That explicit raw boundary belongs to the DAG/quality-oracle workflow. The deterministic scheduler
-itself infers an external input simply when its `RecipeCatalog` has no producer for that item.
-
-## Quality oracle invocation
-
-A typical quality-oracle invocation is:
+For example:
 
 ```bash
 uv run python -m examples.autonomous_mall.quality_policy \
@@ -162,32 +149,37 @@ uv run python -m examples.autonomous_mall.quality_policy \
   --raw steel-plate
 ```
 
-## What is deliberately unresolved
+## What remains unresolved
 
-There is still no accepted **circuit-side** autonomous scheduling architecture. In particular, the
-Python scheduler does not decide:
+The worker execution/claim protocol now has a concrete prototype. The next missing layer is the
+**circuit-side job former** that turns live mall demand and stock into the four-field offer envelope.
+In particular we still need to settle:
 
-- how target, stock, reservation, promise, recipe, and worker-state vectors are encoded physically;
-- how a worker claims a dispatched batch;
-- how requester demand is materialized and cleared;
-- how the logical stock snapshot is reconstructed from roboport and worker-local observations;
-- how batch size should adapt in the final controller;
-- how the scheduler discovers/query recipes in-game without a combinator count growing with the
-  recipe database;
-- how the eventual quality/productivity worker architecture should extend this deterministic core.
+- how live roboport stock is combined with worker reservation/promise buses;
+- how recipe ingredients and product amounts are discovered/queryable in game without a physical
+  structure that scales with the recipe database;
+- how recursive missing-intermediate demand is represented compactly;
+- how repeated one-craft offers are paced and whether a later explicit batch escrow protocol is worth
+  the extra worker complexity;
+- how quality/productivity worker roles extend this deterministic core later.
 
-Before doing physical-size reasoning, read `docs/factorio-2-circuit-mechanics.md`. For Factorio 2.x a
-constant combinator is treated architecturally as a whole-vector source; the legacy "20 values per
-constant combinator" model must not be used. The repository intentionally records no unverified exact
-numeric capacity.
+Before physical-size reasoning, read `docs/factorio-2-circuit-mechanics.md`. Factorio 2.x constant
+combinators are whole-vector sources; the legacy "20 values per constant combinator" assumption must
+not be used.
 
 ## Validation
 
-Focused deterministic scheduler tests:
+Focused deterministic tests:
 
 ```bash
-uv run pytest tests/examples/autonomous_mall/test_scheduler.py
+uv run pytest \
+  tests/examples/autonomous_mall/test_scheduler.py \
+  tests/examples/autonomous_mall/test_worker_pool.py
 ```
+
+The worker-pool tests cover held-valid deduplication, first-free assignment, blocked-offer retention,
+recipe withdrawal after craft start, reservation/promise release, abstract-physical lowering, and a
+two-`AssemblerDevice` composed-blueprint smoke test.
 
 The retained quality-oracle suite is:
 
