@@ -44,6 +44,30 @@ class SelectedStateCell:
 
 
 @dataclass(frozen=True, slots=True)
+class PeriodicCommitResource:
+    """Shared modulo clock plus startup-ready latch for one periodic state domain.
+
+    The resource uses a constant +1 source and modulo counter for the repeating cadence, plus one
+    self-latching decider that becomes ready at tick ``period - 2``. State-cell control deciders
+    absorb the ready and per-register clock-residue predicates as additional conditions, so the
+    shared resource has no per-register entity surcharge.
+    """
+
+    period: int
+    entity_cost: int = 3
+
+    def __post_init__(self) -> None:
+        if isinstance(self.period, bool) or not isinstance(self.period, int) or self.period < 3:
+            raise ValueError("periodic commit resource requires period >= 3")
+        if self.entity_cost != 3:
+            raise ValueError("first periodic commit resource has exactly three entities")
+
+    @property
+    def ready_phase(self) -> int:
+        return self.period - 2
+
+
+@dataclass(frozen=True, slots=True)
 class PlannedDelivery:
     producer: int
     consumer: int
@@ -137,6 +161,7 @@ class RealizationPlan:
     transport_cost: int
     delay_buses: tuple[DelayBusResource, ...] = ()
     state_cells: tuple[SelectedStateCell, ...] = ()
+    periodic_commit: PeriodicCommitResource | None = None
 
     @property
     def total_cost(self) -> int:
