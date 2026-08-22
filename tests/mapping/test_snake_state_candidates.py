@@ -32,9 +32,11 @@ def test_default_snake_has_complete_ordinary_state_cell_coverage() -> None:
         "body_mask",
     }
     costs = {item.register_name: item.entity_cost for item in candidates}
-    assert sum(costs.values()) == 42
-    assert costs["head_x"] == costs["head_y"] == costs["score"] == 6
+    assert sum(costs.values()) == 36
     for register_name in {
+        "head_x",
+        "head_y",
+        "score",
         "direction",
         "queued_direction",
         "dead",
@@ -43,3 +45,5 @@ def test_default_snake_has_complete_ordinary_state_cell_coverage() -> None:
         "body_mask",
     }:
         assert costs[register_name] == 4
+        candidate = next(item for item in candidates if item.register_name == register_name)
+        assert candidate.commit_phase_offset == -2
