@@ -6,8 +6,13 @@ Before semantic/compiler work, read:
 
 1. `docs/data-contract.md`
 2. `docs/compiler-pipeline.md`
+3. `docs/factorio-2-circuit-mechanics.md`
 
-Those two files are the source of truth for the supported data contract and compilation boundaries. Historical milestone notes and completed physical probes are intentionally not kept in the repository.
+Those files are the source of truth for the supported data contract, compilation boundaries, and
+target-game circuit mechanics that affect physical architecture. In particular, do **not** use the
+legacy "20 values per constant combinator" assumption for Factorio 2.x; see
+`docs/factorio-2-circuit-mechanics.md`. Historical milestone notes and completed physical probes are
+intentionally not kept in the repository.
 
 For continuation of the active annealed-layout work on PR #34, also read `handoff.md`. It is a branch handoff, not a replacement for the stable architecture documents above.
 
@@ -23,7 +28,9 @@ For continuation of the active annealed-layout work on PR #34, also read `handof
 - Sparse flows acquire `HOLD`, `ZERO`, or `VALID` behavior only at output/device boundaries.
 - Both Level and Event lanes must converge on `AbstractPhysicalCircuit`; physical synthesis owns concrete signal allocation, red/green wiring, placement, wire reach, and final `Layout`.
 - Blueprint serialization consumes a finished `Layout`; it does not repair geometry or semantic timing.
-- Constant combinators are 1x1 entities and can emit a whole signal vector. Do not reintroduce stale 20-value or 50-value capacity assumptions.
+- For Factorio 2.x, constant combinators are 1x1 whole-vector sources. Do not estimate their count
+  by dividing configured values by 20 or reintroduce stale 20-value or 50-value capacity assumptions;
+  consult `docs/factorio-2-circuit-mechanics.md` before ROM/storage sizing.
 
 ### Annealed physical-layout invariants
 
