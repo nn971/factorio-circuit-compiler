@@ -300,9 +300,7 @@ def main() -> None:
         f"total={result.plan.total_cost}"
     )
     candidate_summary = ", ".join(f"{kind}:{count}" for kind, count in sorted(kinds.items()))
-    recipe_summary = ", ".join(
-        f"{recipe}:{count}" for recipe, count in sorted(recipes.items())
-    )
+    recipe_summary = ", ".join(f"{recipe}:{count}" for recipe, count in sorted(recipes.items()))
     print(f"  selected_candidates={candidate_summary or 'none'}")
     print(f"  selected_recipes={recipe_summary or 'none'}")
     print(f"  delay_buses={len(result.plan.delay_buses)}")
