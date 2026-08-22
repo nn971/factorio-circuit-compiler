@@ -40,6 +40,7 @@ class ImplementationKind(StrEnum):
 
     ORDINARY = "ordinary"
     ZERO_COST_VIEW = "zero-cost-view"
+    COVERED = "covered"
     WIRE_SUM = "wire-sum"
 
 
@@ -54,6 +55,8 @@ class ImplementationRecipe(StrEnum):
     ORDINARY = "ordinary"
     SELECT_CONSTANT_FOLDED = "select-constant-folded"
     SELECT_CONSTANT_ZERO_FALSE = "select-constant-zero-false"
+    DECIDER_CONDITION_COVER = "decider-condition-cover"
+    COVERED_BY_DECIDER = "covered-by-decider"
 
 
 @dataclass(frozen=True, slots=True)
