@@ -6,8 +6,9 @@ and clocked state-cell timing, then lowers that exact :class:`RealizationPlan` t
 IR without invoking the established state-timing analyzer.
 
 The report distinguishes the solver objective from hardware that the current mapper deliberately
-does not price yet: fixed semantic constant sources and candidate-internal Select preservation.
-``unexplained_gap == 0`` is the important checkpoint before mapped physical synthesis is trusted.
+does not price yet: fixed semantic constant sources, candidate-internal Select preservation, and
+coherent dense output-boundary materialization. ``unexplained_gap == 0`` is the important checkpoint
+before mapped physical synthesis is trusted.
 """
 
 from __future__ import annotations
@@ -135,6 +136,7 @@ def main() -> None:
         "  lowering_cost: "
         f"planned={lowered.planned_cost}; fixed_sources={lowered.fixed_source_entities}; "
         f"candidate_internal={lowered.candidate_internal_entities}; "
+        f"output_materialization={lowered.output_materialization_entities}; "
         f"accounted={lowered.accounted_cost}; emitted={lowered.emitted_combinators}; "
         f"unexplained_gap={lowered.unexplained_cost_gap:+d}"
     )
