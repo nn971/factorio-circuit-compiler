@@ -85,7 +85,9 @@ def _solve_and_lower_constant_select(*, false_value: int):
         state_candidates,
         solve.plan,
     )
-    select_operation = next(item for item in problem.operations if isinstance(item.semantic, Select))
+    select_operation = next(
+        item for item in problem.operations if isinstance(item.semantic, Select)
+    )
     realization = solve.plan.realization_for(select_operation.id)
     selected = next(item for item in candidates if item.id == realization.candidate)
     return solve, lowered, selected
