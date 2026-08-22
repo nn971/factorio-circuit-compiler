@@ -1,27 +1,11 @@
-"""Reference implementation for the autonomous mall example."""
+"""Offline research scaffold for a future autonomous quality mall.
 
-from .autonomous_quality_controller import (
-    AutonomousDecision,
-    AutonomousDecisionKind,
-    AutonomousDispatchIntent,
-    AutonomousQualityController,
-)
-from .compiled_quality_policy import (
-    CompiledQualityPolicyBook,
-    CompiledTargetPolicy,
-    PolicyLane,
-    WeightedPolicyAction,
-    compile_quality_policy_book,
-)
-from .model import Commodity, ProductionRoute, Quality, RecipeBook, WorkerKind
-from .planner import MaterialPlan, MaterialPlanner, NoRouteError, PlanningError
-from .quality_controller import (
-    FakeQualityDispatcher,
-    QualityDecision,
-    QualityDecisionKind,
-    QualityDispatchIntent,
-    RecedingHorizonQualityController,
-)
+No circuit-side autonomous controller is currently accepted as the project architecture.
+The retained modules cover real-data recipe extraction, canonical recipe DAG construction,
+quality/recycling mechanics, and an exact offline material-efficiency oracle.
+"""
+
+from .model import Commodity, Quality
 from .quality_policy import QualityPlan, QualityPlanStep, QualityPolicyError, solve_quality_policy
 from .quality_policy_graph import (
     ModuleProfile,
@@ -30,18 +14,6 @@ from .quality_policy_graph import (
     QualityActionKind,
     QualityPolicyConfig,
     build_quality_action_graph,
-)
-from .quality_policy_rom import (
-    QualityPolicyRom,
-    QualityPolicyRomError,
-    RomModuleProfile,
-    RomRecipeRecord,
-    RomSchedule,
-    RomScheduleChoice,
-    RomStorageEstimate,
-    RomTargetPolicy,
-    compile_quality_policy_rom,
-    estimate_signal_keyed_storage,
 )
 from .recipe_graph import (
     AmbiguousProducerError,
@@ -54,119 +26,27 @@ from .recipe_graph import (
     RecipeGraphError,
     build_recipe_dag,
 )
-from .rom_quality_controller import (
-    RomAutonomousQualityController,
-    RomDecision,
-    RomDecisionKind,
-    RomDispatchIntent,
-)
-from .routes import productivity_route, quality_route, recycler_route
-from .scheduler import Job, ReservationError, Scheduler, Worker
-from .sequential_autonomous_controller import (
-    SequentialAutonomousQualityController,
-    SequentialControllerDecision,
-    SequentialControllerDecisionKind,
-)
-from .sequential_rom_scanner import (
-    GraphRecipeReader,
-    RecipeReadRequest,
-    RecipeReadResponse,
-    ScanMode,
-    ScannerDecision,
-    ScannerDecisionKind,
-    SequentialDispatchIntent,
-    SequentialRomScanner,
-)
-from .signal_keyed_policy_rom import (
-    RecipeAddressVector,
-    SignalKeyedPolicyPages,
-    SignalKeyedRomPage,
-    build_recipe_address_vector,
-    build_signal_keyed_policy_pages,
-    pairwise_each_lookup,
-    reduce_single_signal,
-)
 
 __all__ = [
     "AmbiguousProducerError",
-    "AutonomousDecision",
-    "AutonomousDecisionKind",
-    "AutonomousDispatchIntent",
-    "AutonomousQualityController",
     "Commodity",
-    "CompiledQualityPolicyBook",
-    "CompiledTargetPolicy",
-    "FakeQualityDispatcher",
-    "GraphRecipeReader",
     "InvalidRecipeOverrideError",
     "ItemRecipe",
-    "Job",
-    "MaterialPlan",
-    "MaterialPlanner",
     "MissingProducerError",
     "ModuleProfile",
-    "NoRouteError",
-    "PlanningError",
-    "PolicyLane",
-    "ProductionRoute",
     "Quality",
     "QualityAction",
     "QualityActionGraph",
     "QualityActionKind",
-    "QualityDecision",
-    "QualityDecisionKind",
-    "QualityDispatchIntent",
     "QualityPlan",
     "QualityPlanStep",
     "QualityPolicyConfig",
     "QualityPolicyError",
-    "QualityPolicyRom",
-    "QualityPolicyRomError",
-    "RecipeAddressVector",
-    "RecipeBook",
     "RecipeCatalog",
     "RecipeCycleError",
     "RecipeDAG",
     "RecipeGraphError",
-    "RecipeReadRequest",
-    "RecipeReadResponse",
-    "RecedingHorizonQualityController",
-    "ReservationError",
-    "RomAutonomousQualityController",
-    "RomDecision",
-    "RomDecisionKind",
-    "RomDispatchIntent",
-    "RomModuleProfile",
-    "RomRecipeRecord",
-    "RomSchedule",
-    "RomScheduleChoice",
-    "RomStorageEstimate",
-    "RomTargetPolicy",
-    "ScanMode",
-    "ScannerDecision",
-    "ScannerDecisionKind",
-    "Scheduler",
-    "SequentialAutonomousQualityController",
-    "SequentialControllerDecision",
-    "SequentialControllerDecisionKind",
-    "SequentialDispatchIntent",
-    "SequentialRomScanner",
-    "SignalKeyedPolicyPages",
-    "SignalKeyedRomPage",
-    "WeightedPolicyAction",
-    "Worker",
-    "WorkerKind",
     "build_quality_action_graph",
-    "build_recipe_address_vector",
     "build_recipe_dag",
-    "build_signal_keyed_policy_pages",
-    "compile_quality_policy_book",
-    "compile_quality_policy_rom",
-    "estimate_signal_keyed_storage",
-    "pairwise_each_lookup",
-    "productivity_route",
-    "quality_route",
-    "recycler_route",
-    "reduce_single_signal",
     "solve_quality_policy",
 ]
