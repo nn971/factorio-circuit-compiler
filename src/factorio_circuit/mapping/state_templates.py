@@ -1,15 +1,15 @@
 """Physical state-cell implementation candidates for periodic technology mapping.
 
-State timing is target technology. The neutral recurrence IR records register occurrences and
-semantic transitions only; candidates in this module own the physical read/write port timing and
-entity cost.
+State timing is target technology. The neutral recurrence IR records register occurrences and semantic
+transitions only; candidates in this module own the physical read/write port timing and entity cost.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from factorio_circuit.ir.state import FreezeRegister
+from factorio_circuit.ir.semantic import Constant
+from factorio_circuit.ir.state import AccumulatorRegister, FreezeRegister
 
 from .problem import MappingProblem, MappingProblemError
 from .templates import CandidateOutputMode
@@ -120,30 +120,101 @@ def ordinary_freeze_state_candidate(
     )
 
 
-def ordinary_freeze_state_candidates(problem: MappingProblem) -> tuple[StateCellCandidate, ...]:
-    """Generate ordinary candidates for every Freeze register represented by the problem."""
+def ordinary_accumulator_state_candidate(
+    problem: MappingProblem,
+    register_name: str,
+    *,
+    candidate_id: int,
+) -> StateCellCandidate:
+    """Describe the current one-add/one-clear Accumulator topology used by Snake.
 
-    register_names = tuple(
+    This first Accumulator candidate deliberately matches the established target topology rather than
+    generalizing every future accumulator form. It requires one non-constant conditional add and one
+    clear transition. Relative to the next state read at phase ``r``:
+
+    - add data is consumed at ``r-1`` by the vector add gate;
+    - add ``when`` is consumed at ``r-3``: one tick normalizes it, then one tick combines it with
+      clear-inactive before the gate consumes the result at ``r-1``;
+    - clear ``when`` is also consumed at ``r-3``. Its clear-inactive result is used at ``r-2`` for
+      add suppression and delayed one tick to ``r-1`` for the memory gate.
+
+    The six state-specific entities are clear normalization, add normalization, add/clear control
+    combination, the gated add, one clear-active delay stage, and the memory combinator. Semantic
+    expressions feeding these ports are costed independently as ordinary mapping operations.
+    """
+
+    transitions = tuple(
+        item for item in problem.state_transitions if item.register_name == register_name
+    )
+    adds = tuple(item for item in transitions if item.kind == "add")
+    clears = tuple(item for item in transitions if item.kind == "clear")
+    if len(adds) != 1 or len(clears) != 1 or len(transitions) != 2:
+        raise MappingProblemError(
+            f"ordinary Accumulator state cell {register_name!r} requires exactly one add and one clear"
+        )
+    add = adds[0]
+    clear = clears[0]
+    if not isinstance(add.semantic.register, AccumulatorRegister) or not isinstance(
+        clear.semantic.register, AccumulatorRegister
+    ):
+        raise MappingProblemError(
+            f"ordinary Accumulator state cell {register_name!r} requires Accumulator transitions"
+        )
+    if add.value is None or add.when is None:
+        raise MappingProblemError("ordinary Accumulator add requires data and condition ports")
+    if clear.value is not None or clear.when is None:
+        raise MappingProblemError("ordinary Accumulator clear requires only a condition port")
+    if isinstance(add.semantic.when, Constant):
+        raise MappingProblemError(
+            "first ordinary Accumulator candidate models a non-constant conditional add only"
+        )
+
+    return StateCellCandidate(
+        id=candidate_id,
+        register_name=register_name,
+        name="ordinary Accumulator add+clear cell",
+        transition_ports=(
+            StateTransitionPortTiming(
+                transition=add.id,
+                value_phase_offset=-1,
+                when_phase_offset=-3,
+            ),
+            StateTransitionPortTiming(
+                transition=clear.id,
+                value_phase_offset=None,
+                when_phase_offset=-3,
+            ),
+        ),
+        entity_cost=6,
+    )
+
+
+def _state_register_names(problem: MappingProblem) -> tuple[str, ...]:
+    return tuple(
         dict.fromkeys(
             [item.register_name for item in problem.state_reads]
             + [item.register_name for item in problem.state_transitions]
         )
     )
+
+
+def _register_for(problem: MappingProblem, register_name: str) -> object:
+    transitions = tuple(
+        item for item in problem.state_transitions if item.register_name == register_name
+    )
+    if transitions:
+        return transitions[0].semantic.register
+    return next(
+        item.semantic.register for item in problem.state_reads if item.register_name == register_name
+    )
+
+
+def ordinary_freeze_state_candidates(problem: MappingProblem) -> tuple[StateCellCandidate, ...]:
+    """Generate ordinary candidates for every Freeze register represented by the problem."""
+
     result: list[StateCellCandidate] = []
-    for register_name in register_names:
-        transitions = tuple(
-            item for item in problem.state_transitions if item.register_name == register_name
-        )
-        register = (
-            transitions[0].semantic.register
-            if transitions
-            else next(
-                item.semantic.register
-                for item in problem.state_reads
-                if item.register_name == register_name
-            )
-        )
-        if not isinstance(register, FreezeRegister):
+    for register_name in _state_register_names(problem):
+        if not isinstance(_register_for(problem, register_name), FreezeRegister):
             continue
         result.append(
             ordinary_freeze_state_candidate(
@@ -152,4 +223,50 @@ def ordinary_freeze_state_candidates(problem: MappingProblem) -> tuple[StateCell
                 candidate_id=len(result) + 1,
             )
         )
+    return tuple(result)
+
+
+def ordinary_accumulator_state_candidates(
+    problem: MappingProblem,
+) -> tuple[StateCellCandidate, ...]:
+    """Generate first ordinary candidates for supported Accumulator registers."""
+
+    result: list[StateCellCandidate] = []
+    for register_name in _state_register_names(problem):
+        if not isinstance(_register_for(problem, register_name), AccumulatorRegister):
+            continue
+        result.append(
+            ordinary_accumulator_state_candidate(
+                problem,
+                register_name,
+                candidate_id=len(result) + 1,
+            )
+        )
+    return tuple(result)
+
+
+def ordinary_state_candidates(problem: MappingProblem) -> tuple[StateCellCandidate, ...]:
+    """Generate one ordinary state-cell implementation for every supported periodic register."""
+
+    result: list[StateCellCandidate] = []
+    for register_name in _state_register_names(problem):
+        register = _register_for(problem, register_name)
+        candidate_id = len(result) + 1
+        if isinstance(register, FreezeRegister):
+            candidate = ordinary_freeze_state_candidate(
+                problem,
+                register_name,
+                candidate_id=candidate_id,
+            )
+        elif isinstance(register, AccumulatorRegister):
+            candidate = ordinary_accumulator_state_candidate(
+                problem,
+                register_name,
+                candidate_id=candidate_id,
+            )
+        else:  # pragma: no cover - canonical periodic state currently has only these families
+            raise MappingProblemError(
+                f"no ordinary state-cell implementation for register {register_name!r}"
+            )
+        result.append(candidate)
     return tuple(result)
