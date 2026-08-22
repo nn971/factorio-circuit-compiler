@@ -1,9 +1,9 @@
 """Selected realization plan produced by temporal technology mapping.
 
 A plan is target-level enough to say which implementation candidate realizes each semantic recipe,
-when its ports are used, which exact lifetimes need storage, and which explicit shared-resource
-mechanisms were selected. It deliberately stops before concrete Factorio signal identities,
-red/green wiring, placement, and routing.
+when its ports are used, which state-cell implementation realizes each periodic register, which exact
+lifetimes need storage, and which explicit shared-resource mechanisms were selected. It deliberately
+stops before concrete Factorio signal identities, red/green wiring, placement, and routing.
 """
 
 from __future__ import annotations
@@ -26,6 +26,20 @@ class SelectedRealization:
     operation: int
     candidate: int
     output_phase: int
+    entity_cost: int
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedStateCell:
+    """One selected periodic state-cell implementation.
+
+    ``base_read_phase`` is the physical phase of logical occurrence zero. Other occurrence read
+    phases are derived by adding the prescribed logical period.
+    """
+
+    register_name: str
+    candidate: int
+    base_read_phase: int
     entity_cost: int
 
 
@@ -73,13 +87,7 @@ class WireSumResource:
 
 @dataclass(frozen=True, slots=True)
 class DelayBusLane:
-    """One scalar exact token assigned to an isolated shared delay bus.
-
-    ``delivery_phases`` contains one entry per transported semantic use, not merely unique tap
-    phases. The first joint bus model deliberately charges/lowers one interface per use so its
-    combinator objective exactly matches emitted hardware even when multiple consumers happen to
-    use the same phase. A later optimization may explicitly coalesce equal-phase egresses.
-    """
+    """One scalar exact token assigned to an isolated shared delay bus."""
 
     producer: int
     start_phase: int
@@ -128,6 +136,7 @@ class RealizationPlan:
     entity_cost: int
     transport_cost: int
     delay_buses: tuple[DelayBusResource, ...] = ()
+    state_cells: tuple[SelectedStateCell, ...] = ()
 
     @property
     def total_cost(self) -> int:
@@ -138,6 +147,12 @@ class RealizationPlan:
             if realization.operation == operation:
                 return realization
         raise KeyError(operation)
+
+    def state_cell_for(self, register_name: str) -> SelectedStateCell:
+        for cell in self.state_cells:
+            if cell.register_name == register_name:
+                return cell
+        raise KeyError(register_name)
 
     def deliveries_from(self, producer: int) -> tuple[PlannedDelivery, ...]:
         return tuple(item for item in self.deliveries if item.producer == producer)
