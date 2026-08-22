@@ -15,6 +15,7 @@ from collections import Counter
 from factorio_circuit.ir.state import VectorRegisterRead
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
+    add_decider_condition_cover_candidates,
     add_select_constant_candidates,
     add_wire_sum_candidates,
     build_periodic_level_mapping_problem,
@@ -125,6 +126,12 @@ def _print_full_state_extraction(problem, *, period: int, output_phase: int) -> 
     print(f"  transition_occurrences={transition_offset_summary or 'none'}")
 
 
+def _operation_candidates(problem):
+    candidates = ordinary_candidates(problem)
+    candidates = add_select_constant_candidates(problem, candidates)
+    return add_decider_condition_cover_candidates(problem, candidates)
+
+
 def _solve_full_state(
     problem,
     *,
@@ -134,7 +141,7 @@ def _solve_full_state(
     time_limit: float,
     workers: int,
 ) -> None:
-    operation_candidates = add_select_constant_candidates(problem, ordinary_candidates(problem))
+    operation_candidates = _operation_candidates(problem)
     state_candidates = ordinary_state_candidates(problem)
     result = solve_periodic_state_bus_mapping_problem(
         problem,
@@ -258,7 +265,7 @@ def main() -> None:
         output_phases=output_phases,
         sampling_policy=SamplingPolicy.ALAP,
     )
-    candidates = add_select_constant_candidates(problem, ordinary_candidates(problem))
+    candidates = _operation_candidates(problem)
     if not args.without_wire_sum:
         candidates = add_wire_sum_candidates(problem, candidates)
 
