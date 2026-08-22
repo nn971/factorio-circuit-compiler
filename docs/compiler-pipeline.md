@@ -173,6 +173,32 @@ blueprint/layout_encode.py
 
 Serialization converts a finished Layout to blueprint JSON/string. It does not choose semantic timing, signals, wire colors, or geometry.
 
+### In-game entity annotation convention
+
+Every serialized combinator receives a `player_description` for physical debugging. Blueprint serialization adds a uniform header and preserves any lowering/synthesis role text already stored in the concrete entity's `description` field:
+
+```text
+[FCC #<entity-number> | <kind>] <role>
+```
+
+Examples:
+
+```text
+[FCC #37 | arithmetic *] Mapped FreezeReg body_mask: input gate
+[FCC #91 | decider !=] Mapped AccumulatorReg score: add active
+[FCC #144 | selector random] ORACLE food_candidate: random signal every 1 tick(s)
+[FCC #208 | constant] mapped periodic commit: +1
+[FCC #615 | relay] safe folded red group 12 row 3 track 4
+```
+
+The header fields are serialization-level diagnostics:
+
+- `#<entity-number>` is the final blueprint entity number and is the stable lookup key for wires and positions in that blueprint.
+- `<kind>` is a concise concrete target classification: `arithmetic <operation>`, `decider <comparator>`, `selector <operation>`, `constant`, `marker`, or `relay`.
+- `<role>` is optional free-form provenance supplied by lowering or routing. It should describe why the entity exists, not restate its configured arithmetic. Existing role strings are preserved verbatim after the header.
+
+Annotation is observational only. It must not change Abstract Physical IR, physical timing, signal allocation, net grouping, placement, routing, or combinator counts. Entities without an existing role still receive the header, so an otherwise opaque combinator remains identifiable in-game. I/O annotation-only constants use kind `marker`; routing relay constants use kind `relay`.
+
 ## 8. Simulation and tests
 
 Semantic/reference simulation defines the intended logical behavior; physical simulation validates lowering after accounting for output phase.
