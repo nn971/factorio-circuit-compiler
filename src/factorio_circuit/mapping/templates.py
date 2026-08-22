@@ -2,8 +2,8 @@
 
 The implementation-neutral problem deliberately carries no Factorio latency. Candidate templates
 own the timing equations and implementation cost. The first milestone registers the ordinary
-Factorio implementations plus one deliberately narrow zero-delay wire-sum candidate used to prove
-that implementation choice and timing are solved together.
+Factorio implementations plus narrow target-specific alternatives whose timing/cost can be solved
+jointly with transport.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from factorio_circuit.analysis.latency import FACTORIO_LATENCY
 from factorio_circuit.ir.semantic import (
     BinaryOp,
     Compare,
+    Constant,
     Select,
     VectorBinaryOp,
     VectorFilter,
@@ -35,11 +36,24 @@ class CandidateOutputMode(StrEnum):
 
 
 class ImplementationKind(StrEnum):
-    """Physical realization family selected by one finite candidate."""
+    """Broad physical realization family selected by one finite candidate."""
 
     ORDINARY = "ordinary"
     ZERO_COST_VIEW = "zero-cost-view"
     WIRE_SUM = "wire-sum"
+
+
+class ImplementationRecipe(StrEnum):
+    """Concrete lowering recipe within an implementation family.
+
+    Recipes let several target realizations share the same broad implementation kind while owning
+    different entity costs and timing equations.  The ordinary recipe remains the universal
+    fallback; specialized recipes are only generated when their semantic preconditions are proven.
+    """
+
+    ORDINARY = "ordinary"
+    SELECT_CONSTANT_FOLDED = "select-constant-folded"
+    SELECT_CONSTANT_ZERO_FALSE = "select-constant-zero-false"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +62,9 @@ class ImplementationCandidate:
 
     ``input_phase_offsets[i]`` is added to the chosen output phase to obtain the required physical
     phase of semantic operand ``i``. Ordinary Factorio combinators therefore use negative offsets;
-    a zero-delay wire aggregation candidate uses zero offsets.
+    a zero-delay wire aggregation candidate uses zero offsets. Compile-time operands may use offset
+    zero when a specialized recipe consumes their literal value during lowering rather than a
+    physical wire.
     """
 
     id: int
@@ -58,6 +74,7 @@ class ImplementationCandidate:
     entity_cost: int
     output_mode: CandidateOutputMode = CandidateOutputMode.EXACT
     kind: ImplementationKind = ImplementationKind.ORDINARY
+    recipe: ImplementationRecipe = ImplementationRecipe.ORDINARY
 
     def __post_init__(self) -> None:
         if isinstance(self.id, bool) or not isinstance(self.id, int) or self.id <= 0:
@@ -84,6 +101,8 @@ class ImplementationCandidate:
             raise MappingProblemError("candidate output mode must be a CandidateOutputMode")
         if not isinstance(self.kind, ImplementationKind):
             raise MappingProblemError("candidate kind must be an ImplementationKind")
+        if not isinstance(self.recipe, ImplementationRecipe):
+            raise MappingProblemError("candidate recipe must be an ImplementationRecipe")
 
 
 def ordinary_candidate(
@@ -164,6 +183,72 @@ def ordinary_candidates(problem: MappingProblem) -> tuple[ImplementationCandidat
         ordinary_candidate(operation, candidate_id=index)
         for index, operation in enumerate(problem.operations, start=1)
     )
+
+
+def select_constant_candidate(
+    operation: MappingOperation,
+    *,
+    candidate_id: int,
+) -> ImplementationCandidate:
+    """Return a cheaper arithmetic Select realization when both arms are compile-time constants.
+
+    ``select(c, t, f)`` is normally lowered as ``f + (t - f) * c`` using three arithmetic
+    combinators.  With constant arms the delta is computed by Python elaboration instead:
+
+    * ``f == 0`` -> ``c * t`` (one combinator, one tick);
+    * otherwise -> ``c * (t - f) + f`` (two combinators, two ticks).
+
+    The constant arms therefore have phase offset zero: they are literal parameters consumed by the
+    lowering recipe, not physical inputs that need transport.
+    """
+
+    semantic = operation.semantic
+    if not isinstance(semantic, Select):
+        raise MappingProblemError("constant-arm Select candidate requires Select semantics")
+    if not isinstance(semantic.when_true, Constant) or not isinstance(
+        semantic.when_false, Constant
+    ):
+        raise MappingProblemError("constant-arm Select candidate requires two constant arms")
+    if len(operation.operands) != 3:
+        raise MappingProblemError("constant-arm Select candidate requires exactly three operands")
+
+    stage_latency = FACTORIO_LATENCY.operation_latency("scalar_binary", "*")
+    if semantic.when_false.value == 0:
+        return ImplementationCandidate(
+            id=candidate_id,
+            operation=operation.id,
+            name="select constant arms, zero false",
+            input_phase_offsets=(-stage_latency, 0, 0),
+            entity_cost=1,
+            recipe=ImplementationRecipe.SELECT_CONSTANT_ZERO_FALSE,
+        )
+
+    return ImplementationCandidate(
+        id=candidate_id,
+        operation=operation.id,
+        name="select constant arms, folded delta",
+        input_phase_offsets=(-2 * stage_latency, 0, 0),
+        entity_cost=2,
+        recipe=ImplementationRecipe.SELECT_CONSTANT_FOLDED,
+    )
+
+
+def add_select_constant_candidates(
+    problem: MappingProblem,
+    candidates: tuple[ImplementationCandidate, ...],
+) -> tuple[ImplementationCandidate, ...]:
+    """Append every legal constant-arm Select alternative in ``problem``."""
+
+    next_id = max((item.id for item in candidates), default=0) + 1
+    result = list(candidates)
+    for operation in problem.operations:
+        try:
+            candidate = select_constant_candidate(operation, candidate_id=next_id)
+        except MappingProblemError:
+            continue
+        result.append(candidate)
+        next_id += 1
+    return tuple(result)
 
 
 def wire_sum_candidate(

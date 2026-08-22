@@ -1,10 +1,10 @@
 """Analyze Snake with the implementation-neutral temporal technology-mapping prototypes.
 
 The default mode maps only Snake's post-update output cone. ``--extract-full-state`` traverses the
-phase-neutral recurrence and stops. ``--solve-full-state`` supplies ordinary clocked
-Freeze/Accumulator state-cell candidates plus the shared periodic commit resource and jointly solves
-state phases, ordinary computation timing, exact transport, and optional shared scalar delay buses,
-without consulting ``StateTimingPlan``.
+phase-neutral recurrence and stops. ``--solve-full-state`` supplies clocked Freeze/Accumulator
+state-cell candidates plus the shared periodic commit resource and jointly solves state phases,
+target computation timing, exact transport, and optional shared scalar delay buses, without
+consulting ``StateTimingPlan``.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from collections import Counter
 from factorio_circuit.ir.state import VectorRegisterRead
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
+    add_select_constant_candidates,
     add_wire_sum_candidates,
     build_periodic_level_mapping_problem,
     build_periodic_state_mapping_problem,
@@ -133,7 +134,7 @@ def _solve_full_state(
     time_limit: float,
     workers: int,
 ) -> None:
-    operation_candidates = ordinary_candidates(problem)
+    operation_candidates = add_select_constant_candidates(problem, ordinary_candidates(problem))
     state_candidates = ordinary_state_candidates(problem)
     result = solve_periodic_state_bus_mapping_problem(
         problem,
@@ -146,12 +147,16 @@ def _solve_full_state(
     )
 
     state_candidate_by_id = {item.id: item for item in state_candidates}
+    operation_candidate_by_id = {item.id: item for item in operation_candidates}
     operation_entity_cost = sum(item.entity_cost for item in result.plan.realizations)
     state_entity_cost = sum(item.entity_cost for item in result.plan.state_cells)
     commit_entity_cost = (
         0 if result.plan.periodic_commit is None else result.plan.periodic_commit.entity_cost
     )
     delivery_kinds = Counter(item.kind.value for item in result.plan.deliveries)
+    selected_recipes = Counter(
+        operation_candidate_by_id[item.candidate].recipe.value for item in result.plan.realizations
+    )
 
     print("Snake full recurrence mapping")
     print(f"  prescribed_period={problem.period}; horizon={problem.horizon}")
@@ -167,6 +172,10 @@ def _solve_full_state(
         f"commit_entities={commit_entity_cost}; transport={result.plan.transport_cost}; "
         f"total={result.plan.total_cost}"
     )
+    recipe_summary = ", ".join(
+        f"{recipe}:{count}" for recipe, count in sorted(selected_recipes.items())
+    )
+    print(f"  selected_recipes={recipe_summary or 'none'}")
     if result.plan.periodic_commit is not None:
         print(
             "  periodic_commit: "
@@ -249,7 +258,7 @@ def main() -> None:
         output_phases=output_phases,
         sampling_policy=SamplingPolicy.ALAP,
     )
-    candidates = ordinary_candidates(problem)
+    candidates = add_select_constant_candidates(problem, ordinary_candidates(problem))
     if not args.without_wire_sum:
         candidates = add_wire_sum_candidates(problem, candidates)
 
@@ -270,6 +279,9 @@ def main() -> None:
     selected = {item.operation: item.candidate for item in result.plan.realizations}
     candidate_by_id = {item.id: item for item in candidates}
     kinds = Counter(candidate_by_id[candidate_id].kind.value for candidate_id in selected.values())
+    recipes = Counter(
+        candidate_by_id[candidate_id].recipe.value for candidate_id in selected.values()
+    )
 
     print("Snake periodic output-cone mapping")
     print(f"  prescribed_period={args.period}; output_phase={output_phase}")
@@ -288,7 +300,9 @@ def main() -> None:
         f"total={result.plan.total_cost}"
     )
     candidate_summary = ", ".join(f"{kind}:{count}" for kind, count in sorted(kinds.items()))
+    recipe_summary = ", ".join(f"{recipe}:{count}" for recipe, count in sorted(recipes.items()))
     print(f"  selected_candidates={candidate_summary or 'none'}")
+    print(f"  selected_recipes={recipe_summary or 'none'}")
     print(f"  delay_buses={len(result.plan.delay_buses)}")
     for bus in result.plan.delay_buses:
         print(
