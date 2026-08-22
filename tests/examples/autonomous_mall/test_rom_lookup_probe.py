@@ -38,6 +38,20 @@ def test_probe_serializes_pairwise_each_with_opposite_input_networks() -> None:
         (("green", True), ("red", False)),
     }
 
+    reducer = next(
+        entity
+        for entity in entities
+        if "Reduce selected packed word to signal-I"
+        in entity.get("player_description", "")
+    )
+    decider = reducer["control_behavior"]["decider_conditions"]
+    condition = decider["conditions"][0]
+    output = decider["outputs"][0]
+    assert condition["first_signal"]["name"] == "signal-each"
+    assert condition["comparator"] == "≠"
+    assert output["signal"]["name"] == "signal-I"
+    assert output["copy_count_from_input"] is True
+
 
 def test_probe_rom_constants_split_after_twenty_item_signals() -> None:
     entries = {f"item-{index}": index + 1 for index in range(21)}
