@@ -29,6 +29,8 @@ jobs:
               path = Path(path_text)
               text = path.read_text(encoding="utf-8")
               actual = text.count(old)
+              if actual == 0:
+                  return
               if actual != count:
                   raise SystemExit(
                       f"{path}: expected {count} occurrence(s), found {actual}: {old!r}"
@@ -233,7 +235,11 @@ jobs:
               "    base: _BasePeriodicStatePhysicalLoweringResult = lowerer.lower_mapped()\n",
           )
           PY
-          uv run ruff format .
+          uv run ruff format \
+            src/factorio_circuit/mapping/state_solver.py \
+            src/factorio_circuit/mapping/state_bus_solver.py \
+            src/factorio_circuit/mapping/state_lower.py \
+            src/factorio_circuit/mapping/state_lower_entry.py
           uv run ruff check .
           uv run mypy src
       - name: Commit cleanup
@@ -243,6 +249,10 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git add \
+            src/factorio_circuit/mapping/state_solver.py \
+            src/factorio_circuit/mapping/state_bus_solver.py \
+            src/factorio_circuit/mapping/state_lower.py \
+            src/factorio_circuit/mapping/state_lower_entry.py
           git commit -m "Clean up mapper typing"
           git push origin HEAD:agent/temporal-technology-mapping

@@ -204,7 +204,7 @@ def lower_periodic_state_mapping_plan(
         state_candidates,
         plan,
     )
-    base: _BasePeriodicStatePhysicalLoweringResult = lowerer.lower()
+    base: _BasePeriodicStatePhysicalLoweringResult = lowerer.lower_mapped()
     return PeriodicStatePhysicalLoweringResult(
         circuit=base.circuit,
         fixed_source_entities=base.fixed_source_entities,

@@ -149,9 +149,9 @@ def solve_periodic_state_mapping_problem(
             f"state_mapping_base_phase_{register_name}",
         )
         choices = []
-        for candidate in state_candidates_by_register[register_name]:
-            variable = model.NewBoolVar(f"state_mapping_cell_candidate_{candidate.id}")
-            state_choose[candidate.id] = variable
+        for state_candidate in state_candidates_by_register[register_name]:
+            variable = model.NewBoolVar(f"state_mapping_cell_candidate_{state_candidate.id}")
+            state_choose[state_candidate.id] = variable
             choices.append(variable)
         model.Add(sum(choices) == 1)
 
@@ -181,9 +181,9 @@ def solve_periodic_state_mapping_problem(
 
     for register_name, register_candidates in state_candidates_by_register.items():
         base = state_base_phase[register_name]
-        for candidate in register_candidates:
-            selected = state_choose[candidate.id]
-            for port in candidate.transition_ports:
+        for state_candidate in register_candidates:
+            selected_state = state_choose[state_candidate.id]
+            for port in state_candidate.transition_ports:
                 transition = transitions[port.transition]
                 next_read = base + (transition.logical_offset + 1) * period
                 if transition.value is not None:
@@ -193,7 +193,7 @@ def solve_periodic_state_mapping_problem(
                         )
                     use = MappingUse(transition.value, transition.id, 0)
                     model.Add(use_phase[use] == next_read + port.value_phase_offset).OnlyEnforceIf(
-                        selected
+                        selected_state
                     )
                 if transition.when is not None:
                     if port.when_phase_offset is None:
@@ -203,7 +203,7 @@ def solve_periodic_state_mapping_problem(
                         )
                     use = MappingUse(transition.when, transition.id, 1)
                     model.Add(use_phase[use] == next_read + port.when_phase_offset).OnlyEnforceIf(
-                        selected
+                        selected_state
                     )
 
     outgoing: dict[int, list[MappingUse]] = {value_id: [] for value_id in problem.value_ids}
@@ -432,7 +432,7 @@ def _extract_plan(
     realizations: list[SelectedRealization] = []
     output_values: dict[int, int] = {}
     for operation in problem.operations:
-        selected = next(
+        selected_operation_candidate = next(
             item
             for item in candidates_by_operation[operation.id]
             if solver.BooleanValue(choose[item.id])
@@ -442,15 +442,15 @@ def _extract_plan(
         realizations.append(
             SelectedRealization(
                 operation=operation.id,
-                candidate=selected.id,
+                candidate=selected_operation_candidate.id,
                 output_phase=phase,
-                entity_cost=selected.entity_cost,
+                entity_cost=selected_operation_candidate.entity_cost,
             )
         )
 
     state_cells: list[SelectedStateCell] = []
     for register_name in _state_register_names(problem):
-        selected = next(
+        selected_state_candidate = next(
             item
             for item in state_candidates_by_register[register_name]
             if solver.BooleanValue(state_choose[item.id])
@@ -458,9 +458,9 @@ def _extract_plan(
         state_cells.append(
             SelectedStateCell(
                 register_name=register_name,
-                candidate=selected.id,
+                candidate=selected_state_candidate.id,
                 base_read_phase=int(solver.Value(state_base_phase[register_name])),
-                entity_cost=selected.entity_cost,
+                entity_cost=selected_state_candidate.entity_cost,
             )
         )
 
@@ -591,15 +591,15 @@ def validate_periodic_state_plan(
         raise MappingProblemError("periodic state plan must select exactly one cell per register")
     transitions = {item.id: item for item in problem.state_transitions}
     for register_name, cell in state_cell_by_register.items():
-        candidate = state_candidate_by_id.get(cell.candidate)
-        if candidate is None or candidate.register_name != register_name:
+        state_cell_candidate = state_candidate_by_id.get(cell.candidate)
+        if state_cell_candidate is None or state_cell_candidate.register_name != register_name:
             raise MappingProblemError("periodic state plan selects the wrong state-cell candidate")
-        if cell.entity_cost != candidate.entity_cost:
+        if cell.entity_cost != state_cell_candidate.entity_cost:
             raise MappingProblemError("state-cell realization cost disagrees with candidate")
         if not 0 <= cell.base_read_phase < period:
             raise MappingProblemError("state-cell base read phase lies outside one logical period")
         entity_cost += cell.entity_cost
-        for port in candidate.transition_ports:
+        for port in state_cell_candidate.transition_ports:
             transition = transitions[port.transition]
             next_read = cell.base_read_phase + (transition.logical_offset + 1) * period
             if transition.value is not None:

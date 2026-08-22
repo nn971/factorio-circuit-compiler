@@ -182,8 +182,9 @@ class _MappedPeriodicStateLowerer(SamplingPolicyLowerer):
         self.state_candidate_by_id = {item.id: item for item in state_candidates}
         self.realization_by_operation = {item.operation: item for item in plan.realizations}
         self.value_id_by_semantic = {
-            id(item.semantic): item.id
-            for item in (*problem.sources, *problem.state_reads, *problem.operations)
+            **{id(item.semantic): item.id for item in problem.sources},
+            **{id(item.semantic): item.id for item in problem.state_reads},
+            **{id(item.semantic): item.id for item in problem.operations},
         }
         self.operation_id_by_semantic = {id(item.semantic): item.id for item in problem.operations}
         self.alap_schedule = AlapSchedule(
@@ -230,7 +231,7 @@ class _MappedPeriodicStateLowerer(SamplingPolicyLowerer):
         self.commit_ready_signal: int | None = None
         self.commit_ready_net: int | None = None
 
-    def lower(self) -> PeriodicStatePhysicalLoweringResult:
+    def lower_mapped(self) -> PeriodicStatePhysicalLoweringResult:
         self._create_input_markers()
         self._emit_periodic_commit_resource()
         self._reserve_state_outputs()
@@ -242,12 +243,11 @@ class _MappedPeriodicStateLowerer(SamplingPolicyLowerer):
             if value_id != sink.value:
                 raise MappingProblemError("module output does not match mapped sink value")
             if is_vector_value(semantic):
-                base = self.realize_vector(cast(VectorValue, semantic))
-                realized = self.delay_vector_to(base, sink.phase)
+                vector_base = self.realize_vector(cast(VectorValue, semantic))
+                realized_outputs.append(self.delay_vector_to(vector_base, sink.phase))
             else:
-                base = self.realize(cast(Value, semantic))
-                realized = self.delay_to(base, sink.phase)
-            realized_outputs.append(realized)
+                scalar_base = self.realize(cast(Value, semantic))
+                realized_outputs.append(self.delay_to(scalar_base, sink.phase))
 
         self._create_output_markers(realized_outputs)
 
@@ -1038,7 +1038,7 @@ def lower_periodic_state_mapping_plan(
         candidates,
         state_candidates,
         plan,
-    ).lower()
+    ).lower_mapped()
 
 
 __all__ = ["PeriodicStatePhysicalLoweringResult", "lower_periodic_state_mapping_plan"]
