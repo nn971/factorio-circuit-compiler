@@ -5,7 +5,9 @@ from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
     DeliveryKind,
     build_periodic_state_mapping_problem,
+    ordinary_state_candidates,
     solve_periodic_state_bus_mapping_problem,
+    solve_periodic_state_mapping_problem,
 )
 
 _LEFT_SIGNAL = SignalId("virtual", "signal-L")
@@ -41,16 +43,25 @@ def _two_freeze_problem():
 def test_state_bus_solver_matches_private_baseline_when_disabled() -> None:
     pytest.importorskip("ortools.sat.python.cp_model")
     problem = _two_freeze_problem()
+    state_candidates = ordinary_state_candidates(problem)
 
+    baseline = solve_periodic_state_mapping_problem(
+        problem,
+        state_candidates=state_candidates,
+        time_limit_seconds=5.0,
+    )
     result = solve_periodic_state_bus_mapping_problem(
         problem,
+        state_candidates=state_candidates,
         max_delay_buses=0,
         time_limit_seconds=5.0,
     )
 
+    assert baseline.proven_optimal
     assert result.proven_optimal
-    assert result.plan.entity_cost == 10
-    assert result.plan.transport_cost == 10
+    assert result.plan.entity_cost == baseline.plan.entity_cost == 10
+    assert result.plan.transport_cost == baseline.plan.transport_cost == 10
+    assert result.plan.total_cost == baseline.plan.total_cost
     assert result.plan.delay_buses == ()
     assert all(
         item.kind is not DeliveryKind.BUS_TRANSPORT for item in result.plan.deliveries
