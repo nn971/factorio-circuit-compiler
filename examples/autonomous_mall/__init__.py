@@ -1,5 +1,18 @@
 """Reference implementation for the autonomous mall example."""
 
+from .autonomous_quality_controller import (
+    AutonomousDecision,
+    AutonomousDecisionKind,
+    AutonomousDispatchIntent,
+    AutonomousQualityController,
+)
+from .compiled_quality_policy import (
+    CompiledQualityPolicyBook,
+    CompiledTargetPolicy,
+    PolicyLane,
+    WeightedPolicyAction,
+    compile_quality_policy_book,
+)
 from .model import Commodity, ProductionRoute, Quality, RecipeBook, WorkerKind
 from .planner import MaterialPlan, MaterialPlanner, NoRouteError, PlanningError
 from .quality_controller import (
@@ -34,7 +47,13 @@ from .scheduler import Job, ReservationError, Scheduler, Worker
 
 __all__ = [
     "AmbiguousProducerError",
+    "AutonomousDecision",
+    "AutonomousDecisionKind",
+    "AutonomousDispatchIntent",
+    "AutonomousQualityController",
     "Commodity",
+    "CompiledQualityPolicyBook",
+    "CompiledTargetPolicy",
     "FakeQualityDispatcher",
     "InvalidRecipeOverrideError",
     "ItemRecipe",
@@ -45,6 +64,7 @@ __all__ = [
     "ModuleProfile",
     "NoRouteError",
     "PlanningError",
+    "PolicyLane",
     "ProductionRoute",
     "Quality",
     "QualityAction",
@@ -65,10 +85,12 @@ __all__ = [
     "RecedingHorizonQualityController",
     "ReservationError",
     "Scheduler",
+    "WeightedPolicyAction",
     "Worker",
     "WorkerKind",
     "build_quality_action_graph",
     "build_recipe_dag",
+    "compile_quality_policy_book",
     "productivity_route",
     "quality_route",
     "recycler_route",
