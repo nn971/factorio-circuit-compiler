@@ -2,6 +2,13 @@
 
 from .model import Commodity, ProductionRoute, Quality, RecipeBook, WorkerKind
 from .planner import MaterialPlan, MaterialPlanner, NoRouteError, PlanningError
+from .quality_controller import (
+    FakeQualityDispatcher,
+    QualityDecision,
+    QualityDecisionKind,
+    QualityDispatchIntent,
+    RecedingHorizonQualityController,
+)
 from .quality_policy import QualityPlan, QualityPlanStep, QualityPolicyError, solve_quality_policy
 from .quality_policy_graph import (
     ModuleProfile,
@@ -28,6 +35,7 @@ from .scheduler import Job, ReservationError, Scheduler, Worker
 __all__ = [
     "AmbiguousProducerError",
     "Commodity",
+    "FakeQualityDispatcher",
     "InvalidRecipeOverrideError",
     "ItemRecipe",
     "Job",
@@ -42,6 +50,9 @@ __all__ = [
     "QualityAction",
     "QualityActionGraph",
     "QualityActionKind",
+    "QualityDecision",
+    "QualityDecisionKind",
+    "QualityDispatchIntent",
     "QualityPlan",
     "QualityPlanStep",
     "QualityPolicyConfig",
@@ -51,6 +62,7 @@ __all__ = [
     "RecipeCycleError",
     "RecipeDAG",
     "RecipeGraphError",
+    "RecedingHorizonQualityController",
     "ReservationError",
     "Scheduler",
     "Worker",
