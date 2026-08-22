@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .candidate_coupling import validate_selected_candidate_coupling
 from .plan import (
     DeliveryKind,
     ExactLifetime,
@@ -29,6 +30,7 @@ def validate_realization_plan(
     candidate_by_id = {item.id: item for item in candidates}
     if len(candidate_by_id) != len(candidates):
         raise MappingProblemError("mapping candidates must have unique ids")
+    validate_selected_candidate_coupling(candidates, plan)
 
     realization_by_operation = {item.operation: item for item in plan.realizations}
     if len(realization_by_operation) != len(plan.realizations):
