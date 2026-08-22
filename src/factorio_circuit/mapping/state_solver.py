@@ -493,7 +493,7 @@ def _extract_plan(
             last_free = int(solver.Value(state_read_last_free[use.producer]))
             if phase < start:  # pragma: no cover - solver constraint
                 raise AssertionError("solver consumed a state read before its candidate read phase")
-            if delivery.phase <= last_free:
+            if phase <= last_free:
                 kind = DeliveryKind.REUSE
                 transport_start = None
             else:
