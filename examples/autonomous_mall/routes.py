@@ -2,28 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from fractions import Fraction
-from typing import Mapping
 
 from .model import Amount, Commodity, ProductionRoute, Quality, WorkerKind
 from .quality_mechanics import expected_quality_outputs, expected_recycler_outputs
-
-
-@dataclass(frozen=True)
-class ItemRecipe:
-    """Single-item-output assembler recipe used by the first mall prototype."""
-
-    name: str
-    product: str
-    product_amount: Amount
-    ingredients: Mapping[str, Amount]
-
-    def __post_init__(self) -> None:
-        if Fraction(self.product_amount) <= 0:
-            raise ValueError("product_amount must be positive")
-        if any(Fraction(amount) < 0 for amount in self.ingredients.values()):
-            raise ValueError("ingredient amounts must be non-negative")
+from .recipe_graph import ItemRecipe
 
 
 def productivity_route(
@@ -35,8 +18,12 @@ def productivity_route(
     """Expected route for one craft on a fixed productivity worker."""
 
     bonus = Fraction(productivity_bonus)
-    if bonus < 0 or bonus > 3:
-        raise ValueError("productivity_bonus must lie in [0, 3]")
+    if bonus < 0 or bonus > recipe.maximum_productivity:
+        raise ValueError(
+            f"productivity_bonus must lie in [0, {recipe.maximum_productivity}]"
+        )
+    if bonus and not recipe.allow_productivity:
+        raise ValueError(f"recipe {recipe.name!r} does not allow productivity")
     inputs = {
         Commodity(item, quality): Fraction(amount)
         for item, amount in recipe.ingredients.items()
@@ -60,6 +47,9 @@ def quality_route(
 ) -> ProductionRoute:
     """Expected route for one craft on a fixed quality worker."""
 
+    chance = Fraction(quality_chance)
+    if chance and not recipe.allow_quality:
+        raise ValueError(f"recipe {recipe.name!r} does not allow quality")
     inputs = {
         Commodity(item, base_quality): Fraction(amount)
         for item, amount in recipe.ingredients.items()
@@ -68,7 +58,7 @@ def quality_route(
         item=recipe.product,
         base_quality=base_quality,
         output_amount=recipe.product_amount,
-        quality_chance=quality_chance,
+        quality_chance=chance,
     )
     return ProductionRoute(
         name=f"q:{recipe.name}:{base_quality.name.lower()}",
