@@ -93,21 +93,23 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
             return value
         return super().delay_vector_to(value, target_phase)
 
-    def _selected_candidate(self, semantic: object) -> tuple[int, object, ImplementationCandidate] | None:
+    def _selected_candidate(
+        self, semantic: object
+    ) -> tuple[int, ImplementationCandidate] | None:
         operation_id = self.operation_id_by_semantic.get(id(semantic))
         if operation_id is None:
             return None
         realization = self.realization_by_operation[operation_id]
         candidate = self.candidate_by_id[realization.candidate]
-        return operation_id, realization, candidate
+        return operation_id, candidate
 
     def _realize_binary(self, op: BinaryOp) -> RealizedValue:
         selected = self._selected_candidate(op)
         if selected is None:
             return super()._realize_binary(op)
-        operation_id, realization, candidate = selected
+        operation_id, candidate = selected
         if candidate.recipe is ImplementationRecipe.DECIDER_CONDITION_COVER:
-            return self._realize_decider_condition_cover(op, operation_id, realization, candidate)
+            return self._realize_decider_condition_cover(op, operation_id, candidate)
         if candidate.recipe is ImplementationRecipe.COVERED_BY_DECIDER:
             raise MappingProblemError(
                 f"covered boolean operation {operation_id} escaped its decider-cover root"
@@ -116,7 +118,7 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
 
     def _realize_compare(self, comparison: Compare) -> RealizedValue:
         selected = self._selected_candidate(comparison)
-        if selected is not None and selected[2].recipe is ImplementationRecipe.COVERED_BY_DECIDER:
+        if selected is not None and selected[1].recipe is ImplementationRecipe.COVERED_BY_DECIDER:
             raise MappingProblemError(
                 f"covered comparison {selected[0]} escaped its decider-cover root"
             )
@@ -144,7 +146,6 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
         self,
         root: BinaryOp,
         operation_id: int,
-        realization: object,
         candidate: ImplementationCandidate,
     ) -> RealizedValue:
         flattened = flatten_decider_condition_cover(root)
