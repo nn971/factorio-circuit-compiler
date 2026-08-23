@@ -153,8 +153,7 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
                 "periodic wire-sum contributor output was observed before carrier aggregation"
             )
         if any(
-            value.net in (conflict.left, conflict.right)
-            for conflict in self.circuit.net_conflicts
+            value.net in (conflict.left, conflict.right) for conflict in self.circuit.net_conflicts
         ):
             raise MappingProblemError(
                 "periodic wire-sum contributor output already participates in a net conflict"

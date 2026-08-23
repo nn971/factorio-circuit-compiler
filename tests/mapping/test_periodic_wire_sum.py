@@ -80,9 +80,7 @@ def test_periodic_mapper_selects_and_lowers_binary_wire_sum() -> None:
     )
 
     root_deliveries = [
-        delivery
-        for delivery in solve.plan.deliveries
-        if delivery.consumer == sum_operation.id
+        delivery for delivery in solve.plan.deliveries if delivery.consumer == sum_operation.id
     ]
     assert len(root_deliveries) == 2
     assert all(delivery.kind.value == "reuse" for delivery in root_deliveries)
@@ -116,11 +114,14 @@ def test_periodic_mapper_selects_and_lowers_binary_wire_sum() -> None:
             for entity in contributor_entities
         )
     )
-    assert len(
-        [
-            endpoint
-            for endpoint in shared_output_net.endpoints
-            if endpoint.connector is Connector.OUTPUT
-            and endpoint.entity in {entity.id for entity in contributor_entities}
-        ]
-    ) == 2
+    assert (
+        len(
+            [
+                endpoint
+                for endpoint in shared_output_net.endpoints
+                if endpoint.connector is Connector.OUTPUT
+                and endpoint.entity in {entity.id for entity in contributor_entities}
+            ]
+        )
+        == 2
+    )

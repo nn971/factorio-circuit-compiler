@@ -205,9 +205,7 @@ def solve_periodic_state_bus_mapping_problem(
                             ImplementationKind.COVERED,
                             ImplementationKind.WIRE_SUM,
                         }:
-                            model.Add(
-                                choose[candidate.id] + choose[producer_candidate.id] <= 1
-                            )
+                            model.Add(choose[candidate.id] + choose[producer_candidate.id] <= 1)
 
     for register_name, register_candidates in state_candidates_by_register.items():
         base = state_base_phase[register_name]

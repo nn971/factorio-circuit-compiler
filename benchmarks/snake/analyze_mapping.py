@@ -189,9 +189,7 @@ def _solve_full_state(
         f"commit_entities={commit_entity_cost}; transport={result.plan.transport_cost}; "
         f"total={result.plan.total_cost}"
     )
-    kind_summary = ", ".join(
-        f"{kind}:{count}" for kind, count in sorted(selected_kinds.items())
-    )
+    kind_summary = ", ".join(f"{kind}:{count}" for kind, count in sorted(selected_kinds.items()))
     recipe_summary = ", ".join(
         f"{recipe}:{count}" for recipe, count in sorted(selected_recipes.items())
     )
