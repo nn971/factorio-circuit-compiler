@@ -77,7 +77,7 @@ With no useful intermediates initially stocked, one fast splitter consumes **46 
 22.5 copper plates in continuous raw-material accounting. Because the copper-cable recipe produces
 two at a time, a clean one-fast-splitter run needs **46 iron plates + 23 copper plates** and leaves
 one copper cable. Across several targets, leftover cable is reused; five fast splitters from an
-otherwise empty network therefore need 230 iron plates and 113 copper plates.
+otherwise empty intermediate stock therefore need 230 iron plates and 113 copper plates.
 
 ## External control seam
 
