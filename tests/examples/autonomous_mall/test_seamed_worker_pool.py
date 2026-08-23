@@ -126,7 +126,9 @@ def test_two_worker_seamed_component_is_bounded_and_contains_real_devices() -> N
     wires = blueprint["wires"]
 
     assert [seam.name for seam in component.seams] == ["external"]
-    assert len(component.footprints) == 6  # head + 2*(controller+assembler) + tail
+    # Each compiled head/worker controller owns a dense body plus a west routing strip. Each worker
+    # also owns one assembler footprint; the manual tail owns one footprint.
+    assert len(component.footprints) == 9
     assert sum(entity.get("name") == "assembling-machine-3" for entity in entities) == 2
     assert sum(entity.get("name") == "requester-chest" for entity in entities) == 2
     assert sum(entity.get("name") == "active-provider-chest" for entity in entities) == 2
