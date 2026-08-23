@@ -44,6 +44,8 @@ jobs:
               sampling_policy=SamplingPolicy.ALAP,
           )
           operations = {item.id: item for item in problem.operations}
+          sources = {item.id: item for item in problem.sources}
+          reads = {item.id: item for item in problem.state_reads}
           use_counts = Counter()
           for operation in problem.operations:
               use_counts.update(operation.operands)
@@ -69,17 +71,30 @@ jobs:
           for operation in vector:
               details = []
               for operand in operation.operands:
-                  producer = operations.get(operand)
-                  if producer is None:
-                      source = problem.source_by_id(operand)
-                      details.append(
-                          f"source={operand} type={type(source.semantic).__name__} uses={use_counts[operand]}"
+                  if operand in operations:
+                      producer = operations[operand]
+                      nested = (
+                          isinstance(producer.semantic, VectorBinaryOp)
+                          and producer.semantic.op == "+"
                       )
-                  else:
                       details.append(
                           f"op={producer.id} type={type(producer.semantic).__name__} "
-                          f"label={producer.label!r} uses={use_counts[operand]}"
+                          f"label={producer.label!r} uses={use_counts[operand]} nested={nested}"
                       )
+                  elif operand in sources:
+                      source = sources[operand]
+                      details.append(
+                          f"source={operand} type={type(source.semantic).__name__} "
+                          f"uses={use_counts[operand]}"
+                      )
+                  elif operand in reads:
+                      read = reads[operand]
+                      details.append(
+                          f"state_read={operand} register={read.register_name!r} "
+                          f"uses={use_counts[operand]}"
+                      )
+                  else:
+                      details.append(f"unknown={operand} uses={use_counts[operand]}")
               print(f"  add={operation.id} label={operation.label!r}; " + "; ".join(details))
           PY
           exit 1
