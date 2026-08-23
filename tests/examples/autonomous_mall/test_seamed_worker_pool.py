@@ -16,7 +16,7 @@ def _trace(circuit, rows):
     return [dict(zip(module.output.names, row, strict=True)) for row in values]
 
 
-def test_dispatch_head_sends_one_probe_then_waits_for_response() -> None:
+def test_dispatch_head_publishes_packet_before_probe_then_retries() -> None:
     base = {
         "offer_valid": 1,
         "offer_recipe": {GEAR: 1},
@@ -39,12 +39,20 @@ def test_dispatch_head_sends_one_probe_then_waits_for_response() -> None:
 
     trace = _trace(build_dispatch_head(), rows)
 
-    assert trace[0]["bus_offer_valid"] == 1
+    # The payload is published immediately, but the probe is armed through state and cannot launch
+    # until the next logical reaction.  This head start prevents physical lane skew from dropping
+    # the reservation vector while recipe/product have already arrived.
+    assert trace[0]["bus_offer_valid"] == 0
     assert trace[0]["bus_offer_recipe"] == {GEAR: 1}
-    assert trace[1]["bus_offer_valid"] == 0
+    assert trace[0]["bus_offer_inputs"] == {PLATE: 2}
+    assert trace[0]["bus_offer_product"] == {GEAR: 1}
+
+    assert trace[1]["bus_offer_valid"] == 1
+    assert trace[1]["bus_offer_inputs"] == {PLATE: 2}
     assert trace[2]["bus_offer_valid"] == 0
     assert trace[2]["offer_blocked"] == 1
-    # The block response clears the waiting latch; the held external offer is retried next reaction.
+    # The packet remains continuously published, so retry only needs another scalar probe.
+    assert trace[2]["bus_offer_inputs"] == {PLATE: 2}
     assert trace[3]["bus_offer_valid"] == 1
     assert trace[4]["bus_offer_valid"] == 0
 
@@ -64,20 +72,24 @@ def test_dispatch_head_stops_probing_after_accept_until_valid_drops() -> None:
     }
     rows = [
         dict(base),
+        dict(base),
         {**base, "bus_accepted": 1},
         dict(base),
+        {**base, "offer_valid": 0},
+        {**base, "offer_valid": 0},
         dict(base),
-        {**base, "offer_valid": 0},
-        {**base, "offer_valid": 0},
         dict(base),
     ]
 
     trace = _trace(build_dispatch_head(), rows)
 
-    assert trace[0]["bus_offer_valid"] == 1
-    assert trace[1]["offer_accepted"] == 1
-    assert all(trace[index]["bus_offer_valid"] == 0 for index in (1, 2, 3, 4, 5))
-    assert trace[6]["bus_offer_valid"] == 1
+    assert trace[0]["bus_offer_valid"] == 0
+    assert trace[1]["bus_offer_valid"] == 1
+    assert trace[2]["offer_accepted"] == 1
+    assert all(trace[index]["bus_offer_valid"] == 0 for index in (2, 3, 4, 5, 6))
+    # Raising V after the full low phase republishes first, then probes one reaction later.
+    assert trace[6]["bus_offer_inputs"] == {PLATE: 2}
+    assert trace[7]["bus_offer_valid"] == 1
 
 
 def test_idle_worker_consumes_probe_and_busy_worker_forwards_it() -> None:
@@ -103,6 +115,13 @@ def test_idle_worker_consumes_probe_and_busy_worker_forwards_it() -> None:
     assert idle["up_promised"] == {GEAR: 1}
     assert idle["up_busy_count"] == 1
 
+    # Payload forwarding is independent of probe forwarding.  Even the idle worker that consumes
+    # the token leaves the stable packet visible downstream; without a token, no later worker may
+    # claim it.
+    assert idle["next_offer_recipe"] == {GEAR: 1}
+    assert idle["next_offer_inputs"] == {PLATE: 2}
+    assert idle["next_offer_product"] == {GEAR: 1}
+
     rows = idle_rows + [
         {
             **idle_rows[0],
@@ -113,10 +132,15 @@ def test_idle_worker_consumes_probe_and_busy_worker_forwards_it() -> None:
             "in_offer_valid": 1,
         },
     ]
+    packet_only = _trace(build_worker_stage(), rows)[1]
+    assert packet_only["next_offer_valid"] == 0
+    assert packet_only["next_offer_inputs"] == {PLATE: 2}
+
     busy = _trace(build_worker_stage(), rows)[2]
     assert busy["up_accepted"] == 0
     assert busy["next_offer_valid"] == 1
     assert busy["next_offer_recipe"] == {GEAR: 1}
+    assert busy["next_offer_inputs"] == {PLATE: 2}
 
 
 def test_two_worker_seamed_component_is_bounded_and_contains_real_devices() -> None:
