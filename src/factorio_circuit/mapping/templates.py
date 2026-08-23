@@ -162,14 +162,14 @@ def ordinary_candidate(
         latency = FACTORIO_LATENCY.operation_latency("vector_scalar", semantic.op)
         offsets = (-latency, -latency)
         name = f"ordinary vector-scalar {semantic.op}"
-    elif isinstance(semantic, VectorFilter):
-        latency = FACTORIO_LATENCY.operation_latency("vector_filter", semantic.op)
-        offsets = (-latency,)
-        name = f"ordinary vector-filter {semantic.op}"
     elif isinstance(semantic, VectorSelect):
         latency = FACTORIO_LATENCY.operation_latency("vector_select", semantic.op)
         offsets = (-latency,)
         name = f"ordinary vector-select {semantic.op}"
+    elif isinstance(semantic, VectorFilter):
+        latency = FACTORIO_LATENCY.operation_latency("vector_filter", semantic.op)
+        offsets = (-latency,)
+        name = f"ordinary vector-filter {semantic.op}"
     else:
         raise MappingProblemError(
             f"no ordinary mapping candidate for semantic type {type(semantic).__name__}"
