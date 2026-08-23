@@ -123,6 +123,7 @@ def test_two_worker_seamed_component_is_bounded_and_contains_real_devices() -> N
     component = build_seamed_worker_pool_component(2)
     blueprint = component.anchored.blueprint
     entities = blueprint["entities"]
+    wires = blueprint["wires"]
 
     assert [seam.name for seam in component.seams] == ["external"]
     assert len(component.footprints) == 6  # head + 2*(controller+assembler) + tail
@@ -132,3 +133,36 @@ def test_two_worker_seamed_component_is_bounded_and_contains_real_devices() -> N
 
     descriptions = [str(entity.get("player_description", "")) for entity in entities]
     assert not any(description.startswith("ANCHOR RELAY") for description in descriptions)
+
+    # The public ABI must be a literal exposed top seam, not metadata attached to terminals buried
+    # in the annealed body.  Only ANCHOR-owned adapter infrastructure may occupy the four-tile strip
+    # immediately beneath it; the compiler markers sit exactly at the strip's inner edge.
+    external = component.seam("external")
+    external_anchors = [component.anchored.anchor(name) for name in external.anchors]
+    external_y = external_anchors[0].position[1]
+    assert all(anchor.position[1] == external_y for anchor in external_anchors)
+    assert external_y == min(float(entity["position"]["y"]) for entity in entities)
+
+    corridor_entities = [
+        entity
+        for entity in entities
+        if external_y <= float(entity["position"]["y"]) < external_y + 4.0
+    ]
+    assert corridor_entities
+    assert all(
+        str(entity.get("player_description", "")).startswith("ANCHOR")
+        for entity in corridor_entities
+    )
+
+    # Every surviving public dock must have a real incident circuit wire in the final composed
+    # blueprint.  This catches visually orphaned terminals such as the previous offer_valid bug.
+    normalized_wires = [tuple(int(value) for value in wire) for wire in wires]
+    for anchor in external_anchors:
+        assert any(
+            (wire[0] == anchor.entity_number and wire[1] == anchor.connector_id)
+            or (wire[2] == anchor.entity_number and wire[3] == anchor.connector_id)
+            for wire in normalized_wires
+        )
+
+    assert component.anchored.anchor("offer_valid").position[1] == external_y
+    assert component.anchored.anchor("offer_recipe").position[1] == external_y
