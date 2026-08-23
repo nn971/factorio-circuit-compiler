@@ -9,7 +9,7 @@ logical occurrence settles internally.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from factorio_circuit.ir.abstract_physical import (
     AbstractPhysicalCircuit,
@@ -25,8 +25,8 @@ from factorio_circuit.lowering.open_vector import VectorLowerer
 from factorio_circuit.target.factorio.signals import SIGNAL_EVERYTHING
 
 from .decider_cover import flatten_decider_condition_cover
-from .plan import RealizationPlan
-from .problem import MappingProblem, MappingProblemError
+from .plan import DeliveryKind, RealizationPlan, WireSumResource
+from .problem import MappingProblem, MappingProblemError, MappingUse
 from .state_lower import (
     PeriodicStatePhysicalLoweringResult as _BasePeriodicStatePhysicalLoweringResult,
 )
@@ -34,7 +34,7 @@ from .state_lower import (
     _MappedPeriodicStateLowerer,
 )
 from .state_templates import StateCellCandidate
-from .templates import ImplementationCandidate, ImplementationRecipe
+from .templates import ImplementationCandidate, ImplementationKind, ImplementationRecipe
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,8 +80,103 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
         state_candidates: tuple[StateCellCandidate, ...],
         plan: RealizationPlan,
     ) -> None:
-        super().__init__(module, problem, candidates, state_candidates, plan)
+        # The mature base lowerer predates periodic wire sums and deliberately rejects the resource.
+        # Validate/build all of its existing transport/state machinery against an equivalent shadow,
+        # then restore the real candidate/resource metadata for the subclass-owned zero-cost lowering.
+        base_candidates = tuple(
+            replace(candidate, kind=ImplementationKind.ORDINARY)
+            if candidate.kind is ImplementationKind.WIRE_SUM
+            else candidate
+            for candidate in candidates
+        )
+        base_plan = replace(plan, wire_sums=())
+        super().__init__(module, problem, base_candidates, state_candidates, base_plan)
+        self.plan = plan
+        self.candidate_by_id = {item.id: item for item in candidates}
         self.output_materialization_entities = 0
+
+        self.wire_sum_by_operation = {item.operation: item for item in plan.wire_sums}
+        self.wire_sum_target_by_producer: dict[int, WireSumResource] = {}
+        for resource in plan.wire_sums:
+            for producer in (resource.left_producer, resource.right_producer):
+                previous = self.wire_sum_target_by_producer.setdefault(producer, resource)
+                if previous != resource:
+                    raise MappingProblemError(
+                        "one periodic physical realization cannot contribute to two wire sums"
+                    )
+        self.wire_sum_carrier: dict[int, RealizedValue] = {}
+
+    def realize(self, value: Value) -> RealizedValue:
+        result = super().realize(value)
+        operation_id = self.operation_id_by_semantic.get(id(value))
+        if operation_id is None:
+            return result
+        resource = self.wire_sum_target_by_producer.get(operation_id)
+        if resource is None:
+            return result
+        rebound = self._bind_wire_sum_contributor(operation_id, resource, result)
+        self.memo[id(value)] = rebound
+        self.scalar_origin.pop((result.net, result.signal), None)
+        self.scalar_origin[(rebound.net, rebound.signal)] = operation_id
+        return rebound
+
+    def _bind_wire_sum_contributor(
+        self,
+        operation_id: int,
+        resource: WireSumResource,
+        value: RealizedValue,
+    ) -> RealizedValue:
+        if value.phase != resource.phase:
+            raise MappingProblemError("periodic wire-sum contribution lowered at the wrong phase")
+        if not value.clean_single_lane or not isinstance(value.signal, int):
+            raise MappingProblemError(
+                "periodic wire-sum contribution requires a clean abstract scalar output lane"
+            )
+
+        carrier = self.wire_sum_carrier.get(resource.operation)
+        if carrier is None:
+            self.wire_sum_carrier[resource.operation] = value
+            return value
+        if carrier.phase != resource.phase or not isinstance(carrier.signal, int):
+            raise MappingProblemError("periodic wire-sum carrier metadata is inconsistent")
+        if (value.net, value.signal) == (carrier.net, carrier.signal):
+            return carrier
+
+        old_net = self.net_builders[value.net]
+        if old_net.fixed_signals or old_net.carries_dynamic_vector:
+            raise MappingProblemError("periodic wire-sum contributor is not an isolated scalar net")
+        if not old_net.endpoints or any(
+            endpoint.connector is not Connector.OUTPUT for endpoint in old_net.endpoints
+        ):
+            raise MappingProblemError(
+                "periodic wire-sum contributor output was observed before carrier aggregation"
+            )
+        if any(value.net in (conflict.left, conflict.right) for conflict in self.circuit.net_conflicts):
+            raise MappingProblemError(
+                "periodic wire-sum contributor output already participates in a net conflict"
+            )
+        if any(
+            value.signal in (conflict.left, conflict.right)
+            for conflict in self.circuit.signal_conflicts
+        ):
+            raise MappingProblemError(
+                "periodic wire-sum contributor output already participates in a signal conflict"
+            )
+
+        self._add_signal_alias(
+            carrier.signal,
+            value.signal,
+            f"periodic wire sum {resource.operation}: contributors share one Factorio signal",
+        )
+        for endpoint in old_net.endpoints:
+            self._attach(carrier.net, endpoint)
+        del self.net_builders[value.net]
+        return RealizedValue(
+            carrier.signal,
+            carrier.net,
+            resource.phase,
+            clean_single_lane=True,
+        )
 
     def delay_to(self, value: RealizedValue, target_phase: int) -> RealizedValue:
         if value.phase == target_phase:
@@ -106,6 +201,8 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
         if selected is None:
             return super()._realize_binary(op)
         operation_id, candidate = selected
+        if candidate.kind is ImplementationKind.WIRE_SUM:
+            return self._realize_wire_sum(op, operation_id, candidate)
         if candidate.recipe is ImplementationRecipe.DECIDER_CONDITION_COVER:
             return self._realize_decider_condition_cover(op, operation_id, candidate)
         if candidate.recipe is ImplementationRecipe.COVERED_BY_DECIDER:
@@ -113,6 +210,58 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
                 f"covered boolean operation {operation_id} escaped its decider-cover root"
             )
         return super()._realize_binary(op)
+
+    def _realize_wire_sum(
+        self,
+        operation: BinaryOp,
+        operation_id: int,
+        candidate: ImplementationCandidate,
+    ) -> RealizedValue:
+        if operation.op != "+" or candidate.entity_cost != 0:
+            raise MappingProblemError("selected periodic wire-sum candidate metadata is invalid")
+        resource = self.wire_sum_by_operation.get(operation_id)
+        if resource is None:
+            raise MappingProblemError("selected periodic wire sum has no plan resource")
+        mapping_operation = self.problem.operation_by_id(operation_id)
+        if tuple(mapping_operation.operands) != (
+            resource.left_producer,
+            resource.right_producer,
+        ):
+            raise MappingProblemError("periodic wire-sum plan resource has the wrong contributors")
+
+        left = self.realize(operation.left)
+        right = self.realize(operation.right)
+        for operand_index, (producer, realized) in enumerate(
+            zip(mapping_operation.operands, (left, right), strict=True)
+        ):
+            claimed = self._claim_delivery(producer, resource.phase)
+            if claimed is None:
+                raise MappingProblemError("periodic wire-sum contribution has no planned delivery")
+            use, delivery = claimed
+            expected_use = MappingUse(producer, operation_id, operand_index)
+            if use != expected_use:
+                raise MappingProblemError("periodic wire-sum claimed the wrong semantic delivery")
+            if (
+                delivery.kind is not DeliveryKind.REUSE
+                or delivery.transport_start_phase is not None
+                or delivery.phase != resource.phase
+            ):
+                raise MappingProblemError(
+                    "periodic wire-sum contribution must be a same-phase free delivery"
+                )
+            if realized.phase != resource.phase:
+                raise MappingProblemError("periodic wire-sum contributor has the wrong phase")
+
+        carrier = self.wire_sum_carrier.get(operation_id)
+        if carrier is None:
+            raise MappingProblemError("periodic wire-sum contributors did not establish a carrier")
+        if not (
+            left.signal == right.signal == carrier.signal
+            and left.net == right.net == carrier.net
+            and left.phase == right.phase == carrier.phase == resource.phase
+        ):
+            raise MappingProblemError("periodic wire-sum contributors did not share one carrier")
+        return carrier
 
     def _realize_compare(self, comparison: Compare) -> RealizedValue:
         selected = self._selected_candidate(comparison)
