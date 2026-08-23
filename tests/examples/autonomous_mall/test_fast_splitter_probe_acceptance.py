@@ -1,7 +1,5 @@
-from examples.autonomous_mall.fast_splitter_probe import (
-    build_fast_splitter_probe_component,
-    generate_fast_splitter_probe_blueprint_string,
-)
+from examples.autonomous_mall.fast_splitter_probe import build_fast_splitter_probe_component
+from factorio_circuit.devices._blueprint import encode_blueprint
 
 
 def test_fast_splitter_probe_builds_one_worker_with_control_seam() -> None:
@@ -23,6 +21,6 @@ def test_fast_splitter_probe_builds_one_worker_with_control_seam() -> None:
         "settling",
     )
 
-    encoded = generate_fast_splitter_probe_blueprint_string(1)
+    encoded = encode_blueprint(blueprint)
     assert encoded.startswith("0")
     assert len(encoded) > 1_000
