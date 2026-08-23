@@ -12,6 +12,13 @@ from factorio_circuit.lowering.ir_to_abstract_physical import RealizedVector
 from .vector_binary import vector_metadata
 
 
+def _selector_description(value: VectorSelect) -> str:
+    if value.index == 0:
+        return "runtime vector max" if value.select_max else "runtime vector min"
+    order = "descending" if value.select_max else "ascending"
+    return f"runtime vector select index {value.index} {order}"
+
+
 def realize_vector_select(lowerer: Any, value: VectorSelect) -> RealizedVector:
     source = lowerer.realize_vector(value.vector)
     phase = source.phase
@@ -25,7 +32,7 @@ def realize_vector_select(lowerer: Any, value: VectorSelect) -> RealizedVector:
         input_nets=(source.net,),
         select_max=value.select_max,
         index=value.index,
-        description="runtime vector max" if value.select_max else "runtime vector select",
+        description=_selector_description(value),
     )
     lowerer.circuit.entities.append(entity)
     lowerer._attach(source.net, Endpoint(entity.id, Connector.INPUT))
