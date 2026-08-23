@@ -391,11 +391,6 @@ def compile_circuit(
             naive_abstract,
             validate_oracle_provider_bindings(lowered.optimized_ir, oracle_providers),
         )
-        baseline_anchors = _bind_port_positions(
-            naive_abstract,
-            port_positions,
-            physical_anchors,
-        )
         naive_physical = _synthesize(
             naive_abstract,
             safe_wire_span=blueprint_safe_wire_span,
@@ -405,7 +400,7 @@ def compile_circuit(
             # Placement does not affect ``PhysicalCircuit.combinator_count``, which is the only
             # statistic consumed from this baseline.
             placement=None,
-            physical_anchors=baseline_anchors,
+            physical_anchors=physical_anchors,
             progress=progress,
         ).circuit
     else:
