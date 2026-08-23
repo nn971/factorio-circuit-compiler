@@ -5,6 +5,7 @@ import pytest
 from examples.autonomous_mall.worker_pool import build_worker_pool
 from factorio_circuit import lower_to_abstract_physical
 from factorio_circuit import compiler as compiler_module
+from factorio_circuit.ir.abstract_physical import AbstractPhysicalCircuit
 from factorio_circuit.ir.physical import PhysicalCircuit
 from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.open_vector import VectorPhysicalSynthesizer
@@ -73,9 +74,8 @@ def _odd_cycle_labels(synthesizer: VectorPhysicalSynthesizer) -> list[str]:
         hard.update(unsafe)
 
 
-def _contains_packed_entity(circuit: object) -> bool:
-    entities = getattr(circuit, "entities")
-    return any("packed " in (getattr(entity, "description", None) or "") for entity in entities)
+def _contains_packed_entity(circuit: AbstractPhysicalCircuit) -> bool:
+    return any("packed " in (entity.description or "") for entity in circuit.entities)
 
 
 @pytest.mark.parametrize("worker_count", [1, 2])
@@ -97,9 +97,9 @@ def test_two_worker_packing_currently_creates_an_odd_wire_color_cycle() -> None:
 def test_compile_circuit_retries_without_packing_after_wire_color_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    attempts: list[object] = []
+    attempts: list[AbstractPhysicalCircuit] = []
 
-    def fake_synthesize(circuit: object, **_kwargs: object) -> Layout:
+    def fake_synthesize(circuit: AbstractPhysicalCircuit, **_kwargs: object) -> Layout:
         attempts.append(circuit)
         if _contains_packed_entity(circuit):
             raise ValueError(_TWO_WIRE_COLOR_ERROR)
