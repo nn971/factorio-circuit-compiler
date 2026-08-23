@@ -1,13 +1,12 @@
 import pytest
 
-from factorio_circuit import SignalId, lower_to_abstract_physical
-from factorio_circuit.simulate.semantic import simulate_stream
-
 from examples.autonomous_mall.worker_pool import (
     build_worker_pool,
     build_worker_pool_probe_blueprint,
     worker_ports,
 )
+from factorio_circuit import SignalId, lower_to_abstract_physical
+from factorio_circuit.simulate.semantic import simulate_stream
 
 GEAR = SignalId("item", "iron-gear-wheel")
 PLATE = SignalId("item", "iron-plate")
