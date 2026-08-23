@@ -176,7 +176,7 @@ not be used.
 
 ## Validation
 
-Focused deterministic tests:
+Focused deterministic routine tests:
 
 ```bash
 uv run pytest \
@@ -187,8 +187,8 @@ uv run pytest \
 
 The worker-pool tests cover held-valid deduplication, first-free assignment, blocked-offer retention,
 recipe withdrawal after craft start, reservation/promise release, packed/unpacked wire-color
-regressions, compiler fallback orchestration, abstract-physical lowering, and a two-`AssemblerDevice`
-composed-blueprint smoke test. Full physical composition remains marked `slow` in the permanent suite.
+regressions, compiler fallback orchestration, and abstract-physical lowering. The two-`AssemblerDevice`
+composed-blueprint check remains marked `slow`; run it explicitly with marker filtering when desired.
 
 The retained quality-oracle suite is:
 
