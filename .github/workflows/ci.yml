@@ -25,13 +25,13 @@ jobs:
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Diagnose Snake additions
+      - name: Diagnose Snake vector additions
         if: github.head_ref == 'agent/periodic-wire-sum'
         run: |
           uv run python - <<'PY'
           from collections import Counter
           from benchmarks.snake.model import build_snake_circuit
-          from factorio_circuit.ir.semantic import BinaryOp
+          from factorio_circuit.ir.semantic import BinaryOp, VectorBinaryOp
           from factorio_circuit.lowering.frontend_to_ir import lower_frontend
           from factorio_circuit.mapping import build_periodic_state_mapping_problem
           from factorio_circuit.sampling import SamplingPolicy
@@ -54,39 +54,33 @@ jobs:
               if transition.when is not None:
                   use_counts[transition.when] += 1
 
-          additions = [
+          scalar = [
               item
               for item in problem.operations
               if isinstance(item.semantic, BinaryOp) and item.semantic.op == "+"
           ]
-          print(f"scalar_additions={len(additions)}")
-          reason_counts = Counter()
-          for operation in additions:
-              reasons = []
+          vector = [
+              item
+              for item in problem.operations
+              if isinstance(item.semantic, VectorBinaryOp) and item.semantic.op == "+"
+          ]
+          print(f"scalar_additions={len(scalar)}")
+          print(f"vector_additions={len(vector)}")
+          for operation in vector:
               details = []
               for operand in operation.operands:
                   producer = operations.get(operand)
                   if producer is None:
-                      reasons.append("non-operation-source")
-                      details.append(f"source={operand} uses={use_counts[operand]}")
-                      continue
-                  nested = isinstance(producer.semantic, BinaryOp) and producer.semantic.op == "+"
-                  if nested:
-                      reasons.append("nested-add")
-                  if use_counts[operand] != 1:
-                      reasons.append("fanout")
-                  details.append(
-                      f"op={producer.id} type={type(producer.semantic).__name__} "
-                      f"label={producer.label!r} uses={use_counts[operand]} nested={nested}"
-                  )
-              if not reasons:
-                  reasons.append("eligible")
-              reason_counts.update(set(reasons))
-              print(
-                  f"  add={operation.id} label={operation.label!r} reasons={sorted(set(reasons))}; "
-                  + "; ".join(details)
-              )
-          print("reason_counts=" + ", ".join(f"{k}:{v}" for k, v in sorted(reason_counts.items())))
+                      source = problem.source_by_id(operand)
+                      details.append(
+                          f"source={operand} type={type(source.semantic).__name__} uses={use_counts[operand]}"
+                      )
+                  else:
+                      details.append(
+                          f"op={producer.id} type={type(producer.semantic).__name__} "
+                          f"label={producer.label!r} uses={use_counts[operand]}"
+                      )
+              print(f"  add={operation.id} label={operation.label!r}; " + "; ".join(details))
           PY
           exit 1
       - name: Test
