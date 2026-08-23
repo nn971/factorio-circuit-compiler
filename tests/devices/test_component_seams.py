@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 
-from factorio_circuit.devices.anchors import AnchorSpec, AnchoredBlueprint, BoundAnchor
+from factorio_circuit.devices.anchors import AnchoredBlueprint, AnchorSpec, BoundAnchor
 from factorio_circuit.devices.component_seams import (
     BoundarySlot,
     ComponentFootprint,
