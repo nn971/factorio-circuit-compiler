@@ -57,8 +57,7 @@ def test_periodic_problem_generates_wire_sum_candidate_without_stateless_uses() 
     alternatives = [
         candidate
         for candidate in candidates
-        if candidate.operation == sum_operation.id
-        and candidate.kind is ImplementationKind.WIRE_SUM
+        if candidate.operation == sum_operation.id and candidate.kind is ImplementationKind.WIRE_SUM
     ]
     assert len(alternatives) == 1
     assert alternatives[0].entity_cost == 0
