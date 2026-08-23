@@ -21,10 +21,10 @@ from factorio_circuit.ir.abstract_physical import (
     AbstractPhysicalCircuit,
     EntityPlacementConstraint,
     EntityPlacementMode,
-    InputPort as AbstractInputPort,
-    OutputPort as AbstractOutputPort,
     PhysicalAnchor,
 )
+from factorio_circuit.ir.abstract_physical import InputPort as AbstractInputPort
+from factorio_circuit.ir.abstract_physical import OutputPort as AbstractOutputPort
 from factorio_circuit.ir.oracle import oracle_sources
 from factorio_circuit.ir.output import preserve_output_materializations
 from factorio_circuit.ir.physical import PhysicalCircuit
