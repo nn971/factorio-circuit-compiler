@@ -2,7 +2,7 @@ import pytest
 
 from factorio_circuit import Circuit, SamplingPolicy, SignalId
 from factorio_circuit.ir.abstract_physical import ArithmeticCombinator, Connector, Endpoint
-from factorio_circuit.ir.semantic import BinaryOp
+from factorio_circuit.ir.semantic import BinaryOp, VectorBinaryOp
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
     ImplementationKind,
@@ -32,6 +32,31 @@ def _periodic_wire_sum_case():
         circuit.constant_signals({_COUNT_SIGNAL: 1}) * total,
         when=enable != 0,
     )
+    circuit.step(1)
+    circuit.output("memory", memory.sample())
+
+    module = lower_frontend(circuit)
+    problem = build_periodic_state_mapping_problem(
+        module,
+        period=8,
+        output_phases=(15,),
+        sampling_policy=SamplingPolicy.ALAP,
+    )
+    return module, problem
+
+
+def _periodic_vector_wire_sum_case():
+    circuit = Circuit("periodic_vector_wire_sum")
+    x = circuit.signals("x")
+    y = circuit.signals("y")
+    enable = circuit.input("enable")
+
+    left = x * 2
+    right = y * 3
+    total = left + right
+
+    memory = circuit.freeze("memory")
+    memory.set(total, when=enable != 0)
     circuit.step(1)
     circuit.output("memory", memory.sample())
 
@@ -144,3 +169,69 @@ def test_periodic_mapper_selects_and_lowers_binary_wire_sum() -> None:
         )
         == 2
     )
+
+
+def test_periodic_mapper_selects_and_lowers_vector_wire_sum() -> None:
+    pytest.importorskip("ortools.sat.python.cp_model")
+    module, problem = _periodic_vector_wire_sum_case()
+    candidates = add_wire_sum_candidates(problem, ordinary_candidates(problem))
+    state_candidates = ordinary_state_candidates(problem)
+
+    sum_operation = next(
+        operation
+        for operation in problem.operations
+        if isinstance(operation.semantic, VectorBinaryOp) and operation.semantic.op == "+"
+    )
+    alternatives = [
+        candidate
+        for candidate in candidates
+        if candidate.operation == sum_operation.id and candidate.kind is ImplementationKind.WIRE_SUM
+    ]
+    assert len(alternatives) == 1
+
+    solve = solve_periodic_state_bus_mapping_problem(
+        problem,
+        candidates=candidates,
+        state_candidates=state_candidates,
+        max_delay_buses=0,
+        time_limit_seconds=5.0,
+    )
+    realization = solve.plan.realization_for(sum_operation.id)
+    selected = next(candidate for candidate in candidates if candidate.id == realization.candidate)
+    assert solve.proven_optimal
+    assert selected.kind is ImplementationKind.WIRE_SUM
+    assert selected.entity_cost == 0
+    assert len(solve.plan.wire_sums) == 1
+
+    lowered = lower_periodic_state_mapping_plan(
+        module,
+        problem,
+        candidates,
+        state_candidates,
+        solve.plan,
+    )
+    assert lowered.cost_exact_after_known_surcharges
+
+    vector_add_entities = [
+        entity
+        for entity in lowered.circuit.entities
+        if isinstance(entity, ArithmeticCombinator) and entity.description == "runtime vector +"
+    ]
+    assert vector_add_entities == []
+
+    contributors = [
+        entity
+        for entity in lowered.circuit.entities
+        if isinstance(entity, ArithmeticCombinator)
+        and entity.operation == "*"
+        and entity.output_each
+        and entity.description == "runtime vector * scalar"
+    ]
+    assert len(contributors) == 2
+    shared_output_net = next(
+        net
+        for net in lowered.circuit.nets
+        if all(Endpoint(entity.id, Connector.OUTPUT) in net.endpoints for entity in contributors)
+    )
+    assert shared_output_net.carries_dynamic_vector
+    assert shared_output_net.fixed_signals == ()
