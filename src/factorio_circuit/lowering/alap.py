@@ -43,12 +43,15 @@ from factorio_circuit.ir.semantic import (
     VectorScalarOp,
     VectorSelect,
     VectorSignal,
+    VectorValue,
 )
 from factorio_circuit.ir.state import state_transitions
 from factorio_circuit.lowering.ir_to_abstract_physical import (
     RealizedValue,
+    RealizedVector,
     _normalize_compare,
 )
+from factorio_circuit.lowering.settling import ValidityWindow
 from factorio_circuit.lowering.vector_delay_trunks import SharedVectorDelayLowerer
 
 
@@ -192,6 +195,72 @@ class AlapVectorLowerer(SharedVectorDelayLowerer):
         self.memo[id(value)] = result
         self._record_scalar_semantics(value, result)
         return result
+
+    def _record_vector_semantics(
+        self,
+        semantic: VectorValue,
+        result: RealizedVector,
+    ) -> None:
+        """Track validity from the actual ALAP input phase rather than nominal latency alone.
+
+        Technology mapping may choose a zero-delay realization while retaining the same semantic
+        operation.  Recomputing the input phase through ``_operation_input_phase`` mirrors the
+        physical lowering decision and prevents validity bookkeeping from inventing a backwards
+        alignment for such candidates.
+        """
+
+        if isinstance(semantic, VectorBinaryOp):
+            left = self._vector_child(semantic.left)
+            right = self._vector_child(semantic.right)
+            realized = tuple(item for item in (left, right) if item is not None)
+            base = max((item.phase for item in realized), default=0)
+            target = self._operation_input_phase(
+                semantic,
+                "vector_binary",
+                semantic.op,
+                base,
+            )
+            windows = tuple(self._aligned_vector_window(item, target) for item in realized)
+            span = self._combined_span(windows)
+            self._remember_vector(
+                result,
+                ValidityWindow(
+                    result.phase,
+                    None if span is None else result.phase + span,
+                ),
+            )
+            return
+
+        if isinstance(semantic, VectorScalarOp):
+            vector = self._vector_child(semantic.vector)
+            scalar = self._scalar_child(semantic.scalar)
+            phases = [
+                item.phase
+                for item in (vector, scalar)
+                if isinstance(item, (RealizedVector, RealizedValue))
+            ]
+            target = self._operation_input_phase(
+                semantic,
+                "vector_scalar",
+                semantic.op,
+                max(phases, default=0),
+            )
+            windows: list[ValidityWindow] = []
+            if vector is not None:
+                windows.append(self._aligned_vector_window(vector, target))
+            if scalar is not None:
+                windows.append(self._aligned_scalar_window(scalar, target))
+            span = self._combined_span(tuple(windows))
+            self._remember_vector(
+                result,
+                ValidityWindow(
+                    result.phase,
+                    None if span is None else result.phase + span,
+                ),
+            )
+            return
+
+        super()._record_vector_semantics(semantic, result)
 
     def _realize_binary(self, op: BinaryOp) -> RealizedValue:
         # Keep existing physical packing semantics.  Unpacked operations, including the canonical
