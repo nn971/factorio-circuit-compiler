@@ -112,6 +112,38 @@ def test_dispatch_head_publishes_packet_before_probe_then_retries() -> None:
     assert trace[4]["bus_offer_valid"] == 0
 
 
+def test_dispatch_head_waits_for_stretched_block_response_to_drop_before_retry() -> None:
+    base = {
+        "offer_valid": 1,
+        "offer_recipe": {GEAR: 1},
+        "offer_inputs": {PLATE: 2},
+        "offer_product": {GEAR: 1},
+        "bus_blocked": 0,
+        "bus_accepted": 0,
+        "bus_busy_count": 2,
+        "bus_completion_count": 0,
+        "bus_reserved": {PLATE: 4},
+        "bus_promised": {GEAR: 2},
+    }
+    rows = [
+        dict(base),
+        dict(base),
+        {**base, "bus_blocked": 1},
+        {**base, "bus_blocked": 1},
+        dict(base),
+        dict(base),
+    ]
+
+    trace = _trace(build_dispatch_head(), rows)
+
+    # A physical round-trip can stretch B across more than one logical reaction.  Response must
+    # dominate resend throughout that interval; otherwise send and B can be true together, leaving
+    # the stop-and-wait latch stuck high after B finally returns low.
+    assert [row["bus_offer_valid"] for row in trace] == [0, 1, 0, 0, 1, 0]
+    assert trace[2]["offer_blocked"] == 1
+    assert trace[3]["offer_blocked"] == 1
+
+
 def test_dispatch_head_stops_probing_after_accept_until_valid_drops() -> None:
     base = {
         "offer_valid": 1,
