@@ -1,9 +1,9 @@
 """Discrete, net-aware placement policies for physical synthesis.
 
 Placement is deliberately expressed on Factorio-compatible grid slots instead of continuous
-coordinates.  The optimizer treats synthesized electrical networks as hyperedges and rewards
+coordinates. The optimizer treats synthesized electrical networks as hyperedges and rewards
 layouts in which every physical net can already be connected through short hops between real
-entities.  Long-hop relay count and total spanning-tree length are secondary costs.
+entities. Long-hop relay count and total spanning-tree length are secondary costs.
 """
 
 from __future__ import annotations
@@ -23,7 +23,9 @@ from factorio_circuit.ir.physical import (
 )
 
 Position = tuple[float, float]
+PlacementArea = tuple[float, float, float, float]
 PlacementStrategy = Literal["net-aware", "row"]
+RelayForbiddenArea = PlacementArea
 _DISCONNECTED_NET_PENALTY = 2000.0
 _SUBSTATION_FOOTPRINT = 2.0
 
@@ -32,23 +34,30 @@ _SUBSTATION_FOOTPRINT = 2.0
 class PlacementOptions:
     """Configuration for physical placement.
 
-    ``anchors`` fixes concrete entity ids at exact positions.  By default the placer also
-    anchors public input/output marker entities in ordered columns on the left/right perimeter;
-    an explicit entity anchor overrides the corresponding automatic I/O position.
+    ``anchors`` fixes concrete entity ids at exact positions. By default the placer also anchors
+    public input/output marker entities in ordered columns on the left/right perimeter; an explicit
+    entity anchor overrides the corresponding automatic I/O position.
 
-    Reserved corridors are empty of ordinary implementation combinators.  They preserve regular
-    walking/power-access gaps between dense computation blocks.  Layout-only wire relays may use
+    ``hard_keepouts`` are absolute collision rectangles ``(left, right, top, bottom)`` that neither
+    ordinary physical entities nor layout-only routing relays may occupy. They are intended for
+    target-owned infrastructure that is materialized after the compiler layout, such as stable
+    component-boundary adapters. The rectangles describe real occupied area, not forbidden center
+    points, so entity footprints are tested for intersection.
+
+    Reserved corridors are empty of ordinary implementation combinators. They preserve regular
+    walking/power-access gaps between dense computation blocks. Layout-only wire relays may use
     those corridors except for local 2x2 footprints reserved at corridor intersections for
-    substations.  ``block_width_tiles`` and ``block_height_tiles`` describe the dense computation
-    block in Factorio tiles.  Horizontal arithmetic/decider combinators occupy two tiles, so the
-    default 16x16 block contains eight combinator columns and sixteen rows.  ``corridor_width`` is
-    inserted between adjacent blocks.  Routing retries use deterministic placement basins; later
+    substations. ``block_width_tiles`` and ``block_height_tiles`` describe the dense computation
+    block in Factorio tiles. Horizontal arithmetic/decider combinators occupy two tiles, so the
+    default 16x16 block contains eight combinator columns and sixteen rows. ``corridor_width`` is
+    inserted between adjacent blocks. Routing retries use deterministic placement basins; later
     retries also reduce ``target_fill`` by ``retry_fill_scale`` so a circuit can trade compactness
     for legal relay space.
     """
 
     strategy: PlacementStrategy = "net-aware"
     anchors: dict[int, Position] = field(default_factory=dict)
+    hard_keepouts: tuple[PlacementArea, ...] = ()
     anchor_io: bool = True
     reserve_corridors: bool = True
     block_width_tiles: int = 16
@@ -63,6 +72,12 @@ class PlacementOptions:
     def validate(self) -> None:
         if self.strategy not in {"net-aware", "row"}:
             raise ValueError(f"unknown placement strategy {self.strategy!r}")
+        for area in self.hard_keepouts:
+            left, right, top, bottom = area
+            if left >= right or top >= bottom:
+                raise ValueError(
+                    "placement hard keepout areas must have positive width and height"
+                )
         if self.block_width_tiles <= 0 or self.block_width_tiles % 2 != 0:
             raise ValueError("placement block_width_tiles must be a positive even tile count")
         if self.block_height_tiles <= 0:
@@ -89,9 +104,6 @@ class PlacementMetrics:
     estimated_relays: int
     mst_wire_length: float
     energy: float
-
-
-RelayForbiddenArea = tuple[float, float, float, float]
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,12 +182,12 @@ def plan_physical_circuit(
     if safe_wire_span <= 0:
         raise ValueError("safe_wire_span must be positive")
 
-    _validate_anchors(circuit, selected.anchors)
+    _validate_anchors(circuit, selected.anchors, selected.hard_keepouts)
     if selected.strategy == "row":
         positions = row_positions(circuit)
         positions.update(selected.anchors)
-        _validate_entity_positions(circuit, positions)
-        return PlacementPlan(positions)
+        _validate_entity_positions(circuit, positions, selected.hard_keepouts)
+        return PlacementPlan(positions, selected.hard_keepouts)
 
     return _net_aware_plan(
         circuit,
@@ -230,24 +242,27 @@ def _net_aware_plan(
     incident = _incident_groups(entity_ids, groups)
 
     # Keep the computation rectangle stable when explicit anchors are added: size it from the
-    # complete body rather than only the currently movable subset.  Grow only if an explicit
-    # anchor consumes too many candidate slots.
+    # complete body rather than only the currently movable subset. Grow only if an explicit anchor
+    # or hard keepout consumes too many candidate slots.
     requested_body_count = max(1, len(body_ids))
     while True:
         grid = _candidate_grid(requested_body_count, minimum_io_rows, options)
         auto_io = _automatic_io_anchors(circuit, grid.bounds) if options.anchor_io else {}
         effective_anchors = {**auto_io, **options.anchors}
-        _validate_anchors(circuit, effective_anchors)
+        _validate_anchors(circuit, effective_anchors, options.hard_keepouts)
 
         movable = [entity_id for entity_id in entity_ids if entity_id not in effective_anchors]
         slots = [
-            slot for slot in grid.slots if _slot_clear_of_anchors(circuit, slot, effective_anchors)
+            slot
+            for slot in grid.slots
+            if _slot_clear_of_anchors(circuit, slot, effective_anchors)
+            and _slot_clear_of_keepouts(slot, options.hard_keepouts)
         ]
         if len(slots) >= len(movable):
             break
         requested_body_count += max(8, len(movable) - len(slots))
         if requested_body_count > max(1, len(body_ids)) + len(effective_anchors) * 16 + 1024:
-            raise ValueError("placement anchors leave too few legal grid slots")
+            raise ValueError("placement anchors/keepouts leave too few legal grid slots")
 
     positions: dict[int, Position] = dict(effective_anchors)
     if movable:
@@ -262,7 +277,7 @@ def _net_aware_plan(
         )
 
         # Deterministic greedy seed: highly connected entities go first; later entities are
-        # placed near already-placed peers of each incident hyperedge.  Anchored I/O markers
+        # placed near already-placed peers of each incident hyperedge. Anchored I/O markers
         # therefore pull their directly connected logic toward the correct perimeter.
         for entity_id in order:
             preferred = _preferred_position(entity_id, positions, groups, incident, center)
@@ -296,8 +311,11 @@ def _net_aware_plan(
                 sweeps=3,
             )
 
-    _validate_entity_positions(circuit, positions)
-    return PlacementPlan(positions, grid.relay_forbidden_areas)
+    _validate_entity_positions(circuit, positions, options.hard_keepouts)
+    return PlacementPlan(
+        positions,
+        (*grid.relay_forbidden_areas, *options.hard_keepouts),
+    )
 
 
 def _anneal(
@@ -670,7 +688,11 @@ def _compactness_energy(entity_id: int, positions: dict[int, Position], center: 
     return 0.002 * _distance_sq(positions[entity_id], center)
 
 
-def _validate_anchors(circuit: PhysicalCircuit, anchors: dict[int, Position]) -> None:
+def _validate_anchors(
+    circuit: PhysicalCircuit,
+    anchors: dict[int, Position],
+    hard_keepouts: tuple[PlacementArea, ...] = (),
+) -> None:
     entity_ids = {entity.id for entity in circuit.entities}
     unknown = sorted(set(anchors) - entity_ids)
     if unknown:
@@ -685,9 +707,20 @@ def _validate_anchors(circuit: PhysicalCircuit, anchors: dict[int, Position]) ->
                 _entity_half_extent(circuit.entity_by_id(right_id)),
             ):
                 raise ValueError(f"placement anchors overlap entities {left_id} and {right_id}")
+    for entity_id, position in anchors.items():
+        extent = _entity_half_extent(circuit.entity_by_id(entity_id))
+        for area in hard_keepouts:
+            if _box_overlaps_area(position, extent, area):
+                raise ValueError(
+                    f"placement anchor entity {entity_id} overlaps hard keepout area {area!r}"
+                )
 
 
-def _validate_entity_positions(circuit: PhysicalCircuit, positions: dict[int, Position]) -> None:
+def _validate_entity_positions(
+    circuit: PhysicalCircuit,
+    positions: dict[int, Position],
+    hard_keepouts: tuple[PlacementArea, ...] = (),
+) -> None:
     if set(positions) != {entity.id for entity in circuit.entities}:
         raise ValueError("placement did not assign exactly one position to every physical entity")
     entities = circuit.entities
@@ -700,13 +733,20 @@ def _validate_entity_positions(circuit: PhysicalCircuit, positions: dict[int, Po
                 _entity_half_extent(right),
             ):
                 raise ValueError(f"placement overlaps entities {left.id} and {right.id}")
+    for entity in entities:
+        extent = _entity_half_extent(entity)
+        for area in hard_keepouts:
+            if _box_overlaps_area(positions[entity.id], extent, area):
+                raise ValueError(
+                    f"placement entity {entity.id} overlaps hard keepout area {area!r}"
+                )
 
 
 def _slot_clear_of_anchors(
     circuit: PhysicalCircuit, slot: Position, anchors: dict[int, Position]
 ) -> bool:
     # Candidate slots are dimensioned for a horizontal 2x1 combinator, the largest footprint
-    # currently emitted.  Testing with that footprint keeps the same slot valid for any entity.
+    # currently emitted. Testing with that footprint keeps the same slot valid for any entity.
     slot_half = (1.0, 0.5)
     return all(
         not _boxes_overlap(
@@ -717,6 +757,22 @@ def _slot_clear_of_anchors(
         )
         for anchor_id, anchor_position in anchors.items()
     )
+
+
+def _slot_clear_of_keepouts(slot: Position, hard_keepouts: tuple[PlacementArea, ...]) -> bool:
+    slot_half = (1.0, 0.5)
+    return all(not _box_overlaps_area(slot, slot_half, area) for area in hard_keepouts)
+
+
+def _box_overlaps_area(
+    position: Position,
+    half_extent: tuple[float, float],
+    area: PlacementArea,
+) -> bool:
+    left, right, top, bottom = area
+    center = ((left + right) / 2.0, (top + bottom) / 2.0)
+    area_half = ((right - left) / 2.0, (bottom - top) / 2.0)
+    return _boxes_overlap(position, half_extent, center, area_half)
 
 
 def _entity_half_extent(entity: object) -> tuple[float, float]:
