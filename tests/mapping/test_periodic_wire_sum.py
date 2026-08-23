@@ -45,6 +45,26 @@ def _periodic_wire_sum_case():
     return module, problem
 
 
+def test_periodic_problem_generates_wire_sum_candidate_without_stateless_uses() -> None:
+    _module, problem = _periodic_wire_sum_case()
+    candidates = add_wire_sum_candidates(problem, ordinary_candidates(problem))
+    sum_operation = next(
+        operation
+        for operation in problem.operations
+        if isinstance(operation.semantic, BinaryOp) and operation.semantic.op == "+"
+    )
+
+    alternatives = [
+        candidate
+        for candidate in candidates
+        if candidate.operation == sum_operation.id
+        and candidate.kind is ImplementationKind.WIRE_SUM
+    ]
+    assert len(alternatives) == 1
+    assert alternatives[0].entity_cost == 0
+    assert alternatives[0].input_phase_offsets == (0, 0)
+
+
 def test_periodic_mapper_selects_and_lowers_binary_wire_sum() -> None:
     pytest.importorskip("ortools.sat.python.cp_model")
     module, problem = _periodic_wire_sum_case()
