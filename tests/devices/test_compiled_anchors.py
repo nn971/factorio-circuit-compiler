@@ -1,9 +1,13 @@
 from math import hypot
 
+import pytest
+
 from factorio_circuit import Circuit, ModuleInterface, SignalId, compile_module
 from factorio_circuit.devices import AnchorSpec
 from factorio_circuit.devices.compiled_anchors import (
     CompiledAnchorBinding,
+    compiled_anchor_adapter_keepout,
+    compiled_anchor_adapter_position,
     compiled_module_as_anchored_blueprint,
 )
 from factorio_circuit.devices.protocol import DevicePortDirection
@@ -88,6 +92,14 @@ def test_compiled_module_ports_normalize_to_typed_colored_anchors() -> None:
         ) <= 7.5 + 1e-9
 
 
+def test_compiled_adapter_keepout_matches_preferred_one_by_two_footprint() -> None:
+    position = compiled_anchor_adapter_position((8.0, 4.0), (0.0, 4.0))
+    keepout = compiled_anchor_adapter_keepout((8.0, 4.0), (0.0, 4.0))
+
+    assert position == (4.5, 4.0)
+    assert keepout == (4.0, 5.0, 3.0, 5.0)
+
+
 def test_compiled_anchor_adapter_moves_around_existing_relay() -> None:
     result = _compile_smoke()
     baseline = compiled_module_as_anchored_blueprint(result, _bindings())
@@ -136,3 +148,26 @@ def test_compiled_anchor_adapter_moves_around_existing_relay() -> None:
             positions[int(left)][0] - positions[int(right)][0],
             positions[int(left)][1] - positions[int(right)][1],
         ) <= 7.5 + 1e-9
+
+
+def test_strict_compiled_anchor_adapter_refuses_post_layout_relocation() -> None:
+    result = _compile_smoke()
+    preferred = compiled_anchor_adapter_position((8.0, 4.0), (0.0, 4.0))
+    blueprint = result.blueprint_json["blueprint"]
+    entities = blueprint["entities"]
+    blocker_id = max(int(entity["entity_number"]) for entity in entities) + 1
+    entities.append(
+        {
+            "entity_number": blocker_id,
+            "name": "constant-combinator",
+            "position": {"x": preferred[0], "y": preferred[1]},
+            "player_description": "WIRE RELAY — strict placement regression blocker",
+        }
+    )
+
+    with pytest.raises(ValueError, match="reserve its footprint during placement"):
+        compiled_module_as_anchored_blueprint(
+            result,
+            _bindings(),
+            strict_adapter_placement=True,
+        )
