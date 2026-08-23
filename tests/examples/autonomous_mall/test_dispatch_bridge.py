@@ -21,7 +21,12 @@ def _recipe(name, product, amount=1, **ingredients):
 
 
 def test_single_craft_job_uses_explicit_recipe_signal_and_exact_vectors() -> None:
-    job = MallJob.from_recipe(_recipe("iron-gear-wheel", "iron-gear-wheel", **{"iron-plate": 2}), 1)
+    recipe = _recipe(
+        "iron-gear-wheel",
+        "iron-gear-wheel",
+        **{"iron-plate": 2},
+    )
+    job = MallJob.from_recipe(recipe, 1)
 
     offer = job_to_worker_offer(job)
 
