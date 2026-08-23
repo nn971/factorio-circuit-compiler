@@ -82,7 +82,8 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
     ) -> None:
         # The mature base lowerer predates periodic wire sums and deliberately rejects the resource.
         # Validate/build all of its existing transport/state machinery against an equivalent shadow,
-        # then restore the real candidate/resource metadata for the subclass-owned zero-cost lowering.
+        # then restore the real candidate/resource metadata for the subclass-owned zero-cost
+        # lowering.
         base_candidates = tuple(
             replace(candidate, kind=ImplementationKind.ORDINARY)
             if candidate.kind is ImplementationKind.WIRE_SUM
@@ -151,7 +152,10 @@ class _BoundarySafeMappedPeriodicStateLowerer(_MappedPeriodicStateLowerer):
             raise MappingProblemError(
                 "periodic wire-sum contributor output was observed before carrier aggregation"
             )
-        if any(value.net in (conflict.left, conflict.right) for conflict in self.circuit.net_conflicts):
+        if any(
+            value.net in (conflict.left, conflict.right)
+            for conflict in self.circuit.net_conflicts
+        ):
             raise MappingProblemError(
                 "periodic wire-sum contributor output already participates in a net conflict"
             )
