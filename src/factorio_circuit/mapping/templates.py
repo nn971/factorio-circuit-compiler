@@ -307,9 +307,7 @@ def wire_sum_candidate(
 
     semantic = operation.semantic
     if not _is_addition(semantic):
-        raise MappingProblemError(
-            "wire-sum candidate requires scalar or vector addition semantics"
-        )
+        raise MappingProblemError("wire-sum candidate requires scalar or vector addition semantics")
     if len(operation.operands) != 2:
         raise MappingProblemError("wire-sum candidate requires exactly two operands")
 
