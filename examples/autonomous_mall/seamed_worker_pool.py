@@ -11,8 +11,8 @@ protocol is packaged as reusable bounded components:
 Only one probe token is in flight at a time.  This stop-and-wait rule is intentional: separately
 compiled component seams have physical latency, so holding a combinational first-free token high
 until a distant acknowledgement returns could duplicate an offer if an upstream worker became idle
-in the meantime.  A one-shot probe is either consumed by exactly one idle worker or reaches the tail;
-the head waits for that response before retrying.
+in the meantime. A one-shot probe is either consumed by exactly one idle worker or reaches the
+tail; the head waits for that response before retrying.
 
 Each worker controller has three whole-vector registers (recipe, reservation, promise), and its east
 seam attaches to a real :class:`factorio_circuit.devices.AssemblerDevice`.  A short device-owned
@@ -31,8 +31,8 @@ from factorio_circuit import SignalId, compile_circuit
 from factorio_circuit.devices import (
     ASSEMBLER_ENABLE_SIGNAL,
     ASSEMBLER_WORKING_SIGNAL,
-    AnchorSpec,
     AnchoredBlueprint,
+    AnchorSpec,
     AssemblerDevice,
     BoundAnchor,
     BoundarySlot,
@@ -171,10 +171,9 @@ def _bus_docks(
 def _external_head_docks() -> tuple[_Dock, ...]:
     result: list[_Dock] = []
     for index, lane in enumerate(_BUS_LANES):
-        if lane.forward:
-            direction = DevicePortDirection.INPUT
-        else:
-            direction = DevicePortDirection.OUTPUT
+        direction = (
+            DevicePortDirection.INPUT if lane.forward else DevicePortDirection.OUTPUT
+        )
         result.append(
             _Dock(
                 _EXTERNAL_NAMES[lane.name],
@@ -427,14 +426,8 @@ def _head_component() -> ConstrainedComponent:
 
 def _worker_controller_component() -> ConstrainedComponent:
     footprint = ComponentFootprint(0.0, 0.0, _CONTROLLER_WIDTH, _CONTROLLER_HEIGHT, _PITCH)
-    north = _bus_docks(
-        side=ComponentSide.NORTH,
-        seam_prefix="north_",
-        port_prefix="in_" if False else "",
-        forward_out=False,
-    )
-    # The generic bus helper names ports after lane stems.  Worker semantic port names differ on the
-    # reverse lanes, so rewrite them explicitly while retaining the exact same physical lane order.
+    # Worker semantic port names differ on the reverse lanes, so build both faces explicitly while
+    # retaining exactly the same physical lane order as the head and tail.
     north_ports: list[_Dock] = []
     south_ports: list[_Dock] = []
     for index, lane in enumerate(_BUS_LANES):
@@ -473,9 +466,6 @@ def _worker_controller_component() -> ConstrainedComponent:
                 lane.signal,
             )
         )
-    # Avoid retaining the unused temporary value above; it exists only to document symmetry with
-    # head/tail bus construction without obscuring the worker-specific semantic names.
-    del north
     device = _device_docks()
     docks = tuple(north_ports) + tuple(south_ports) + device
     return _compiled_component(
@@ -610,7 +600,8 @@ def _tail_component() -> ConstrainedComponent:
                 "player_description": f"MALL BUS TAIL {dock.anchor}",
             }
         )
-        anchors.append(BoundAnchor(dock.spec(), entity_id, 1 if dock.wire is WireColor.RED else 2, position))
+        connector = 1 if dock.wire is WireColor.RED else 2
+        anchors.append(BoundAnchor(dock.spec(), entity_id, connector, position))
 
     converter_id = len(entities) + 1
     entities.append(
