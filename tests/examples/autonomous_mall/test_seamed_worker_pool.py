@@ -16,6 +16,61 @@ def _trace(circuit, rows):
     return [dict(zip(module.output.names, row, strict=True)) for row in values]
 
 
+def _combinator_footprint(entity):
+    name = entity.get("name")
+    if name not in {
+        "constant-combinator",
+        "arithmetic-combinator",
+        "decider-combinator",
+        "selector-combinator",
+    }:
+        return None
+    x = float(entity["position"]["x"])
+    y = float(entity["position"]["y"])
+    if name == "constant-combinator":
+        half_width = half_height = 0.5
+    elif int(entity.get("direction", 0)) in {0, 4}:
+        half_width, half_height = 0.5, 1.0
+    else:
+        half_width, half_height = 1.0, 0.5
+    return (
+        x - half_width,
+        y - half_height,
+        x + half_width,
+        y + half_height,
+    )
+
+
+def _footprints_overlap(left, right) -> bool:
+    return (
+        left[0] < right[2] - 1e-9
+        and right[0] < left[2] - 1e-9
+        and left[1] < right[3] - 1e-9
+        and right[1] < left[3] - 1e-9
+    )
+
+
+def _assert_anchor_adapters_clear(entities) -> None:
+    adapters = [
+        entity
+        for entity in entities
+        if str(entity.get("player_description", "")).startswith("ANCHOR ADAPTER")
+    ]
+    for adapter in adapters:
+        adapter_box = _combinator_footprint(adapter)
+        assert adapter_box is not None
+        for other in entities:
+            if other is adapter:
+                continue
+            other_box = _combinator_footprint(other)
+            if other_box is None:
+                continue
+            assert not _footprints_overlap(adapter_box, other_box), (
+                f"{adapter.get('player_description')} at {adapter['position']} overlaps "
+                f"{other.get('player_description', other.get('name'))} at {other['position']}"
+            )
+
+
 def test_dispatch_head_publishes_packet_before_probe_then_retries() -> None:
     base = {
         "offer_valid": 1,
@@ -159,6 +214,11 @@ def test_two_worker_seamed_component_is_bounded_and_contains_real_devices() -> N
 
     descriptions = [str(entity.get("player_description", "")) for entity in entities]
     assert not any(description.startswith("ANCHOR RELAY") for description in descriptions)
+
+    # Post-compilation interface adapters must be physically placeable.  This specifically catches
+    # router relays occupying an adapter's 1x2 footprint, which Factorio resolves by dropping the
+    # adapter and disconnecting that seam lane.
+    _assert_anchor_adapters_clear(entities)
 
     # The public ABI must be a literal exposed top seam, not metadata attached to terminals buried
     # in the annealed body.  Only ANCHOR-owned adapter infrastructure may occupy the four-tile strip
