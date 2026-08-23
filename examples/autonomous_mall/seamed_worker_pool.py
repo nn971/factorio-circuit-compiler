@@ -14,6 +14,12 @@ until a distant acknowledgement returns could duplicate an offer if an upstream 
 in the meantime. A one-shot probe is either consumed by exactly one idle worker or reaches the
 tail; the head waits for that response before retrying.
 
+The job packet and the probe have deliberately different timing.  While the external four-phase
+envelope is held valid, HEAD publishes recipe/inputs/product continuously and gives those vectors
+one full logical reaction to propagate before launching the probe.  Worker stages likewise forward
+the three packet vectors continuously; only the scalar probe is consumed or forwarded.  This keeps
+physical lane skew from letting a worker claim a recipe before its reservation vector has arrived.
+
 Each worker controller has three whole-vector registers (recipe, reservation, promise), and its east
 seam attaches to a real :class:`factorio_circuit.devices.AssemblerDevice`.  A short device-owned
 working-signal route moves that one observation onto the west mall seam; unlike the previous probe,
@@ -68,6 +74,7 @@ from .worker_pool import (
 
 _SEEN_SIGNAL: Final = SignalId("virtual", "signal-S")
 _WAITING_SIGNAL: Final = SignalId("virtual", "signal-T")
+_ARMED_SIGNAL: Final = SignalId("virtual", "signal-U")
 _EACH: Final = SignalId("virtual", "signal-each")
 
 _PITCH: Final = 0.5
@@ -330,12 +337,16 @@ def build_dispatch_head() -> Circuit:
     seen_reg = circuit.freeze("offer_seen")
     waiting_reg = circuit.freeze("probe_waiting")
     blocked_reg = circuit.freeze("offer_blocked_state")
+    armed_reg = circuit.freeze("probe_armed")
     seen = seen_reg.sample().signal(_SEEN_SIGNAL) != 0
     waiting = waiting_reg.sample().signal(_WAITING_SIGNAL) != 0
     blocked = blocked_reg.sample().signal(OFFER_BLOCKED_SIGNAL) != 0
+    armed = armed_reg.sample().signal(_ARMED_SIGNAL) != 0
 
     well_formed = recipe.any() * product.any()
-    send = raw_valid * seen.logical_not() * waiting.logical_not() * well_formed
+    packet_live = raw_valid * well_formed
+    arm = raw_valid * seen.logical_not() * well_formed
+    send = armed * raw_valid * seen.logical_not() * waiting.logical_not() * well_formed
     accepted = downstream_accepted * raw_valid
     block_response = downstream_blocked * raw_valid
     response = accepted | block_response
@@ -343,6 +354,7 @@ def build_dispatch_head() -> Circuit:
     clear_seen = seen * raw_valid.logical_not()
     clear_waiting = waiting * raw_valid.logical_not()
     clear_blocked = blocked * raw_valid.logical_not()
+    clear_armed = armed * raw_valid.logical_not()
 
     seen_reg.set(
         circuit.constant_signals({_SEEN_SIGNAL: 1}).gate(accepted),
@@ -356,11 +368,18 @@ def build_dispatch_head() -> Circuit:
         circuit.constant_signals({OFFER_BLOCKED_SIGNAL: 1}).gate(block_response),
         when=block_response | accepted | clear_blocked,
     )
+    armed_reg.set(
+        circuit.constant_signals({_ARMED_SIGNAL: 1}).gate(arm),
+        when=arm | clear_armed,
+    )
 
+    # Publish the whole packet before the scalar probe.  ``armed`` is state written from ``arm`` on
+    # the preceding reaction, so a well-formed external envelope gets a full logical reaction of
+    # head start.  Keep the packet visible throughout V=1 so retries do not need to re-launch it.
     circuit.output("bus_offer_valid", send)
-    circuit.output("bus_offer_recipe", recipe.gate(send))
-    circuit.output("bus_offer_inputs", inputs.gate(send))
-    circuit.output("bus_offer_product", product.gate(send))
+    circuit.output("bus_offer_recipe", recipe.gate(packet_live))
+    circuit.output("bus_offer_inputs", inputs.gate(packet_live))
+    circuit.output("bus_offer_product", product.gate(packet_live))
 
     circuit.output("reserved", downstream_reserved)
     circuit.output("promised", downstream_promised)
@@ -417,10 +436,13 @@ def build_worker_stage() -> Circuit:
     live_promise = held_promise + product.gate(claim)
     live_busy = busy | claim
 
+    # Packet vectors are a continuously propagated four-phase envelope.  Do not gate them with the
+    # probe: doing so reintroduces per-lane physical skew at every busy worker.  Only the scalar
+    # token is consume/forward controlled.
     circuit.output("next_offer_valid", forward)
-    circuit.output("next_offer_recipe", recipe.gate(forward))
-    circuit.output("next_offer_inputs", inputs.gate(forward))
-    circuit.output("next_offer_product", product.gate(forward))
+    circuit.output("next_offer_recipe", recipe)
+    circuit.output("next_offer_inputs", inputs)
+    circuit.output("next_offer_product", product)
 
     circuit.output("up_reserved", live_reservation + down_reserved)
     circuit.output("up_promised", live_promise + down_promised)
