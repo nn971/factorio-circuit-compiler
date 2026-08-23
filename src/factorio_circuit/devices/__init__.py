@@ -94,7 +94,6 @@ __all__ = [
     "build_assembler_device_blueprint",
     "build_lamp_screen_blueprint",
     "build_player_movement_detector_blueprint",
-    "compile_component_seams",
     "compiled_module_as_anchored_blueprint",
     "compose_anchored_blueprints",
     "compose_component_seams",
