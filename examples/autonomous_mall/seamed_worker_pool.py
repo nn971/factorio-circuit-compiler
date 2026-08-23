@@ -18,6 +18,11 @@ Each worker controller has three whole-vector registers (recipe, reservation, pr
 seam attaches to a real :class:`factorio_circuit.devices.AssemblerDevice`.  A short device-owned
 working-signal route moves that one observation onto the west mall seam; unlike the previous probe,
 there is no composer-generated route around the assembler footprint.
+
+Compiled controller seams deliberately live in four-tile guard bands outside the annealer's dense
+body envelope.  The compiler marker sits at the inner edge, the isolation adapter occupies the
+middle, and the exact-overlap anchor sits on the outer component boundary.  This keeps public docks
+visible and prevents post-placement anchor adapters from being buried under unrelated logic.
 """
 
 from __future__ import annotations
@@ -65,8 +70,12 @@ _WAITING_SIGNAL: Final = SignalId("virtual", "signal-T")
 _EACH: Final = SignalId("virtual", "signal-each")
 
 _PITCH: Final = 0.5
-_CONTROLLER_WIDTH: Final = 32.0
-_CONTROLLER_HEIGHT: Final = 24.0
+_CONTROLLER_BODY_WIDTH: Final = 32.0
+_CONTROLLER_BODY_HEIGHT: Final = 24.0
+_SEAM_GUARD: Final = 4.0
+_CONTROLLER_MIN_Y: Final = -_SEAM_GUARD
+_CONTROLLER_MAX_X: Final = _CONTROLLER_BODY_WIDTH + _SEAM_GUARD
+_CONTROLLER_MAX_Y: Final = _CONTROLLER_BODY_HEIGHT + _SEAM_GUARD
 _BUS_X: Final = (3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0)
 
 
@@ -136,8 +145,24 @@ class _Dock:
         )
 
 
+def _controller_footprint() -> ComponentFootprint:
+    return ComponentFootprint(
+        0.0,
+        _CONTROLLER_MIN_Y,
+        _CONTROLLER_MAX_X,
+        _CONTROLLER_MAX_Y,
+        _PITCH,
+    )
+
+
 def _slot_x(index: int) -> int:
     return round(_BUS_X[index] / _PITCH)
+
+
+def _slot_y(y: float) -> int:
+    """Return the east/west boundary slot for one body-relative y coordinate."""
+
+    return round((y - _CONTROLLER_MIN_Y) / _PITCH)
 
 
 def _bus_docks(
@@ -195,7 +220,7 @@ def _device_docks() -> tuple[_Dock, ...]:
             "device_recipe",
             "device_recipe",
             ComponentSide.EAST,
-            round(5.5 / _PITCH),
+            _slot_y(5.5),
             DevicePortDirection.OUTPUT,
             PayloadShape.VECTOR,
             WireColor.GREEN,
@@ -204,7 +229,7 @@ def _device_docks() -> tuple[_Dock, ...]:
             "device_enable",
             "device_enable",
             ComponentSide.EAST,
-            round(10.5 / _PITCH),
+            _slot_y(10.5),
             DevicePortDirection.OUTPUT,
             PayloadShape.SCALAR,
             WireColor.GREEN,
@@ -214,7 +239,7 @@ def _device_docks() -> tuple[_Dock, ...]:
             "device_working",
             "device_working",
             ComponentSide.EAST,
-            round(12.5 / _PITCH),
+            _slot_y(12.5),
             DevicePortDirection.INPUT,
             PayloadShape.SCALAR,
             WireColor.RED,
@@ -224,7 +249,7 @@ def _device_docks() -> tuple[_Dock, ...]:
             "device_requester_demand",
             "device_requester_demand",
             ComponentSide.EAST,
-            round(15.5 / _PITCH),
+            _slot_y(15.5),
             DevicePortDirection.OUTPUT,
             PayloadShape.VECTOR,
             WireColor.GREEN,
@@ -237,7 +262,7 @@ def _marker_position(
     side: ComponentSide,
     slot: int,
     *,
-    inset: float = 4.0,
+    inset: float = _SEAM_GUARD,
 ) -> tuple[float, float]:
     x, y = footprint.boundary_position(side, slot)
     if side is ComponentSide.NORTH:
@@ -403,7 +428,7 @@ def build_worker_stage() -> Circuit:
 
 
 def _head_component() -> ConstrainedComponent:
-    footprint = ComponentFootprint(0.0, 0.0, _CONTROLLER_WIDTH, _CONTROLLER_HEIGHT, _PITCH)
+    footprint = _controller_footprint()
     external = _external_head_docks()
     south = _bus_docks(
         side=ComponentSide.SOUTH,
@@ -425,7 +450,7 @@ def _head_component() -> ConstrainedComponent:
 
 
 def _worker_controller_component() -> ConstrainedComponent:
-    footprint = ComponentFootprint(0.0, 0.0, _CONTROLLER_WIDTH, _CONTROLLER_HEIGHT, _PITCH)
+    footprint = _controller_footprint()
     # Worker semantic port names differ on the reverse lanes, so build both faces explicitly while
     # retaining exactly the same physical lane order as the head and tail.
     north_ports: list[_Dock] = []
@@ -581,7 +606,7 @@ def _worker_component() -> ConstrainedComponent:
 def _tail_component() -> ConstrainedComponent:
     """Terminate every lane explicitly and return blocked when a probe reaches the end."""
 
-    footprint = ComponentFootprint(0.0, 0.0, _CONTROLLER_WIDTH, 8.0, _PITCH)
+    footprint = ComponentFootprint(0.0, 0.0, _CONTROLLER_BODY_WIDTH, 8.0, _PITCH)
     docks = _bus_docks(
         side=ComponentSide.NORTH,
         seam_prefix="north_",
@@ -745,10 +770,11 @@ def build_seamed_worker_pool_component(worker_count: int = 2) -> ConstrainedComp
         raise ValueError("worker_count must be positive")
 
     current = _head_component()
+    worker_template = _worker_component()
     for index in range(worker_count):
         current = compose_component_seams(
             current,
-            _worker_component(),
+            worker_template,
             left_seam="south_bus",
             right_seam="north_bus",
             label=f"Deterministic mall — workers 0..{index}",
