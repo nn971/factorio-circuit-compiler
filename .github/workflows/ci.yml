@@ -29,15 +29,15 @@ jobs:
         if: github.head_ref == 'agent/periodic-wire-sum'
         run: |
           uv run --with 'ortools>=9.14,<10' pytest tests/mapping/test_periodic_wire_sum.py
-      - name: Benchmark Snake P=60 wire-sum A/B
+      - name: Diagnose Snake mapped transport accounting
         if: github.head_ref == 'agent/periodic-wire-sum'
         run: |
-          echo '=== wire sum enabled ==='
+          echo '=== no wire sum, shared bus ==='
           uv run --with 'ortools>=9.14,<10' python -m benchmarks.snake.lower_mapping \
-            --period 60 --time-limit 120 --workers 1
-          echo '=== wire sum disabled ==='
+            --period 60 --time-limit 30 --workers 1 --without-wire-sum
+          echo '=== no wire sum, private transport ==='
           uv run --with 'ortools>=9.14,<10' python -m benchmarks.snake.lower_mapping \
-            --period 60 --time-limit 120 --workers 1 --without-wire-sum
+            --period 60 --time-limit 30 --workers 1 --without-wire-sum --max-delay-buses 0
       - name: Test
         run: uv run pytest
       - name: Ruff lint
