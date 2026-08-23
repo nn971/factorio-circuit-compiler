@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
-from factorio_circuit.devices.anchors import AnchorSpec, AnchoredBlueprint
+from factorio_circuit.devices.anchors import AnchorSpec, AnchoredBlueprint, BoundAnchor
 from factorio_circuit.devices.component_seams import (
     BoundarySlot,
     ComponentFootprint,
@@ -64,7 +66,16 @@ def _cell(label: str = "cell") -> ConstrainedComponent:
         },
     ]
     anchored = AnchoredBlueprint(
-        {"item": "blueprint", "entities": entities, "wires": [[1, 2, 2, 2], [2, 4, 3, 2], [4, 2, 5, 2], [5, 4, 6, 2]]},
+        {
+            "item": "blueprint",
+            "entities": entities,
+            "wires": [
+                [1, 2, 2, 2],
+                [2, 4, 3, 2],
+                [4, 2, 5, 2],
+                [5, 4, 6, 2],
+            ],
+        },
         (
             boundary_anchor(
                 _vector_spec("west_a", DevicePortDirection.INPUT),
@@ -132,20 +143,20 @@ def test_boundary_anchor_position_is_derived_from_side_and_slot() -> None:
 
 def test_constrained_component_rejects_floating_boundary_anchor() -> None:
     cell = _cell()
-    bad_anchor = cell.anchored.anchor("west_a")
-    bad = AnchoredBlueprint(
-        cell.anchored.blueprint,
-        tuple(
-            type(anchor)(
-                anchor.spec,
-                anchor.entity_number,
-                anchor.connector_id,
-                (0.0, 2.0) if anchor.name == "west_a" else anchor.position,
-            )
-            for anchor in cell.anchored.anchors
-        ),
-        "bad",
+    blueprint = deepcopy(cell.anchored.blueprint)
+    moved = next(entity for entity in blueprint["entities"] if entity["entity_number"] == 1)
+    moved["position"] = {"x": 0.0, "y": 2.0}
+    anchors = tuple(
+        BoundAnchor(
+            anchor.spec,
+            anchor.entity_number,
+            anchor.connector_id,
+            (0.0, 2.0) if anchor.name == "west_a" else anchor.position,
+        )
+        for anchor in cell.anchored.anchors
     )
+    bad = AnchoredBlueprint(blueprint, anchors, "bad")
+
     with pytest.raises(ValueError, match="declared west slot"):
         ConstrainedComponent.bounded(
             bad,
@@ -153,15 +164,11 @@ def test_constrained_component_rejects_floating_boundary_anchor() -> None:
             slots=cell.slots,
             seams=cell.seams,
         )
-    assert bad_anchor.position == (0.0, 1.0)
 
 
 def test_constrained_component_rejects_entity_outside_footprint() -> None:
     cell = _cell()
-    blueprint = {
-        **cell.anchored.blueprint,
-        "entities": [dict(entity) for entity in cell.anchored.blueprint["entities"]],
-    }
+    blueprint = deepcopy(cell.anchored.blueprint)
     blueprint["entities"].append(
         {"entity_number": 99, "name": "small-lamp", "position": {"x": 9.0, "y": 9.0}}
     )
@@ -204,7 +211,8 @@ def test_seam_composition_derives_translation_and_preserves_regular_cells() -> N
     assert triple.anchored.anchor("west_a").position == (0.0, 1.0)
     assert triple.anchored.anchor("east_a").position == (12.0, 1.0)
 
-    # Two seam merges remove four terminal entities total; composition adds no routing entities.
+    # Two two-lane seam merges remove four terminal entities total; composition adds no routing
+    # entities or wires of its own.
     assert len(triple.anchored.blueprint["entities"]) == 3 * 6 - 2 * 2
     assert len(triple.anchored.blueprint["wires"]) == 3 * 4
 
@@ -212,16 +220,40 @@ def test_seam_composition_derives_translation_and_preserves_regular_cells() -> N
 def test_seam_composition_rejects_non_rigid_lane_alignment() -> None:
     left = _cell("left")
     right = _cell("right")
-    shifted_slots = tuple(
-        BoundarySlot(slot.anchor, slot.side, 2 if slot.anchor == "west_b" else slot.slot)
-        for slot in right.slots
+    blueprint = deepcopy(right.anchored.blueprint)
+    moved = next(entity for entity in blueprint["entities"] if entity["entity_number"] == 4)
+    moved["position"] = {"x": 0.0, "y": 2.0}
+    anchors = tuple(
+        BoundAnchor(
+            anchor.spec,
+            anchor.entity_number,
+            anchor.connector_id,
+            (0.0, 2.0) if anchor.name == "west_b" else anchor.position,
+        )
+        for anchor in right.anchored.anchors
     )
-    with pytest.raises(ValueError, match="declared west slot"):
-        ConstrainedComponent(
-            right.anchored,
-            right.footprints,
-            shifted_slots,
-            right.seams,
+    crooked_anchored = AnchoredBlueprint(blueprint, anchors, "crooked")
+    crooked = ConstrainedComponent.bounded(
+        crooked_anchored,
+        right.footprints[0],
+        slots=(
+            BoundarySlot("west_a", ComponentSide.WEST, 1),
+            BoundarySlot("west_b", ComponentSide.WEST, 2),
+            BoundarySlot("east_a", ComponentSide.EAST, 1),
+            BoundarySlot("east_b", ComponentSide.EAST, 3),
+        ),
+        seams=(
+            ComponentSeam("west", ComponentSide.WEST, ("west_a", "west_b")),
+            ComponentSeam("east", ComponentSide.EAST, ("east_a", "east_b")),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="one rigid component translation"):
+        compose_component_seams(
+            left,
+            crooked,
+            left_seam="east",
+            right_seam="west",
         )
 
 
