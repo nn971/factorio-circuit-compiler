@@ -47,10 +47,10 @@ from factorio_circuit.ir.physical import WireColor
 from factorio_circuit.ir.semantic import PayloadShape
 
 from .seamed_worker_pool import (
-    _Dock,
     _bus_docks,
     _compiled_component,
     _controller_footprint,
+    _Dock,
     _slot_x,
     build_seamed_worker_pool_component,
 )
@@ -333,7 +333,9 @@ def build_fast_splitter_controller() -> Circuit:
             (settle_product.signal(product_signal) != 0)
             * (inventory.signal(product_signal) > baseline.signal(product_signal))
         )
-        output_visible = product_visible if output_visible is None else output_visible | product_visible
+        output_visible = (
+            product_visible if output_visible is None else output_visible | product_visible
+        )
     assert output_visible is not None
     output_visible = await_stock * idle * output_visible
 
