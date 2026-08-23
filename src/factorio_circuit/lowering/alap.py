@@ -245,9 +245,7 @@ class AlapVectorLowerer(SharedVectorDelayLowerer):
                 semantic.op,
                 base,
             )
-            vector_windows = tuple(
-                self._aligned_vector_window(item, target) for item in realized
-            )
+            vector_windows = tuple(self._aligned_vector_window(item, target) for item in realized)
             span = self._combined_span(vector_windows)
             self._remember_vector(
                 result,
