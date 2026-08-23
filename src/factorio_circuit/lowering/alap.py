@@ -245,8 +245,10 @@ class AlapVectorLowerer(SharedVectorDelayLowerer):
                 semantic.op,
                 base,
             )
-            windows = tuple(self._aligned_vector_window(item, target) for item in realized)
-            span = self._combined_span(windows)
+            vector_windows = tuple(
+                self._aligned_vector_window(item, target) for item in realized
+            )
+            span = self._combined_span(vector_windows)
             self._remember_vector(
                 result,
                 ValidityWindow(
@@ -270,12 +272,12 @@ class AlapVectorLowerer(SharedVectorDelayLowerer):
                 semantic.op,
                 max(phases, default=0),
             )
-            windows: list[ValidityWindow] = []
+            operand_windows: list[ValidityWindow] = []
             if vector is not None:
-                windows.append(self._aligned_vector_window(vector, target))
+                operand_windows.append(self._aligned_vector_window(vector, target))
             if scalar is not None:
-                windows.append(self._aligned_scalar_window(scalar, target))
-            span = self._combined_span(tuple(windows))
+                operand_windows.append(self._aligned_scalar_window(scalar, target))
+            span = self._combined_span(tuple(operand_windows))
             self._remember_vector(
                 result,
                 ValidityWindow(
