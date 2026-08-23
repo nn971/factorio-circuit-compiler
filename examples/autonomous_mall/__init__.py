@@ -22,6 +22,13 @@ from .recipe_graph import (
     build_recipe_dag,
 )
 from .scheduler import DeterministicMallScheduler, DispatchPlan, MallJob, complete_jobs
+from .seamed_worker_pool import (
+    build_dispatch_head,
+    build_seamed_worker_pool_blueprint,
+    build_seamed_worker_pool_component,
+    build_worker_stage,
+    generate_seamed_worker_pool_blueprint_string,
+)
 
 __all__ = [
     "AmbiguousProducerError",
@@ -45,8 +52,13 @@ __all__ = [
     "RecipeCycleError",
     "RecipeDAG",
     "RecipeGraphError",
+    "build_dispatch_head",
     "build_quality_action_graph",
     "build_recipe_dag",
+    "build_seamed_worker_pool_blueprint",
+    "build_seamed_worker_pool_component",
+    "build_worker_stage",
     "complete_jobs",
+    "generate_seamed_worker_pool_blueprint_string",
     "solve_quality_policy",
 ]
