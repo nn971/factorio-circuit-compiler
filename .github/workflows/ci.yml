@@ -33,3 +33,14 @@ jobs:
         run: uv run ruff format --check .
       - name: Mypy
         run: uv run mypy src
+      - name: Benchmark periodic wire sums
+        if: github.head_ref == 'agent/periodic-wire-sum'
+        run: |
+          echo '=== full-state WITH wire sum ==='
+          uv run --with 'ortools>=9.14,<10' python -m benchmarks.snake.analyze_mapping --period 60 --solve-full-state --time-limit 30 --workers 1
+          echo '=== full-state WITHOUT wire sum ==='
+          uv run --with 'ortools>=9.14,<10' python -m benchmarks.snake.analyze_mapping --period 60 --solve-full-state --without-wire-sum --time-limit 30 --workers 1
+          echo '=== physical WITH wire sum ==='
+          uv run --with 'ortools>=9.14,<10' python -m benchmarks.snake.lower_mapping --period 60 --time-limit 30 --workers 1
+          echo '=== physical WITHOUT wire sum ==='
+          uv run --with 'ortools>=9.14,<10' python -m benchmarks.snake.lower_mapping --period 60 --without-wire-sum --time-limit 30 --workers 1
