@@ -53,7 +53,15 @@ jobs:
           candidates = add_select_constant_candidates(problem, candidates)
           candidates = add_decider_condition_cover_candidates(problem, candidates)
           candidates = add_wire_sum_candidates(problem, candidates)
-          use_counts = Counter(use.producer for use in problem.uses())
+          use_counts = Counter()
+          for operation in problem.operations:
+              use_counts.update(operation.operands)
+          use_counts.update(sink.value for sink in problem.sinks)
+          for transition in problem.state_transitions:
+              if transition.value is not None:
+                  use_counts[transition.value] += 1
+              if transition.when is not None:
+                  use_counts[transition.when] += 1
           wire = [item for item in candidates if item.kind is ImplementationKind.WIRE_SUM]
           print(f"wire_sum_candidates={len(wire)}")
           for candidate in wire:
