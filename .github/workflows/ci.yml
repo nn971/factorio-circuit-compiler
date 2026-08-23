@@ -25,6 +25,10 @@ jobs:
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
+      - name: Test periodic wire sums with OR-Tools
+        if: github.head_ref == 'agent/periodic-wire-sum'
+        run: |
+          uv run --with 'ortools>=9.14,<10' pytest tests/mapping/test_periodic_wire_sum.py
       - name: Benchmark Snake P=60 wire-sum A/B
         if: github.head_ref == 'agent/periodic-wire-sum'
         run: |
