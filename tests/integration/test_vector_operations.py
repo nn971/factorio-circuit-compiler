@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from factorio_circuit import SignalId, compile_circuit
 from factorio_circuit.frontend import Circuit
-from factorio_circuit.ir.physical import ArithmeticCombinator, DeciderCombinator
+from factorio_circuit.ir.physical import DeciderCombinator, SelectorCombinator
 from factorio_circuit.simulate.physical import simulate_stream
 
 IRON = SignalId("item", "iron-plate")
@@ -138,15 +138,14 @@ def test_positive_and_any_lower_to_factorio_wildcards() -> None:
 def test_max_lowers_to_one_factorio_selector_combinator() -> None:
     result = compile_circuit(_max_circuit())
 
-    scaffold = next(
+    selector_entity = next(
         entity
         for entity in result.physical_circuit.entities
-        if isinstance(entity, ArithmeticCombinator) and entity.description == "runtime vector max"
+        if isinstance(entity, SelectorCombinator) and entity.description == "runtime vector max"
     )
-    assert scaffold.operation == "select"
-    assert scaffold.left.each
-    assert scaffold.right.constant == 0
-    assert scaffold.output_each
+    assert selector_entity.operation == "select"
+    assert selector_entity.select_max is True
+    assert selector_entity.index == 0
     maximum_port = next(port for port in result.physical_circuit.outputs if port.name == "maximum")
     assert maximum_port.phase == 1
 
