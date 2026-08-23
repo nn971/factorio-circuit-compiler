@@ -29,10 +29,10 @@ jobs:
         if: github.head_ref == 'agent/periodic-wire-sum'
         run: |
           echo '=== wire sum enabled ==='
-          uv run python -m benchmarks.snake.lower_mapping \
+          uv run --with 'ortools>=9.14,<10' python -m benchmarks.snake.lower_mapping \
             --period 60 --time-limit 120 --workers 1
           echo '=== wire sum disabled ==='
-          uv run python -m benchmarks.snake.lower_mapping \
+          uv run --with 'ortools>=9.14,<10' python -m benchmarks.snake.lower_mapping \
             --period 60 --time-limit 120 --workers 1 --without-wire-sum
       - name: Test
         run: uv run pytest
