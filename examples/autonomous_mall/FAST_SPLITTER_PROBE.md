@@ -1,19 +1,20 @@
-# Fast-splitter closed-loop mall probe
+# Fast-splitter raw-plate closed-loop mall probe
 
-This is the first autonomous feedback test above the manually validated seamed worker pool. It is
-intentionally one recipe only. The purpose is to validate the loop
+This is the first autonomous recursive-production test above the manually validated seamed worker
+pool. The only prescribed source materials are **iron plates and copper plates**. The controller
+manufactures the vanilla intermediates itself and repeatedly produces fast splitters until the
+configured final-stock target is reached.
 
 ```text
-real logistic stock -> target comparison -> four-phase offer -> worker -> assembler -> provider
-        ^                                                               |
-        +---------------------------------------------------------------+
+real logistic stock -> dependency choice -> four-phase offer -> worker -> assembler -> provider
+        ^                                                                  |
+        +------------------------------------------------------------------+
 ```
 
-before introducing a recipe ROM or recursive scheduler.
+This remains a target-specific probe. Its purpose is to validate real recursive feedback before the
+recipe decisions are generalized into the constant-combinator vector ROM used by the final mall.
 
 ## Generate
-
-Use the probe branch and generate one worker first:
 
 ```bash
 git fetch origin
@@ -26,123 +27,172 @@ uv run python -m examples.autonomous_mall.fast_splitter_probe \
 
 Import the resulting blueprint string into Factorio.
 
-## Recipe under test
+## Recipe chain under test
 
-The controller publishes exactly one craft of the vanilla `fast-splitter` recipe:
+The controller may issue exactly one craft at a time from this vanilla chain:
 
 ```text
-recipe signal: recipe:fast-splitter = 1
-
-inputs:
-    splitter            = 1
-    iron-gear-wheel     = 10
-    electronic-circuit  = 10
-
-product:
-    fast-splitter       = 1
+copper-plate
+  -> copper-cable
+  -> electronic-circuit ---+
+                            |
+iron-plate -> iron-gear-wheel -> transport-belt ---+
+                            |                       |
+                            +--------------------> splitter
+                                                    |
+                                                    +--> fast-splitter
 ```
 
-The packet is fixed and continuously present on the internal controller-to-HEAD interface. Only the
-four-phase `offer_valid` state changes.
+Concrete one-craft packets:
+
+```text
+copper-cable:
+    input   copper-plate = 1
+    product copper-cable = 2
+
+electronic-circuit:
+    inputs  copper-cable = 3, iron-plate = 1
+    product electronic-circuit = 1
+
+iron-gear-wheel:
+    input   iron-plate = 2
+    product iron-gear-wheel = 1
+
+transport-belt:
+    inputs  iron-plate = 1, iron-gear-wheel = 1
+    product transport-belt = 2
+
+splitter:
+    inputs  transport-belt = 4, electronic-circuit = 5, iron-plate = 5
+    product splitter = 1
+
+fast-splitter:
+    inputs  splitter = 1, iron-gear-wheel = 10, electronic-circuit = 10
+    product fast-splitter = 1
+```
+
+Each packet uses the corresponding explicit Factorio `recipe:<name>` signal.
+
+With no useful intermediates initially stocked, one fast splitter consumes **46 iron plates** and
+22.5 copper plates in continuous raw-material accounting. Because the copper-cable recipe produces
+two at a time, a clean one-fast-splitter run needs **46 iron plates + 23 copper plates** and leaves
+one copper cable. Across several targets, leftover cable is reused; five fast splitters from an
+otherwise empty network therefore need 230 iron plates and 113 copper plates.
 
 ## External control seam
 
 The surviving top seam is ordered left-to-right:
 
 ```text
-1  inventory          GREEN vector INPUT
-2  offer_valid        GREEN signal-V OUTPUT
-3  blocked            RED   signal-B OUTPUT
-4  accepted           RED   signal-A OUTPUT
-5  busy_count         RED   signal-C OUTPUT
-6  completion_count   RED   signal-D OUTPUT
-7  reserved           RED   vector OUTPUT
-8  promised           RED   vector OUTPUT
-9  settling           GREEN signal-Z OUTPUT
+1   inventory          GREEN vector INPUT
+2   offer_valid        GREEN signal-V OUTPUT
+3   blocked            RED   signal-B OUTPUT
+4   accepted           RED   signal-A OUTPUT
+5   busy_count         RED   signal-C OUTPUT
+6   completion_count   RED   signal-D OUTPUT
+7   reserved           RED   vector OUTPUT
+8   promised           RED   vector OUTPUT
+9   settling           GREEN signal-Z OUTPUT
+10  job_recipe         GREEN recipe-vector OUTPUT
 ```
 
-Only `inventory` is required to operate the controller. The other eight docks are diagnostics.
+Only `inventory` is required to operate the controller. The remaining docks are diagnostics;
+`job_recipe` makes the current recursive choice visible during debugging.
 
 ## Wire the real stock feedback
 
-1. Put the worker, roboport, logistic robots, and ingredient provider/storage chests in one logistic
-   network.
+1. Put the worker, roboport, logistic robots, raw-material provider/storage chests, requester chest,
+   and output provider in one logistic network.
 2. Configure the roboport to **Read logistic network contents**.
 3. Connect the roboport to the `inventory` dock with a green wire.
-4. Connect a constant combinator to the same green network and set `signal-T` to the desired number
-   of fast splitters. For the first test, use `T = 5`.
-5. Make at least the following ingredients available through the logistic network:
+4. Connect a constant combinator to that same green network and set `signal-T` to the desired number
+   of fast splitters.
+5. Supply only iron plates and copper plates through the logistic network. You do **not** need to
+   pre-supply splitters, gears, circuits, belts, or copper cable.
+
+For the smallest test use:
 
 ```text
-splitter            >= 5
-iron-gear-wheel     >= 50
-electronic-circuit  >= 50
+signal-T = 1
+iron-plate >= 46
+copper-plate >= 23
+fast-splitter = 0
 ```
 
-Do not place fast splitters in the network initially. Do not manually drive `offer_valid`; the new
-controller owns the entire four-phase transaction.
+For a five-item convergence test from an otherwise empty intermediate stock:
+
+```text
+signal-T = 5
+iron-plate >= 230
+copper-plate >= 113
+fast-splitter = 0
+```
+
+Do not manually drive `offer_valid`, recipe, input, or product lanes. The controller owns the entire
+four-phase transaction.
 
 ## Expected behavior
 
-With `T = 5`, the system should repeatedly execute this sequence without manual intervention:
+For `T = 1`, the visible `job_recipe` diagnostic should walk through the required intermediates. The
+exact interleaving contains repeated cable/circuit/gear crafts, but the dependency phases are:
 
 ```text
-inventory says fast-splitter < 5
-and worker idle
-and one craft of ingredients is visible
-        |
-        v
-offer_valid rises
-        |
-        v
-HEAD/worker accepts exactly one craft
-        |
-        v
-offer_valid returns low and completes its four-phase re-arm
-        |
-        v
-worker crafts one fast splitter
-        |
-        v
-worker becomes idle
-        |
-        v
-controller remains in settling state until roboport stock increases
-        |
-        v
-next craft may be issued
+copper-cable / electronic-circuit
+        -> iron-gear-wheel / transport-belt
+        -> splitter
+        -> iron-gear-wheel as needed for the final recipe
+        -> fast-splitter
+        -> stop at stock = 1
 ```
 
-The target-boundary invariant is the important part: when the logistic network reaches exactly five
-fast splitters, no sixth craft should be accepted.
+The controller recomputes the next needed craft from actual roboport stock after every completed
+craft. Existing useful intermediates are therefore consumed if present rather than ignored.
 
-During each active craft the diagnostics should still match the worker-pool contract:
+## Settlement and the previous one-craft deadlock
+
+A physical `accepted` response can remain high for several logical reactions. The first version took
+its stock baseline on **every** high reaction. If the produced item became visible while `accepted`
+was still high, the baseline moved up to the new stock and the controller could wait forever for a
+second increase. This is why an in-game `T = 5` run stopped after one fast splitter.
+
+The corrected controller uses only the **first accepted observation** for each transaction:
+
+```text
+first accepted
+    -> snapshot stock once
+    -> remember promised product
+    -> wait for worker idle + that product stock > snapshot
+    -> clear settling
+    -> choose next dependency craft
+```
+
+This same product-specific barrier is used for copper cable, circuits, gears, belts, splitters, and
+fast splitters.
+
+## Diagnostics
+
+During any active craft:
 
 ```text
 busy_count = 1
-reserved:
-    splitter = 1
-    iron-gear-wheel = 10
-    electronic-circuit = 10
-promised:
-    fast-splitter = 1
+reserved   = exact inputs of current one-craft recipe
+promised   = exact products of current one-craft recipe
+job_recipe = explicit recipe signal for that craft
 ```
 
-`settling` (`signal-Z`) stays high after acceptance until the worker is idle and the roboport reports
-a fast-splitter count greater than the stock snapshot taken at that acceptance. This deliberately
-bridges the short interval in which the worker promise can clear before the output provider is
-visible through the logistic network.
+`settling` (`signal-Z`) remains high after acceptance until the worker is idle and the relevant
+product count has increased in roboport-visible logistic stock.
 
 ## First-test assumptions
 
-This probe is deliberately stricter than the future mall controller:
+This probe deliberately keeps the hard parts separated:
 
-- it issues only when the worker pool is idle, so there is no ingredient overcommit problem yet;
-- it expects all three fast-splitter ingredients to be supplied externally;
-- it assumes fast splitters are not consumed while one craft is in the `settling` state;
-- it uses one worker first even though the underlying seamed pool supports more workers.
+- use one worker first;
+- only one craft is in flight at a time;
+- iron plates and copper plates are the prescribed external/raw inputs;
+- useful existing intermediates may be consumed;
+- do not externally consume the current craft's product while `settling` is high.
 
-Once this converges exactly in-game, the next useful extension is to remove the idle-only restriction
-and replace the single-product settlement snapshot with explicit stock/reservation/promise escrow.
-Only after that should the one-recipe constants be generalized into a vector ROM for multiple
-recipes.
+Once this raw-plate chain converges correctly in-game, the next step is to replace these hard-coded
+recipe choices with the general constant-combinator vector ROM and scheduler rather than adding more
+target-specific recipes to this file.
