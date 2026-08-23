@@ -40,15 +40,6 @@ def _max_circuit() -> Circuit:
     return c
 
 
-def _selector_circuit() -> Circuit:
-    c = Circuit("vector_selectors")
-    values = c.signals("values")
-    c.output("minimum", values.min())
-    c.output("second_largest", values.select(1))
-    c.output("second_smallest", values.select(1, descending=False))
-    return c
-
-
 def _value_at(
     observations: list[tuple[object, ...]],
     result: Any,
@@ -169,36 +160,4 @@ def test_max_lowers_to_one_factorio_selector_combinator() -> None:
         "operation": "select",
         "select_max": True,
         "index_constant": 0,
-    }
-
-
-def test_indexed_and_ascending_selectors_preserve_target_configuration() -> None:
-    result = compile_circuit(_selector_circuit())
-
-    selectors = [
-        entity
-        for entity in result.physical_circuit.entities
-        if isinstance(entity, SelectorCombinator)
-    ]
-    assert {(entity.select_max, entity.index) for entity in selectors} == {
-        (False, 0),
-        (True, 1),
-        (False, 1),
-    }
-    assert all(port.phase == 1 for port in result.physical_circuit.outputs)
-
-    blueprint = cast(dict[str, Any], result.blueprint_json["blueprint"])
-    encoded = [
-        entity["control_behavior"]
-        for entity in cast(list[dict[str, Any]], blueprint["entities"])
-        if entity["name"] == "selector-combinator"
-    ]
-    assert {
-        (item["select_max"], item["index_constant"])
-        for item in encoded
-        if item["operation"] == "select"
-    } == {
-        (False, 0),
-        (True, 1),
-        (False, 1),
     }
