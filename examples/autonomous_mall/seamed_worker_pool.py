@@ -1,35 +1,36 @@
 """Seam-composed physical worker pool for the deterministic autonomous mall.
 
 This is the physical successor to :mod:`examples.autonomous_mall.worker_pool`.
-The old module remains the compact monolithic semantic reference.  Here the same one-craft worker
+The old module remains the compact monolithic semantic reference. Here the same one-craft worker
 protocol is packaged as reusable bounded components:
 
 * one dispatch head owns the external four-phase offer latch;
 * N identical worker cells form a north/south packet-and-ledger bus;
 * one tail returns ``blocked`` when a probe token traverses every worker.
 
-Only one probe token is in flight at a time.  This stop-and-wait rule is intentional: separately
+Only one probe token is in flight at a time. This stop-and-wait rule is intentional: separately
 compiled component seams have physical latency, so holding a combinational first-free token high
 until a distant acknowledgement returns could duplicate an offer if an upstream worker became idle
 in the meantime. A one-shot probe is either consumed by exactly one idle worker or reaches the
 tail; the head waits for that response before retrying.
 
-The job packet and the probe have deliberately different timing.  While the external four-phase
+The job packet and the probe have deliberately different timing. While the external four-phase
 envelope is held valid, HEAD publishes recipe/inputs/product continuously and gives those vectors
-one full logical reaction to propagate before launching the probe.  Worker stages likewise forward
-the three packet vectors continuously; only the scalar probe is consumed or forwarded.  This keeps
+one full logical reaction to propagate before launching the probe. Worker stages likewise forward
+the three packet vectors continuously; only the scalar probe is consumed or forwarded. This keeps
 physical lane skew from letting a worker claim a recipe before its reservation vector has arrived.
 
 Each worker controller has three whole-vector registers (recipe, reservation, promise), and its east
-seam attaches to a real :class:`factorio_circuit.devices.AssemblerDevice`.  A short device-owned
+seam attaches to a real :class:`factorio_circuit.devices.AssemblerDevice`. A short device-owned
 working-signal route moves that one observation onto the west mall seam; unlike the previous probe,
 there is no composer-generated route around the assembler footprint.
 
-Compiled controller seams deliberately live in four-tile guard bands outside the annealer's dense
-body envelope.  The compiler marker sits at the inner edge, the isolation adapter occupies the
-middle, and the exact-overlap anchor sits on the outer component boundary.  This keeps public docks
-visible and prevents post-placement anchor adapters from being buried under unrelated logic.  A
-separate west routing strip absorbs ordinary synthesis spill without weakening those seam corridors.
+Compiled controller seams live in four-tile guard bands outside the dense body envelope. Before
+physical synthesis, the exact 1x2 footprint of every stable isolation adapter is registered as a
+hard placement keepout. The same reservation is passed to the wire router, so neither ordinary
+logic nor layout relays can occupy infrastructure that will be materialized at the component
+boundary. The wrapper then runs in strict mode and refuses to relocate an adapter after layout.
+A separate west routing strip still owns ordinary synthesis spill outside the controller body.
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ from factorio_circuit.devices import (
     ComponentSeam,
     ComponentSide,
     ConstrainedComponent,
+    compiled_anchor_adapter_keepout,
     compiled_module_as_anchored_blueprint,
     compose_component_seams,
     device_as_anchored_blueprint,
@@ -63,6 +65,7 @@ from factorio_circuit.devices.protocol import DevicePortDirection
 from factorio_circuit.frontend import Circuit
 from factorio_circuit.ir.physical import WireColor
 from factorio_circuit.ir.semantic import PayloadShape, TemporalModality
+from factorio_circuit.synthesis.placement import PlacementOptions
 
 from .worker_pool import (
     BUSY_COUNT_SIGNAL,
@@ -204,9 +207,7 @@ def _bus_docks(
 def _external_head_docks() -> tuple[_Dock, ...]:
     result: list[_Dock] = []
     for index, lane in enumerate(_BUS_LANES):
-        direction = (
-            DevicePortDirection.INPUT if lane.forward else DevicePortDirection.OUTPUT
-        )
+        direction = DevicePortDirection.INPUT if lane.forward else DevicePortDirection.OUTPUT
         result.append(
             _Dock(
                 _EXTERNAL_NAMES[lane.name],
@@ -293,16 +294,32 @@ def _compiled_component(
     positions = {
         dock.port: _marker_position(footprint, dock.side, dock.slot) for dock in docks
     }
-    result = compile_circuit(circuit, port_positions=positions)
+    boundaries = {
+        dock.port: footprint.boundary_position(dock.side, dock.slot) for dock in docks
+    }
+    keepouts = tuple(
+        compiled_anchor_adapter_keepout(positions[dock.port], boundaries[dock.port])
+        for dock in docks
+    )
+    result = compile_circuit(
+        circuit,
+        port_positions=positions,
+        placement=PlacementOptions(hard_keepouts=keepouts),
+    )
     bindings = tuple(
         CompiledAnchorBinding(
             dock.port,
             dock.spec(),
-            footprint.boundary_position(dock.side, dock.slot),
+            boundaries[dock.port],
         )
         for dock in docks
     )
-    anchored = compiled_module_as_anchored_blueprint(result, bindings, label=label)
+    anchored = compiled_module_as_anchored_blueprint(
+        result,
+        bindings,
+        label=label,
+        strict_adapter_placement=True,
+    )
     routing_strip = ComponentFootprint(
         footprint.min_x - _SEAM_GUARD,
         footprint.min_y,
@@ -380,9 +397,9 @@ def build_dispatch_head() -> Circuit:
         when=arm | clear_armed,
     )
 
-    # Publish the whole packet before the scalar probe.  ``armed`` is state written from ``arm`` on
+    # Publish the whole packet before the scalar probe. ``armed`` is state written from ``arm`` on
     # the preceding reaction, so a well-formed external envelope gets a full logical reaction of
-    # head start.  Keep the packet visible throughout V=1 so retries do not need to re-launch it.
+    # head start. Keep the packet visible throughout V=1 so retries do not need to re-launch it.
     # A response has priority over retry: physically propagated accepted/blocked levels can remain
     # high for several ticks, and relaunching before they return low can strand ``waiting`` high.
     circuit.output("bus_offer_valid", send)
@@ -445,8 +462,8 @@ def build_worker_stage() -> Circuit:
     live_promise = held_promise + product.gate(claim)
     live_busy = busy | claim
 
-    # Packet vectors are a continuously propagated four-phase envelope.  Do not gate them with the
-    # probe: doing so reintroduces per-lane physical skew at every busy worker.  Only the scalar
+    # Packet vectors are a continuously propagated four-phase envelope. Do not gate them with the
+    # probe: doing so reintroduces per-lane physical skew at every busy worker. Only the scalar
     # token is consume/forward controlled.
     circuit.output("next_offer_valid", forward)
     circuit.output("next_offer_recipe", recipe)
