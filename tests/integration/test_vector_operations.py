@@ -6,6 +6,7 @@ from factorio_circuit import SignalId, compile_circuit
 from factorio_circuit.frontend import Circuit
 from factorio_circuit.ir.physical import DeciderCombinator, SelectorCombinator
 from factorio_circuit.simulate.physical import simulate_stream
+from factorio_circuit.simulate.semantic import simulate_stream as simulate_semantic_stream
 
 IRON = SignalId("item", "iron-plate")
 COPPER = SignalId("item", "copper-plate")
@@ -37,6 +38,16 @@ def _max_circuit() -> Circuit:
     c = Circuit("vector_max")
     values = c.signals("values")
     c.output("maximum", values.max())
+    return c
+
+
+def _selector_circuit() -> Circuit:
+    c = Circuit("vector_selectors")
+    values = c.signals("values")
+    c.output("minimum", values.min())
+    c.output("second_largest", values.select(1))
+    c.output("second_smallest", values.select(1, descending=False))
+    c.output("out_of_range", values.select(9))
     return c
 
 
@@ -160,4 +171,47 @@ def test_max_lowers_to_one_factorio_selector_combinator() -> None:
         "operation": "select",
         "select_max": True,
         "index_constant": 0,
+    }
+
+
+def test_indexed_selector_semantics_and_target_configuration() -> None:
+    result = compile_circuit(_selector_circuit())
+    values = {IRON: 7, COPPER: -3, COAL: 4, STONE: 9}
+    rows = simulate_semantic_stream(result.semantic_ir, [{"values": values}])
+    names = result.semantic_ir.output.names
+    observed = dict(zip(names, rows[0], strict=True))
+
+    assert observed["minimum"] == {COPPER: -3}
+    assert observed["second_largest"] == {IRON: 7}
+    assert observed["second_smallest"] == {COAL: 4}
+    assert observed["out_of_range"] == {}
+
+    selectors = [
+        entity
+        for entity in result.physical_circuit.entities
+        if isinstance(entity, SelectorCombinator)
+    ]
+    assert {(entity.select_max, entity.index) for entity in selectors} == {
+        (False, 0),
+        (True, 1),
+        (False, 1),
+        (True, 9),
+    }
+    assert all(port.phase == 1 for port in result.physical_circuit.outputs)
+
+    blueprint = cast(dict[str, Any], result.blueprint_json["blueprint"])
+    encoded = [
+        entity["control_behavior"]
+        for entity in cast(list[dict[str, Any]], blueprint["entities"])
+        if entity["name"] == "selector-combinator"
+    ]
+    assert {
+        (item["select_max"], item["index_constant"])
+        for item in encoded
+        if item["operation"] == "select"
+    } == {
+        (False, 0),
+        (True, 1),
+        (False, 1),
+        (True, 9),
     }
