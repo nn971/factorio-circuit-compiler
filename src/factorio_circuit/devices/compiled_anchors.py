@@ -2,19 +2,18 @@
 
 This module is the only sanctioned post-compilation electrical adaptation between a compiled module
 and an independently generated external device.  It operates exclusively on named compiler I/O
-ports:
-it never searches descriptions or reaches into component internals.
+ports: it never searches descriptions or reaches into component internals.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from math import ceil, hypot
-from typing import Sequence
 
 from factorio_circuit.compiler import CompilationResult
-from factorio_circuit.devices.anchors import AnchorSpec, AnchoredBlueprint, BoundAnchor
+from factorio_circuit.devices.anchors import AnchoredBlueprint, AnchorSpec, BoundAnchor
 from factorio_circuit.devices.protocol import DevicePortDirection
 from factorio_circuit.ir.physical import InputPort, OutputPort, SignalId, WireColor
 from factorio_circuit.ir.semantic import PayloadShape, TemporalModality
@@ -44,24 +43,43 @@ class CompiledAnchorBinding:
             )
 
 
+def compiled_anchor_adapter_position(
+    internal: tuple[float, float], external: tuple[float, float]
+) -> tuple[float, float]:
+    """Return the preferred arithmetic-adapter center for one compiled boundary port."""
+
+    return _adapter_position(internal, external)
+
+
+def compiled_anchor_adapter_keepout(
+    internal: tuple[float, float], external: tuple[float, float]
+) -> tuple[float, float, float, float]:
+    """Return the exact 1x2 footprint that placement must reserve for the preferred adapter."""
+
+    return _adapter_footprint(_adapter_position(internal, external))
+
+
 def compiled_module_as_anchored_blueprint(
     result: CompilationResult,
     bindings: Sequence[CompiledAnchorBinding],
     *,
     label: str | None = None,
     max_hop: float = _DEFAULT_HOP,
+    strict_adapter_placement: bool = False,
 ) -> AnchoredBlueprint:
     """Materialize stable colored/fixed-signal anchors around a compiled module.
 
-    Compiler-owned marker entities keep their synthesized signal/color.  For each public binding we
+    Compiler-owned marker entities keep their synthesized signal/color. For each public binding we
     insert one arithmetic isolation/renaming adapter, then route only the *external* side through
-    constant-combinator relays to the requested anchor.  Therefore arbitrary compiler allocation
+    constant-combinator relays to the requested anchor. Therefore arbitrary compiler allocation
     choices end at this boundary while all cross-component composition remains exact-overlap only.
 
-    The adapter is legalized against already placed compiler entities before it is inserted.  This
-    matters because layout-only wire relays are synthesized before the stable component boundary is
-    materialized; a relay may otherwise occupy the preferred adapter footprint and silently prevent
-    Factorio from placing that interface combinator.
+    Compatibility callers may let this wrapper legalize an adapter around already placed compiler
+    entities. Constrained components should instead reserve
+    :func:`compiled_anchor_adapter_keepout` before synthesis and pass
+    ``strict_adapter_placement=True``. Strict mode refuses to relocate the adapter: if synthesis or
+    routing occupied its promised footprint, generation fails instead of silently changing the
+    component boundary implementation.
     """
 
     if max_hop <= 0:
@@ -101,13 +119,22 @@ def compiled_module_as_anchored_blueprint(
         internal_color = _port_color(result, port.marker_entity)
         internal_position = _entity_position(entities, port.marker_entity)
 
-        adapter_position = _legal_adapter_position(
-            entities,
-            internal_position,
-            binding.position,
-            reserved_anchor_positions=positions,
-            max_hop=max_hop,
-        )
+        if strict_adapter_placement:
+            adapter_position = _strict_adapter_position(
+                entities,
+                internal_position,
+                binding.position,
+                reserved_anchor_positions=positions,
+                max_hop=max_hop,
+            )
+        else:
+            adapter_position = _legal_adapter_position(
+                entities,
+                internal_position,
+                binding.position,
+                reserved_anchor_positions=positions,
+                max_hop=max_hop,
+            )
         adapter_id = next_entity
         next_entity += 1
         anchor_id = next_entity
@@ -176,9 +203,7 @@ def compiled_module_as_anchored_blueprint(
             )
         )
 
-    blueprint["wires"] = [
-        list(wire) for wire in sorted({_wire_tuple(raw) for raw in wires})
-    ]
+    blueprint["wires"] = [list(wire) for wire in sorted({_wire_tuple(raw) for raw in wires})]
     if label is not None:
         blueprint["label"] = label
     return AnchoredBlueprint(blueprint, tuple(anchors), label or result.layout.name)
@@ -201,9 +226,7 @@ def _resolve_port(
     return matches[0]
 
 
-def _validate_shape_and_direction(
-    port: InputPort | OutputPort, spec: AnchorSpec
-) -> None:
+def _validate_shape_and_direction(port: InputPort | OutputPort, spec: AnchorSpec) -> None:
     shape = PayloadShape.VECTOR if port.signal is None else PayloadShape.SCALAR
     if shape is not spec.payload_shape:
         raise ValueError(
@@ -243,6 +266,46 @@ def _adapter_position(
     return (internal[0] + dx * step / distance, internal[1] + dy * step / distance)
 
 
+def _adapter_position_clear(
+    entities: Sequence[dict[str, object]],
+    candidate: tuple[float, float],
+    *,
+    reserved_anchor_positions: Sequence[tuple[float, float]],
+) -> bool:
+    adapter_box = _adapter_footprint(candidate)
+    if any(_boxes_overlap(adapter_box, _entity_footprint(entity)) for entity in entities):
+        return False
+    return not any(
+        _boxes_overlap(adapter_box, _constant_footprint(position))
+        for position in reserved_anchor_positions
+    )
+
+
+def _strict_adapter_position(
+    entities: Sequence[dict[str, object]],
+    internal: tuple[float, float],
+    external: tuple[float, float],
+    *,
+    reserved_anchor_positions: Sequence[tuple[float, float]],
+    max_hop: float,
+) -> tuple[float, float]:
+    preferred = _adapter_position(internal, external)
+    if hypot(preferred[0] - internal[0], preferred[1] - internal[1]) > max_hop + _EPSILON:
+        raise ValueError(
+            f"preferred compiled anchor adapter at {preferred!r} exceeds marker wire reach"
+        )
+    if not _adapter_position_clear(
+        entities,
+        preferred,
+        reserved_anchor_positions=reserved_anchor_positions,
+    ):
+        raise ValueError(
+            f"preferred compiled anchor adapter at {preferred!r} is occupied; reserve its "
+            "footprint during placement"
+        )
+    return preferred
+
+
 def _legal_adapter_position(
     entities: Sequence[dict[str, object]],
     internal: tuple[float, float],
@@ -254,7 +317,7 @@ def _legal_adapter_position(
     """Find a nearby legal arithmetic-combinator center for a stable interface adapter.
 
     Search uses integer-tile offsets from the preferred position so Factorio placement parity is
-    preserved.  Tangential moves are preferred over moves along the marker-to-anchor direction.
+    preserved. Tangential moves are preferred over moves along the marker-to-anchor direction.
     """
 
     preferred = _adapter_position(internal, external)
@@ -279,15 +342,12 @@ def _legal_adapter_position(
             candidate = preferred[0] + dx, preferred[1] + dy
             if hypot(candidate[0] - internal[0], candidate[1] - internal[1]) > max_hop + _EPSILON:
                 continue
-            adapter_box = _adapter_footprint(candidate)
-            if any(_boxes_overlap(adapter_box, _entity_footprint(entity)) for entity in entities):
-                continue
-            if any(
-                _boxes_overlap(adapter_box, _constant_footprint(position))
-                for position in reserved_anchor_positions
+            if _adapter_position_clear(
+                entities,
+                candidate,
+                reserved_anchor_positions=reserved_anchor_positions,
             ):
-                continue
-            return candidate
+                return candidate
     raise ValueError(
         f"cannot legalize compiled anchor adapter between marker {internal!r} and anchor "
         f"{external!r}; interface corridor is occupied"
@@ -433,9 +493,7 @@ def _route_external_side(
                     "player_description": f"{description} {relay_index}",
                 }
             )
-            _append_wire(
-                wires, previous_entity, previous_connector, relay_id, relay_connector
-            )
+            _append_wire(wires, previous_entity, previous_connector, relay_id, relay_connector)
             previous_entity = relay_id
             previous_connector = relay_connector
             previous_position = position
