@@ -7,12 +7,12 @@ Before semantic/compiler work, read:
 1. `docs/data-contract.md`
 2. `docs/compiler-pipeline.md`
 3. `docs/factorio-2-circuit-mechanics.md`
+4. `docs/component-seam-abi.md` for reusable physical devices/components
 
-Those files are the source of truth for the supported data contract, compilation boundaries, and
-target-game circuit mechanics that affect physical architecture. In particular, do **not** use the
-legacy "20 values per constant combinator" assumption for Factorio 2.x; see
-`docs/factorio-2-circuit-mechanics.md`. Historical milestone notes and completed physical probes are
-intentionally not kept in the repository.
+Those files are the source of truth for the supported data contract, compilation boundaries, target-game
+circuit mechanics, and physical composition rules. In particular, do **not** use the legacy "20 values
+per constant combinator" assumption for Factorio 2.x; see `docs/factorio-2-circuit-mechanics.md`.
+Historical milestone notes and completed physical probes are intentionally not kept in the repository.
 
 For continuation of the active annealed-layout work on PR #34, also read `handoff.md`. It is a branch handoff, not a replacement for the stable architecture documents above.
 
@@ -31,6 +31,11 @@ For continuation of the active annealed-layout work on PR #34, also read `handof
 - For Factorio 2.x, constant combinators are 1x1 whole-vector sources. Do not estimate their count
   by dividing configured values by 20 or reintroduce stale 20-value or 50-value capacity assumptions;
   consult `docs/factorio-2-circuit-mechanics.md` before ROM/storage sizing.
+- Reusable physical modules use the constrained component seam ABI: boundary positions are derived
+  from side/slot geometry, named seams compose by exact overlap, and compiler ports should be pinned
+  before placement rather than connected later by wandering relay chains.
+- `safe-crossbar` and `safe-folded-crossbar` are correctness/debug fallbacks, not the default layout
+  policy for human-facing reusable modules when net-aware annealing is applicable.
 
 ### Annealed physical-layout invariants
 
