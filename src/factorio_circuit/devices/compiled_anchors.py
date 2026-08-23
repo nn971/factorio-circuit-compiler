@@ -21,6 +21,9 @@ from factorio_circuit.ir.semantic import PayloadShape, TemporalModality
 
 _EACH = SignalId("virtual", "signal-each")
 _DEFAULT_HOP = 7.5
+_ADAPTER_DIRECTION = 4
+_ADAPTER_SEARCH_RADIUS = 3
+_EPSILON = 1e-9
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +57,11 @@ def compiled_module_as_anchored_blueprint(
     insert one arithmetic isolation/renaming adapter, then route only the *external* side through
     constant-combinator relays to the requested anchor.  Therefore arbitrary compiler allocation
     choices end at this boundary while all cross-component composition remains exact-overlap only.
+
+    The adapter is legalized against already placed compiler entities before it is inserted.  This
+    matters because layout-only wire relays are synthesized before the stable component boundary is
+    materialized; a relay may otherwise occupy the preferred adapter footprint and silently prevent
+    Factorio from placing that interface combinator.
     """
 
     if max_hop <= 0:
@@ -93,7 +101,13 @@ def compiled_module_as_anchored_blueprint(
         internal_color = _port_color(result, port.marker_entity)
         internal_position = _entity_position(entities, port.marker_entity)
 
-        adapter_position = _adapter_position(internal_position, binding.position)
+        adapter_position = _legal_adapter_position(
+            entities,
+            internal_position,
+            binding.position,
+            reserved_anchor_positions=positions,
+            max_hop=max_hop,
+        )
         adapter_id = next_entity
         next_entity += 1
         anchor_id = next_entity
@@ -229,6 +243,104 @@ def _adapter_position(
     return (internal[0] + dx * step / distance, internal[1] + dy * step / distance)
 
 
+def _legal_adapter_position(
+    entities: Sequence[dict[str, object]],
+    internal: tuple[float, float],
+    external: tuple[float, float],
+    *,
+    reserved_anchor_positions: Sequence[tuple[float, float]],
+    max_hop: float,
+) -> tuple[float, float]:
+    """Find a nearby legal arithmetic-combinator center for a stable interface adapter.
+
+    Search uses integer-tile offsets from the preferred position so Factorio placement parity is
+    preserved.  Tangential moves are preferred over moves along the marker-to-anchor direction.
+    """
+
+    preferred = _adapter_position(internal, external)
+    axis_x = external[0] - internal[0]
+    axis_y = external[1] - internal[1]
+    for radius in range(_ADAPTER_SEARCH_RADIUS + 1):
+        offsets = [
+            (dx, dy)
+            for dx in range(-radius, radius + 1)
+            for dy in range(-radius, radius + 1)
+            if max(abs(dx), abs(dy)) == radius
+        ]
+        offsets.sort(
+            key=lambda offset: (
+                abs(offset[0] * axis_x + offset[1] * axis_y),
+                offset[0] * offset[0] + offset[1] * offset[1],
+                offset[0],
+                offset[1],
+            )
+        )
+        for dx, dy in offsets:
+            candidate = preferred[0] + dx, preferred[1] + dy
+            if hypot(candidate[0] - internal[0], candidate[1] - internal[1]) > max_hop + _EPSILON:
+                continue
+            adapter_box = _adapter_footprint(candidate)
+            if any(_boxes_overlap(adapter_box, _entity_footprint(entity)) for entity in entities):
+                continue
+            if any(
+                _boxes_overlap(adapter_box, _constant_footprint(position))
+                for position in reserved_anchor_positions
+            ):
+                continue
+            return candidate
+    raise ValueError(
+        f"cannot legalize compiled anchor adapter between marker {internal!r} and anchor "
+        f"{external!r}; interface corridor is occupied"
+    )
+
+
+def _adapter_footprint(position: tuple[float, float]) -> tuple[float, float, float, float]:
+    return _footprint(position, 0.5, 1.0)
+
+
+def _constant_footprint(position: tuple[float, float]) -> tuple[float, float, float, float]:
+    return _footprint(position, 0.5, 0.5)
+
+
+def _entity_footprint(entity: dict[str, object]) -> tuple[float, float, float, float]:
+    raw_position = entity.get("position")
+    if not isinstance(raw_position, dict):
+        raise ValueError(f"blueprint entity {entity.get('entity_number')!r} has no position")
+    position = float(raw_position["x"]), float(raw_position["y"])
+    name = str(entity.get("name", ""))
+    if name in {"arithmetic-combinator", "decider-combinator", "selector-combinator"}:
+        direction = int(entity.get("direction", 0))
+        if direction in {0, 4}:
+            return _footprint(position, 0.5, 1.0)
+        return _footprint(position, 1.0, 0.5)
+    return _constant_footprint(position)
+
+
+def _footprint(
+    position: tuple[float, float],
+    half_width: float,
+    half_height: float,
+) -> tuple[float, float, float, float]:
+    return (
+        position[0] - half_width,
+        position[1] - half_height,
+        position[0] + half_width,
+        position[1] + half_height,
+    )
+
+
+def _boxes_overlap(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> bool:
+    return (
+        left[0] < right[2] - _EPSILON
+        and right[0] < left[2] - _EPSILON
+        and left[1] < right[3] - _EPSILON
+        and right[1] < left[3] - _EPSILON
+    )
+
+
 def _adapter_entity(
     entity_id: int,
     position: tuple[float, float],
@@ -252,7 +364,7 @@ def _adapter_entity(
         "entity_number": entity_id,
         "name": "arithmetic-combinator",
         "position": {"x": position[0], "y": position[1]},
-        "direction": 4,
+        "direction": _ADAPTER_DIRECTION,
         "player_description": f"ANCHOR ADAPTER {spec.name}",
         "control_behavior": {
             "arithmetic_conditions": {
