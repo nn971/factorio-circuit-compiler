@@ -7,6 +7,7 @@ from factorio_circuit.synthesis.placement import (
     PlacementOptions,
     place_physical_circuit,
     placement_metrics,
+    plan_physical_circuit,
 )
 
 
@@ -88,6 +89,49 @@ def test_overlapping_anchors_are_rejected() -> None:
             safe_wire_span=7.0,
             options=PlacementOptions(
                 anchors={1: (0.0, 0.0), 2: (0.0, 0.0)},
+                iterations=0,
+            ),
+        )
+
+
+def test_hard_keepouts_require_positive_area() -> None:
+    with pytest.raises(ValueError, match="positive width and height"):
+        PlacementOptions(hard_keepouts=((1.0, 0.0, 0.0, 1.0),)).validate()
+
+
+def test_hard_keepout_excludes_entity_footprints_and_routing_relays() -> None:
+    abstract_circuit, physical, groups = _single_net_fixture(8)
+    keepout = (-1.0, 1.0, -0.5, 0.5)
+
+    plan = plan_physical_circuit(
+        physical,
+        abstract_circuit,
+        groups,
+        safe_wire_span=7.0,
+        options=PlacementOptions(
+            hard_keepouts=(keepout,),
+            iterations=0,
+            reserve_corridors=False,
+        ),
+    )
+
+    assert (0.0, 0.0) not in plan.positions.values()
+    assert keepout in plan.relay_forbidden_areas
+
+
+def test_anchor_inside_hard_keepout_is_rejected() -> None:
+    abstract_circuit, physical, groups = _single_net_fixture(3)
+    keepout = (-0.5, 0.5, -0.5, 0.5)
+
+    with pytest.raises(ValueError, match="overlaps hard keepout"):
+        place_physical_circuit(
+            physical,
+            abstract_circuit,
+            groups,
+            safe_wire_span=7.0,
+            options=PlacementOptions(
+                anchors={1: (0.0, 0.0)},
+                hard_keepouts=(keepout,),
                 iterations=0,
             ),
         )
