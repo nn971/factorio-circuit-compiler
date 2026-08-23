@@ -34,7 +34,8 @@ The physical anchor coordinate is derived from `(footprint, side, slot, slot_pit
 SHOULD use `boundary_anchor(...)` rather than supplying a raw `(x, y)` coordinate.
 
 A constrained component MUST cover every surviving public anchor with exactly one boundary slot.
-Interior/floating anchors are invalid.
+Interior/floating anchors are invalid. Two surviving anchors MUST NOT resolve to the same physical
+dock coordinate, including corner aliases such as `WEST slot 0` and `NORTH slot 0`.
 
 ### 3. Public anchors belong to ordered named seams
 
@@ -42,11 +43,13 @@ Every constrained boundary anchor MUST belong to exactly one `ComponentSeam`. A 
 
 - has one stable name;
 - lies on one side;
+- belongs to one constituent component footprint;
 - contains one or more anchors;
 - orders those anchors by increasing boundary slot.
 
 A seam is the unit of physical composition. Callers should compose a seam, not manually align a set
-of unrelated terminals.
+of unrelated terminals. One seam MUST NOT silently span several constituent cells of a composed
+assembly.
 
 ### 4. Seam composition derives translation
 
@@ -113,6 +116,9 @@ and composition invariants; it does not replace the electrical checks.
 The first implementation intentionally does not yet model:
 
 - prototype-specific collision boxes;
+- a hard placement region consumed directly by the annealing candidate-grid generator; current
+  compiler integration pins public docks before placement and `ConstrainedComponent` rejects emitted
+  entities outside declared footprints afterwards;
 - explicit through-bus/tap/contribute roles;
 - seam-level red/green multiplexing policy beyond the underlying anchor specs;
 - automatic compiler signal/color allocation to eliminate all interface isolation adapters;
