@@ -346,10 +346,17 @@ def build_dispatch_head() -> Circuit:
     well_formed = recipe.any() * product.any()
     packet_live = raw_valid * well_formed
     arm = raw_valid * seen.logical_not() * well_formed
-    send = armed * raw_valid * seen.logical_not() * waiting.logical_not() * well_formed
     accepted = downstream_accepted * raw_valid
     block_response = downstream_blocked * raw_valid
     response = accepted | block_response
+    send = (
+        armed
+        * raw_valid
+        * seen.logical_not()
+        * waiting.logical_not()
+        * well_formed
+        * response.logical_not()
+    )
 
     clear_seen = seen * raw_valid.logical_not()
     clear_waiting = waiting * raw_valid.logical_not()
@@ -376,6 +383,8 @@ def build_dispatch_head() -> Circuit:
     # Publish the whole packet before the scalar probe.  ``armed`` is state written from ``arm`` on
     # the preceding reaction, so a well-formed external envelope gets a full logical reaction of
     # head start.  Keep the packet visible throughout V=1 so retries do not need to re-launch it.
+    # A response has priority over retry: physically propagated accepted/blocked levels can remain
+    # high for several ticks, and relaunching before they return low can strand ``waiting`` high.
     circuit.output("bus_offer_valid", send)
     circuit.output("bus_offer_recipe", recipe.gate(packet_live))
     circuit.output("bus_offer_inputs", inputs.gate(packet_live))
