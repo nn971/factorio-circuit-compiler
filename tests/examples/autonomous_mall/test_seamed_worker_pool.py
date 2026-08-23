@@ -1,5 +1,3 @@
-import pytest
-
 from examples.autonomous_mall.seamed_worker_pool import (
     build_dispatch_head,
     build_seamed_worker_pool_component,
@@ -121,7 +119,6 @@ def test_idle_worker_consumes_probe_and_busy_worker_forwards_it() -> None:
     assert busy["next_offer_recipe"] == {GEAR: 1}
 
 
-@pytest.mark.slow
 def test_two_worker_seamed_component_is_bounded_and_contains_real_devices() -> None:
     component = build_seamed_worker_pool_component(2)
     blueprint = component.anchored.blueprint
