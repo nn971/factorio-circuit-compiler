@@ -21,6 +21,8 @@ from factorio_circuit.ir.abstract_physical import (
     AbstractPhysicalCircuit,
     EntityPlacementConstraint,
     EntityPlacementMode,
+    InputPort as AbstractInputPort,
+    OutputPort as AbstractOutputPort,
     PhysicalAnchor,
 )
 from factorio_circuit.ir.oracle import oracle_sources
@@ -145,8 +147,8 @@ def _bind_port_positions(
     if not port_positions:
         return physical_anchors
 
-    ports = [*circuit.inputs, *circuit.outputs]
-    by_name: dict[str, list[object]] = {}
+    ports: list[AbstractInputPort | AbstractOutputPort] = [*circuit.inputs, *circuit.outputs]
+    by_name: dict[str, list[AbstractInputPort | AbstractOutputPort]] = {}
     for port in ports:
         by_name.setdefault(port.name, []).append(port)
 
@@ -161,8 +163,7 @@ def _bind_port_positions(
     resolved = dict(physical_anchors or {})
     for name, position in port_positions.items():
         port = by_name[name][0]
-        endpoint = getattr(port, "endpoint")
-        entity = endpoint.entity
+        entity = port.endpoint.entity
         if entity in constrained:
             raise ValueError(f"compiler port {name!r} already has a placement constraint")
         symbolic_name = f"{_PORT_ANCHOR_PREFIX}{name}"
