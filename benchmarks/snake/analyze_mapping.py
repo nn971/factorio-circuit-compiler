@@ -3,8 +3,8 @@
 The default mode maps only Snake's post-update output cone. ``--extract-full-state`` traverses the
 phase-neutral recurrence and stops. ``--solve-full-state`` supplies clocked Freeze/Accumulator
 state-cell candidates plus the shared periodic commit resource and jointly solves state phases,
-target computation timing, exact transport, and optional shared scalar delay buses, without
-consulting ``StateTimingPlan``.
+target computation timing, exact transport, optional wire sums, and optional shared scalar delay
+buses, without consulting ``StateTimingPlan``.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--without-wire-sum",
         action="store_true",
-        help="disable conservative zero-delay wire-sum alternatives in output-cone mode",
+        help="disable conservative zero-delay wire-sum alternatives",
     )
     parser.add_argument(
         "--without-framebuffer",
@@ -126,22 +126,29 @@ def _print_full_state_extraction(problem, *, period: int, output_phase: int) -> 
     print(f"  transition_occurrences={transition_offset_summary or 'none'}")
 
 
-def _operation_candidates(problem):
+def _operation_candidates(problem, *, include_wire_sum: bool):
     candidates = ordinary_candidates(problem)
     candidates = add_select_constant_candidates(problem, candidates)
-    return add_decider_condition_cover_candidates(problem, candidates)
+    candidates = add_decider_condition_cover_candidates(problem, candidates)
+    if include_wire_sum:
+        candidates = add_wire_sum_candidates(problem, candidates)
+    return candidates
 
 
 def _solve_full_state(
     problem,
     *,
+    include_wire_sum: bool,
     max_delay_buses: int,
     bus_capacity: int,
     compare_private: bool,
     time_limit: float,
     workers: int,
 ) -> None:
-    operation_candidates = _operation_candidates(problem)
+    operation_candidates = _operation_candidates(
+        problem,
+        include_wire_sum=include_wire_sum,
+    )
     state_candidates = ordinary_state_candidates(problem)
     result = solve_periodic_state_bus_mapping_problem(
         problem,
@@ -161,6 +168,9 @@ def _solve_full_state(
         0 if result.plan.periodic_commit is None else result.plan.periodic_commit.entity_cost
     )
     delivery_kinds = Counter(item.kind.value for item in result.plan.deliveries)
+    selected_kinds = Counter(
+        operation_candidate_by_id[item.candidate].kind.value for item in result.plan.realizations
+    )
     selected_recipes = Counter(
         operation_candidate_by_id[item.candidate].recipe.value for item in result.plan.realizations
     )
@@ -179,10 +189,15 @@ def _solve_full_state(
         f"commit_entities={commit_entity_cost}; transport={result.plan.transport_cost}; "
         f"total={result.plan.total_cost}"
     )
+    kind_summary = ", ".join(
+        f"{kind}:{count}" for kind, count in sorted(selected_kinds.items())
+    )
     recipe_summary = ", ".join(
         f"{recipe}:{count}" for recipe, count in sorted(selected_recipes.items())
     )
+    print(f"  selected_candidates={kind_summary or 'none'}")
     print(f"  selected_recipes={recipe_summary or 'none'}")
+    print(f"  wire_sums={len(result.plan.wire_sums)}")
     if result.plan.periodic_commit is not None:
         print(
             "  periodic_commit: "
@@ -251,6 +266,7 @@ def main() -> None:
             return
         _solve_full_state(
             problem,
+            include_wire_sum=not args.without_wire_sum,
             max_delay_buses=args.max_delay_buses,
             bus_capacity=args.bus_capacity,
             compare_private=args.compare_private,
@@ -265,9 +281,10 @@ def main() -> None:
         output_phases=output_phases,
         sampling_policy=SamplingPolicy.ALAP,
     )
-    candidates = _operation_candidates(problem)
-    if not args.without_wire_sum:
-        candidates = add_wire_sum_candidates(problem, candidates)
+    candidates = _operation_candidates(
+        problem,
+        include_wire_sum=not args.without_wire_sum,
+    )
 
     result = solve_mapping_problem(
         problem,
@@ -310,6 +327,7 @@ def main() -> None:
     recipe_summary = ", ".join(f"{recipe}:{count}" for recipe, count in sorted(recipes.items()))
     print(f"  selected_candidates={candidate_summary or 'none'}")
     print(f"  selected_recipes={recipe_summary or 'none'}")
+    print(f"  wire_sums={len(result.plan.wire_sums)}")
     print(f"  delay_buses={len(result.plan.delay_buses)}")
     for bus in result.plan.delay_buses:
         print(
