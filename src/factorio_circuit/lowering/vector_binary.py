@@ -28,8 +28,13 @@ def _mapped_wire_sum_resource(lowerer: Any, value: VectorBinaryOp) -> tuple[int,
     candidates = getattr(lowerer, "candidate_by_id", None)
     plan = getattr(lowerer, "plan", None)
     problem = getattr(lowerer, "problem", None)
-    required = (operation_ids, realizations, candidates, plan, problem)
-    if not all(item is not None for item in required):
+    if (
+        operation_ids is None
+        or realizations is None
+        or candidates is None
+        or plan is None
+        or problem is None
+    ):
         return None
 
     operation_id = operation_ids.get(id(value))
