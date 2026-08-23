@@ -2,12 +2,14 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from math import hypot
 from typing import Any
 
 from factorio_circuit.blueprint.routing import route_wires, routed_positions
 from factorio_circuit.ir import abstract_physical as abstract
 from factorio_circuit.ir.physical import (
     DeciderCombinator,
+    PhysicalCircuit,
     SelectorCombinator,
     SignalId,
     WireColor,
@@ -47,6 +49,22 @@ def _placement_attempt_options(options: PlacementOptions, restart: int) -> Place
         corridor_width=corridor_width,
         restarts=1,
     )
+
+
+def _connections_need_relays(
+    circuit: PhysicalCircuit,
+    positions: dict[int, Position],
+    *,
+    safe_wire_span: float,
+) -> bool:
+    """Return whether the chosen physical-net trees contain any over-reach edge."""
+
+    for connection in circuit.connections:
+        left = positions[connection.source.entity]
+        right = positions[connection.target.entity]
+        if hypot(left[0] - right[0], left[1] - right[1]) > safe_wire_span + 1e-9:
+            return True
+    return False
 
 
 @dataclass(slots=True)
@@ -160,12 +178,23 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                 detail=f"placed {len(positions)} entities",
             )
 
+            # Materialize the relay-minimizing tree first. Most compiled circuits are already
+            # directly reach-safe after placement; keep those on the cheap historical routing
+            # path and invoke the joint combinator/relay refinement only when a relay is actually
+            # required.
+            self._materialize_connections(physical, net_colors, net_groups, positions)
+            needs_joint = strategy in {"annealed", "net-aware"} and _connections_need_relays(
+                physical,
+                positions,
+                safe_wire_span=self.safe_wire_span,
+            )
+
             try:
-                if strategy in {"annealed", "net-aware"}:
+                if needs_joint:
                     report_progress(
                         self.progress,
                         "joint-layout",
-                        detail="jointly refining combinators and shared-net relays",
+                        detail="jointly refining relay-bearing physical nets",
                     )
                     joint = refine_joint_layout(
                         physical,
@@ -179,9 +208,17 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                     )
                     positions = joint.positions
                     routing = joint.routing
+                    # The concrete circuit keeps a conventional terminal spanning tree for
+                    # simulation/inspection. Blueprint routing itself uses the shared relay tree.
                     self._materialize_connections(physical, net_colors, net_groups, positions)
+                    report_progress(
+                        self.progress,
+                        "routing",
+                        completed=len(routing.wires),
+                        total=len(routing.wires),
+                        detail=f"shared-net routing complete; relays={len(routing.relays)}",
+                    )
                 else:
-                    self._materialize_connections(physical, net_colors, net_groups, positions)
                     routing = route_wires(
                         physical,
                         positions,
