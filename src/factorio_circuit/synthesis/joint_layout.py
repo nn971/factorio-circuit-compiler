@@ -1,6 +1,6 @@
 """Joint annealed refinement of implementation combinators and layout-only wire relays.
 
-The ordinary placer supplies a compact, net-aware seed for implementation entities. This module
+The ordinary placer supplies a compact annealed seed for implementation entities. This module
 then realizes every synthesized physical net as one reach-connected graph, introduces the relays
 needed by that graph, and refines implementation and relay positions in one annealing state.
 
@@ -40,6 +40,7 @@ from factorio_circuit.synthesis.placement import (
     _candidate_grid,
     _candidate_positions,
     _entity_half_extent as _placement_entity_half_extent,
+    _GridGeometry,
 )
 
 _RELAY_HALF_EXTENT = (0.5, 0.5)
@@ -250,7 +251,20 @@ def _endpoint_mst(
 
 
 def _joint_anneal(state: _JointState, options: PlacementOptions) -> None:
-    movable_entities = _movable_entity_ids(state.circuit, options)
+    if not state.relay_positions:
+        return
+
+    relay_groups = set(state.relay_groups.values())
+    active_entities = {
+        endpoint.entity
+        for group in relay_groups
+        for endpoint in state.endpoints_by_group[group]
+    }
+    movable_entities = [
+        entity_id
+        for entity_id in _movable_entity_ids(state.circuit, options)
+        if entity_id in active_entities
+    ]
     movable_objects = [*movable_entities, *sorted(state.relay_positions)]
     if len(movable_objects) < 2:
         return
@@ -357,7 +371,7 @@ def _matching_candidate_grid(
     circuit: PhysicalCircuit,
     positions: dict[int, Position],
     options: PlacementOptions,
-):
+) -> _GridGeometry:
     input_ids = {port.marker_entity for port in circuit.inputs}
     output_ids = {port.marker_entity for port in circuit.outputs}
     io_ids = input_ids | output_ids
@@ -408,7 +422,7 @@ def _relay_move_bounds(state: _JointState) -> tuple[float, float, float, float]:
 def _proposed_position(
     state: _JointState,
     object_id: int,
-    grid,
+    grid: _GridGeometry,
     relay_bounds: tuple[float, float, float, float],
     incident_groups: dict[int, set[int]],
     center: Position,
