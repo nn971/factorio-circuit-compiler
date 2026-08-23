@@ -45,6 +45,8 @@ from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
 from factorio_circuit.synthesis.placement import PlacementOptions, Position
 
+_TWO_WIRE_COLOR_ERROR = "abstract net constraints require more than the two Factorio wire colors"
+
 
 @dataclass(frozen=True, slots=True)
 class AbstractPhysicalLoweringResult:
@@ -245,17 +247,55 @@ def compile_circuit(
         oracle_providers=oracle_providers,
         sampling_policy=sampling_policy,
     )
-    layout = _synthesize(
-        lowered.abstract_physical,
-        safe_wire_span=blueprint_safe_wire_span,
-        placement=placement,
-        physical_anchors=physical_anchors,
-        progress=progress,
-    )
+    actual_abstract = lowered.abstract_physical
+    packing_fallback = False
+    try:
+        layout = _synthesize(
+            actual_abstract,
+            safe_wire_span=blueprint_safe_wire_span,
+            placement=placement,
+            physical_anchors=physical_anchors,
+            progress=progress,
+        )
+    except ValueError as exc:
+        if not (
+            optimize
+            and not lowered.clocked
+            and str(exc) == _TWO_WIRE_COLOR_ERROR
+        ):
+            raise
 
-    if lowered.clocked:
-        # Clock-aware packing is deliberately postponed. Treat the implemented route as its own
-        # structural baseline rather than pretending the Level naive lowerer is comparable.
+        report_progress(
+            progress,
+            "synthesis",
+            detail=(
+                "packed Level graph is not realizable with two wire colors; "
+                "retrying without combinator packing"
+            ),
+        )
+        actual_abstract = _lower_level(
+            lowered.optimized_ir,
+            enable_packing=False,
+            state_timing=lowered.state_timing,
+            sampling_policy=sampling_policy,
+        )
+        materialize_oracle_providers(
+            lowered.optimized_ir,
+            actual_abstract,
+            validate_oracle_provider_bindings(lowered.optimized_ir, oracle_providers),
+        )
+        layout = _synthesize(
+            actual_abstract,
+            safe_wire_span=blueprint_safe_wire_span,
+            placement=placement,
+            physical_anchors=physical_anchors,
+            progress=progress,
+        )
+        packing_fallback = True
+
+    if lowered.clocked or packing_fallback:
+        # Clock-aware packing is deliberately postponed. A wire-color fallback is already the
+        # unpacked implementation, so in both cases the realized circuit is its own baseline.
         naive_physical = layout.circuit
     elif optimize:
         report_progress(
@@ -297,7 +337,7 @@ def compile_circuit(
         semantic_ir=lowered.semantic_ir,
         optimized_ir=lowered.optimized_ir,
         state_timing=lowered.state_timing,
-        abstract_physical=lowered.abstract_physical,
+        abstract_physical=actual_abstract,
         layout=layout,
         naive_physical=naive_physical,
         blueprint_json=blueprint_json,
