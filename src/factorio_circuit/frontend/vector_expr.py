@@ -111,34 +111,9 @@ class SignalsExpr(_SignalsExpr):
         """Preserve every lane whose count is positive, including its original count."""
         return self.filter_gt(0)
 
-    def select(self, index: int = 0, *, descending: bool = True) -> SignalsExpr:
-        """Select one nonzero lane by Factorio selector ordering.
-
-        ``index`` is zero-based.  Descending order selects greatest counts first; ascending order
-        selects smallest nonzero counts first.
-        """
-
-        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
-            raise CircuitBuildError("selector index must be a non-negative integer")
-        if not isinstance(descending, bool):
-            raise CircuitBuildError("selector descending flag must be a bool")
-        return self._wrap_vector(
-            VectorSelect(
-                "select",
-                self._value,
-                0,
-                select_max=descending,
-                index=index,
-            )
-        )
-
     def max(self) -> SignalsExpr:
         """Select the nonzero lane with the greatest count, preserving that count."""
-        return self.select()
-
-    def min(self) -> SignalsExpr:
-        """Select the nonzero lane with the smallest count, preserving that count."""
-        return self.select(descending=False)
+        return self._wrap_vector(VectorSelect("select", self._value, 0))
 
     def any(self) -> Expr:
         """Return 1 exactly when at least one vector lane is nonzero."""
