@@ -69,8 +69,16 @@ def _odd_cycle_labels(synthesizer: VectorPhysicalSynthesizer) -> list[str]:
 
 
 @pytest.mark.parametrize("worker_count", [1, 2])
-def test_worker_pool_net_constraints_are_two_colorable(worker_count: int) -> None:
-    lowered = lower_to_abstract_physical(build_worker_pool(worker_count))
+def test_worker_pool_unpacked_net_constraints_are_two_colorable(worker_count: int) -> None:
+    lowered = lower_to_abstract_physical(build_worker_pool(worker_count), optimize=False)
     synthesizer = VectorPhysicalSynthesizer(lowered.abstract_physical)
     cycle = _odd_cycle_labels(synthesizer)
     assert not cycle, "odd wire-color conflict cycle: " + " -> ".join(cycle)
+
+
+def test_two_worker_packing_currently_creates_an_odd_wire_color_cycle() -> None:
+    lowered = lower_to_abstract_physical(build_worker_pool(2), optimize=True)
+    synthesizer = VectorPhysicalSynthesizer(lowered.abstract_physical)
+    cycle = _odd_cycle_labels(synthesizer)
+    assert cycle
+    assert any("packed pairwise + output" in label for label in cycle)
