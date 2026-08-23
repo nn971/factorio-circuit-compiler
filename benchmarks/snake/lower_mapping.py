@@ -20,6 +20,7 @@ from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
     add_decider_condition_cover_candidates,
     add_select_constant_candidates,
+    add_wire_sum_candidates,
     build_periodic_state_mapping_problem,
     lower_periodic_state_mapping_plan,
     ordinary_candidates,
@@ -64,6 +65,11 @@ def _parser() -> argparse.ArgumentParser:
         help="CP-SAT worker count (default: 1 for deterministic diagnostics)",
     )
     parser.add_argument(
+        "--without-wire-sum",
+        action="store_true",
+        help="disable conservative zero-delay wire-sum alternatives",
+    )
+    parser.add_argument(
         "--without-framebuffer",
         action="store_true",
         help="omit the framebuffer output cone",
@@ -87,6 +93,8 @@ def main() -> None:
     operation_candidates = ordinary_candidates(problem)
     operation_candidates = add_select_constant_candidates(problem, operation_candidates)
     operation_candidates = add_decider_condition_cover_candidates(problem, operation_candidates)
+    if not args.without_wire_sum:
+        operation_candidates = add_wire_sum_candidates(problem, operation_candidates)
     state_candidates = ordinary_state_candidates(problem)
     solve = solve_periodic_state_bus_mapping_problem(
         problem,
@@ -132,7 +140,7 @@ def main() -> None:
         "  plan: "
         f"operation_entities={operation_entities}; state_entities={state_entities}; "
         f"commit_entities={commit_entities}; transport={solve.plan.transport_cost}; "
-        f"total={solve.plan.total_cost}"
+        f"total={solve.plan.total_cost}; wire_sums={len(solve.plan.wire_sums)}"
     )
     print(
         "  lowering_cost: "
