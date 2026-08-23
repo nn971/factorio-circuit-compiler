@@ -17,7 +17,12 @@ from factorio_circuit.blueprint.layout_encode import (
 )
 from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
 from factorio_circuit.frontend.symbolic import Circuit
-from factorio_circuit.ir.abstract_physical import AbstractPhysicalCircuit
+from factorio_circuit.ir.abstract_physical import (
+    AbstractPhysicalCircuit,
+    EntityPlacementConstraint,
+    EntityPlacementMode,
+    PhysicalAnchor,
+)
 from factorio_circuit.ir.oracle import oracle_sources
 from factorio_circuit.ir.output import preserve_output_materializations
 from factorio_circuit.ir.physical import PhysicalCircuit
@@ -46,6 +51,7 @@ from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
 from factorio_circuit.synthesis.placement import PlacementOptions, Position
 
 _TWO_WIRE_COLOR_ERROR = "abstract net constraints require more than the two Factorio wire colors"
+_PORT_ANCHOR_PREFIX = "compiler-port:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +127,60 @@ def _synthesize(
         anchor_positions=physical_anchors,
         progress=progress,
     )
+
+
+def _bind_port_positions(
+    circuit: AbstractPhysicalCircuit,
+    port_positions: Mapping[str, Position] | None,
+    physical_anchors: Mapping[str, Position] | None,
+) -> Mapping[str, Position] | None:
+    """Pin named public I/O marker entities before placement/annealing.
+
+    The existing ``physical_anchors`` mapping resolves symbolic deployment anchors carried by
+    providers. ``port_positions`` is deliberately higher level: its keys are public compiler port
+    names, and this helper turns them into ordinary abstract placement constraints before physical
+    synthesis. Thus the placer sees the final module boundary instead of routing to it afterwards.
+    """
+
+    if not port_positions:
+        return physical_anchors
+
+    ports = [*circuit.inputs, *circuit.outputs]
+    by_name: dict[str, list[object]] = {}
+    for port in ports:
+        by_name.setdefault(port.name, []).append(port)
+
+    unknown = sorted(set(port_positions) - set(by_name))
+    if unknown:
+        raise ValueError(f"unknown compiler port position(s): {unknown!r}")
+    ambiguous = sorted(name for name in port_positions if len(by_name[name]) != 1)
+    if ambiguous:
+        raise ValueError(f"ambiguous compiler port position(s): {ambiguous!r}")
+
+    constrained = {constraint.entity for constraint in circuit.placement_constraints}
+    resolved = dict(physical_anchors or {})
+    for name, position in port_positions.items():
+        port = by_name[name][0]
+        endpoint = getattr(port, "endpoint")
+        entity = endpoint.entity
+        if entity in constrained:
+            raise ValueError(f"compiler port {name!r} already has a placement constraint")
+        symbolic_name = f"{_PORT_ANCHOR_PREFIX}{name}"
+        existing = resolved.get(symbolic_name)
+        if existing is not None and existing != position:
+            raise ValueError(f"compiler port {name!r} conflicts with physical anchor binding")
+        circuit.placement_constraints.append(
+            EntityPlacementConstraint(
+                entity,
+                EntityPlacementMode.ANCHORED,
+                PhysicalAnchor(symbolic_name),
+            )
+        )
+        constrained.add(entity)
+        resolved[symbolic_name] = position
+
+    circuit.validate()
+    return resolved
 
 
 def lower_to_abstract_physical(
@@ -215,6 +275,7 @@ def compile_circuit(
     blueprint_safe_wire_span: float = DEFAULT_SAFE_WIRE_SPAN,
     placement: PlacementOptions | None = None,
     physical_anchors: Mapping[str, Position] | None = None,
+    port_positions: Mapping[str, Position] | None = None,
     progress: ProgressCallback | None = None,
     oracle_providers: Mapping[str, OracleProvider] | None = None,
     sampling_policy: SamplingPolicy = SamplingPolicy.BEGINNING_OF_STEP,
@@ -230,6 +291,11 @@ def compile_circuit(
     ``physical_anchors`` resolves symbolic placement sites declared by providers. Abstract lowering
     may leave those sites unresolved, but final placement requires a coordinate for every anchored
     entity.
+
+    ``port_positions`` pins named public input/output marker entities before placement. This is the
+    preferred boundary primitive for constrained components: annealing therefore optimizes the
+    implementation around its final docks rather than adding long post-layout routes to arbitrary
+    anchor coordinates.
 
     ``sampling_policy`` is a target-side observation policy. ``BEGINNING_OF_STEP`` preserves the
     historical snapshot behavior. ``ALAP`` lets every phase-zero external Level input/oracle remain
@@ -248,13 +314,18 @@ def compile_circuit(
         sampling_policy=sampling_policy,
     )
     actual_abstract = lowered.abstract_physical
+    deployment_anchors = _bind_port_positions(
+        actual_abstract,
+        port_positions,
+        physical_anchors,
+    )
     packing_fallback = False
     try:
         layout = _synthesize(
             actual_abstract,
             safe_wire_span=blueprint_safe_wire_span,
             placement=placement,
-            physical_anchors=physical_anchors,
+            physical_anchors=deployment_anchors,
             progress=progress,
         )
     except ValueError as exc:
@@ -284,11 +355,16 @@ def compile_circuit(
             actual_abstract,
             validate_oracle_provider_bindings(lowered.optimized_ir, oracle_providers),
         )
+        deployment_anchors = _bind_port_positions(
+            actual_abstract,
+            port_positions,
+            physical_anchors,
+        )
         layout = _synthesize(
             actual_abstract,
             safe_wire_span=blueprint_safe_wire_span,
             placement=placement,
-            physical_anchors=physical_anchors,
+            physical_anchors=deployment_anchors,
             progress=progress,
         )
         packing_fallback = True
@@ -314,6 +390,11 @@ def compile_circuit(
             naive_abstract,
             validate_oracle_provider_bindings(lowered.optimized_ir, oracle_providers),
         )
+        baseline_anchors = _bind_port_positions(
+            naive_abstract,
+            port_positions,
+            physical_anchors,
+        )
         naive_physical = _synthesize(
             naive_abstract,
             safe_wire_span=blueprint_safe_wire_span,
@@ -323,7 +404,7 @@ def compile_circuit(
             # Placement does not affect ``PhysicalCircuit.combinator_count``, which is the only
             # statistic consumed from this baseline.
             placement=None,
-            physical_anchors=physical_anchors,
+            physical_anchors=baseline_anchors,
             progress=progress,
         ).circuit
     else:
