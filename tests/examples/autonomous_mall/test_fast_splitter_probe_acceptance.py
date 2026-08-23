@@ -19,6 +19,7 @@ def test_fast_splitter_probe_builds_one_worker_with_control_seam() -> None:
         "reserved",
         "promised",
         "settling",
+        "job_recipe",
     )
 
     encoded = encode_blueprint(blueprint)
