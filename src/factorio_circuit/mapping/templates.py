@@ -265,6 +265,27 @@ def add_select_constant_candidates(
     return tuple(result)
 
 
+def _semantic_use_counts(problem: MappingProblem) -> dict[int, int]:
+    """Count semantic fanout without requiring a stateless mapping problem."""
+
+    counts: dict[int, int] = {}
+
+    def add(value_id: int) -> None:
+        counts[value_id] = counts.get(value_id, 0) + 1
+
+    for operation in problem.operations:
+        for operand in operation.operands:
+            add(operand)
+    for sink in problem.sinks:
+        add(sink.value)
+    for transition in problem.state_transitions:
+        if transition.value is not None:
+            add(transition.value)
+        if transition.when is not None:
+            add(transition.when)
+    return counts
+
+
 def wire_sum_candidate(
     problem: MappingProblem,
     operation: MappingOperation,
@@ -298,9 +319,7 @@ def wire_sum_candidate(
             "first wire-sum candidate does not nest another semantic addition contributor"
         )
 
-    use_counts: dict[int, int] = {}
-    for use in problem.uses():
-        use_counts[use.producer] = use_counts.get(use.producer, 0) + 1
+    use_counts = _semantic_use_counts(problem)
     if any(use_counts.get(operand, 0) != 1 for operand in operation.operands):
         raise MappingProblemError(
             "first wire-sum candidate requires each operand result to have exactly one use"
