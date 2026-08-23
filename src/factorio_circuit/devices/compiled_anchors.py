@@ -54,9 +54,10 @@ def compiled_anchor_adapter_position(
 def compiled_anchor_adapter_keepout(
     internal: tuple[float, float], external: tuple[float, float]
 ) -> tuple[float, float, float, float]:
-    """Return the exact 1x2 footprint that placement must reserve for the preferred adapter."""
+    """Return ``(left, right, top, bottom)`` reserved by the preferred 1x2 adapter."""
 
-    return _adapter_footprint(_adapter_position(internal, external))
+    left, top, right, bottom = _adapter_footprint(_adapter_position(internal, external))
+    return left, right, top, bottom
 
 
 def compiled_module_as_anchored_blueprint(
