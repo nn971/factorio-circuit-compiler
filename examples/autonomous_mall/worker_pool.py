@@ -56,8 +56,8 @@ from factorio_circuit.devices import (
     ASSEMBLER_ENABLE_SIGNAL,
     ASSEMBLER_WORKING_SIGNAL,
     AnchorBinding,
-    AnchorSpec,
     AnchoredBlueprint,
+    AnchorSpec,
     AssemblerDevice,
     BoundAnchor,
     CompiledAnchorBinding,
@@ -70,6 +70,7 @@ from factorio_circuit.devices.protocol import DevicePortDirection
 from factorio_circuit.frontend import Circuit
 from factorio_circuit.ir.physical import WireColor
 from factorio_circuit.ir.semantic import PayloadShape, TemporalModality
+from factorio_circuit.synthesis.safe_folded_crossbar import safe_folded_crossbar_options
 
 OFFER_VALID_SIGNAL: Final = SignalId("virtual", "signal-V")
 OFFER_ACCEPTED_SIGNAL: Final = SignalId("virtual", "signal-A")
@@ -228,6 +229,15 @@ def build_worker_pool(worker_count: int = 2) -> Circuit:
     return circuit
 
 
+def _compile_worker_pool(worker_count: int):
+    """Compile a probe with the deterministic search-free layout policy."""
+
+    return compile_circuit(
+        build_worker_pool(worker_count),
+        placement=safe_folded_crossbar_options(),
+    )
+
+
 def _blueprint_bounds(wrapper: dict[str, object]) -> tuple[float, float, float, float]:
     blueprint = wrapper.get("blueprint")
     if not isinstance(blueprint, dict):
@@ -314,18 +324,14 @@ def build_worker_pool_probe_blueprint(worker_count: int = 2) -> Blueprint:
     inspect in game without modifying device internals.
     """
 
-    circuit = build_worker_pool(worker_count)
-    result = compile_circuit(circuit)
+    result = _compile_worker_pool(worker_count)
     min_x, min_y, max_x, _max_y = _blueprint_bounds(result.blueprint_json)
 
     device_template = device_as_anchored_blueprint(
         AssemblerDevice(label="Deterministic mall worker").build(),
         label="assembler-worker",
     )
-    device_offsets = [
-        (max_x + 32.0, min_y + index * 24.0)
-        for index in range(worker_count)
-    ]
+    device_offsets = [(max_x + 32.0, min_y + index * 24.0) for index in range(worker_count)]
 
     bindings: list[CompiledAnchorBinding] = []
 
@@ -429,9 +435,7 @@ def build_worker_pool_probe_blueprint(worker_count: int = 2) -> Blueprint:
         ),
     )
     for slot, (port, spec) in enumerate(external_specs):
-        bindings.append(
-            CompiledAnchorBinding(port, spec, (external_x, min_y + slot * 3.0))
-        )
+        bindings.append(CompiledAnchorBinding(port, spec, (external_x, min_y + slot * 3.0)))
 
     # Bind only the four ports needed by the one-craft protocol. The device's other observation
     # ports remain visible under worker-prefixed names after composition.
@@ -541,7 +545,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.controller_only:
-        print(compile_circuit(build_worker_pool(args.workers)).blueprint_string)
+        print(_compile_worker_pool(args.workers).blueprint_string)
     else:
         print(generate_worker_pool_probe_blueprint_string(args.workers))
 
