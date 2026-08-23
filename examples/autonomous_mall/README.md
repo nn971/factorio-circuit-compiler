@@ -120,6 +120,13 @@ uv run python -m examples.autonomous_mall.worker_pool \
   --controller-only > mall-worker-controller.txt
 ```
 
+The worker-pool CLI selects the deterministic `safe-folded-crossbar` physical layout. The compiler
+still attempts ordinary combinator packing first. If a packed Level graph creates an abstract net
+conflict that cannot be assigned to Factorio's two wire colors, `compile_circuit()` retries the same
+optimized semantic module with physical packing disabled. Intrinsically non-two-colorable unpacked
+graphs still fail normally; this fallback only prevents an optional packing transform from making an
+otherwise realizable circuit uncompilable.
+
 The composed probe deliberately leaves the external job-envelope and aggregate-ledger anchors exposed
 for manual wiring. Unused worker observation ports also remain available for inspection.
 
@@ -174,12 +181,14 @@ Focused deterministic tests:
 ```bash
 uv run pytest \
   tests/examples/autonomous_mall/test_scheduler.py \
-  tests/examples/autonomous_mall/test_worker_pool.py
+  tests/examples/autonomous_mall/test_worker_pool.py \
+  tests/examples/autonomous_mall/test_worker_pool_compile_probe.py
 ```
 
 The worker-pool tests cover held-valid deduplication, first-free assignment, blocked-offer retention,
-recipe withdrawal after craft start, reservation/promise release, abstract-physical lowering, and a
-two-`AssemblerDevice` composed-blueprint smoke test.
+recipe withdrawal after craft start, reservation/promise release, packed/unpacked wire-color
+regressions, compiler fallback orchestration, abstract-physical lowering, and a two-`AssemblerDevice`
+composed-blueprint smoke test. Full physical composition remains marked `slow` in the permanent suite.
 
 The retained quality-oracle suite is:
 
