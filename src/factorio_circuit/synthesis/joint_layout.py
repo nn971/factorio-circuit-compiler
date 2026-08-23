@@ -1,12 +1,9 @@
-"""Joint annealed refinement of implementation combinators and layout-only wire relays.
+"""Joint annealed refinement of implementation combinators and layout-only relays.
 
-The ordinary placer supplies a compact annealed seed for implementation entities. This module
-then realizes every synthesized physical net as one reach-connected graph, introduces the relays
-needed by that graph, and refines implementation and relay positions in one annealing state.
-
-Relays are owned by a physical net group rather than by one logical point-to-point connection.
-That permits a relay to become a branch point for several terminals of the same electrical net and
-lets redundant relays be pruned whenever reach-connectivity survives their removal.
+The ordinary placer supplies the implementation-entity seed.  This stage realizes each synthesized
+physical net as one reach-connected graph, introduces the relays needed by that graph, and then
+jointly refines only relay-bearing nets.  Relays belong to an electrical net group rather than to a
+single logical point-to-point edge, so one relay may be a branch point for several terminals.
 """
 
 from __future__ import annotations
@@ -36,11 +33,11 @@ from factorio_circuit.synthesis.placement import (
     PlacementOptions,
     Position,
     RelayForbiddenArea,
+    _GridGeometry,
     _boxes_overlap as _placement_boxes_overlap,
     _candidate_grid,
     _candidate_positions,
     _entity_half_extent as _placement_entity_half_extent,
-    _GridGeometry,
 )
 
 _RELAY_HALF_EXTENT = (0.5, 0.5)
@@ -49,13 +46,12 @@ _CONNECTOR_ORDER = {
     abstract.Connector.INPUT: 1,
     abstract.Connector.OUTPUT: 2,
 }
-
 Vertex = tuple[int, int, int]
 
 
 @dataclass(frozen=True, slots=True)
 class JointLayoutResult:
-    """Implementation positions plus a shared-net relay/wire realization."""
+    """Implementation positions plus one shared relay tree per physical net."""
 
     positions: dict[int, Position]
     routing: RoutingPlan
@@ -73,18 +69,16 @@ class _JointState:
     forbidden_areas: tuple[RelayForbiddenArea, ...]
 
     def group_vertices(self, group: int) -> tuple[Vertex, ...]:
-        terminals = tuple(_terminal_vertex(endpoint) for endpoint in self.endpoints_by_group[group])
+        terminals = tuple(_terminal_vertex(item) for item in self.endpoints_by_group[group])
         relays = tuple(
             _relay_vertex(relay_id)
-            for relay_id in sorted(self.relay_groups)
+            for relay_id in sorted(self.relay_positions)
             if self.relay_groups[relay_id] == group
         )
         return (*terminals, *relays)
 
     def vertex_position(self, vertex: Vertex) -> Position:
-        if vertex[0] == 0:
-            return self.positions[vertex[1]]
-        return self.relay_positions[vertex[1]]
+        return self.positions[vertex[1]] if vertex[0] == 0 else self.relay_positions[vertex[1]]
 
     def object_position(self, object_id: int) -> Position:
         if object_id in self.relay_positions:
@@ -108,14 +102,14 @@ def refine_joint_layout(
     options: PlacementOptions,
     relay_forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
 ) -> JointLayoutResult:
-    """Jointly refine implementation entities and relays, then emit one tree per physical net."""
+    """Jointly refine implementation entities and relays and emit shared-net routing."""
 
     endpoints_by_group, colors_by_group = _physical_groups(
         abstract_circuit,
         net_groups,
         net_colors,
     )
-    state = _initial_state(
+    state = _seed_state(
         circuit,
         endpoints_by_group,
         colors_by_group,
@@ -146,22 +140,22 @@ def _physical_groups(
     net_groups: dict[int, int],
     net_colors: dict[int, WireColor],
 ) -> tuple[dict[int, tuple[abstract.Endpoint, ...]], dict[int, WireColor]]:
-    endpoints: dict[int, set[abstract.Endpoint]] = defaultdict(set)
+    endpoint_sets: dict[int, set[abstract.Endpoint]] = defaultdict(set)
     colors: dict[int, WireColor] = {}
     for net in circuit.nets:
         group = net_groups[net.id]
-        endpoints[group].update(net.endpoints)
+        endpoint_sets[group].update(net.endpoints)
         color = net_colors[net.id]
         previous = colors.setdefault(group, color)
         if previous != color:
             raise AssertionError(f"physical net group {group} contains multiple wire colors")
     return (
-        {group: tuple(sorted(items)) for group, items in endpoints.items()},
+        {group: tuple(sorted(items)) for group, items in endpoint_sets.items()},
         colors,
     )
 
 
-def _initial_state(
+def _seed_state(
     circuit: PhysicalCircuit,
     endpoints_by_group: dict[int, tuple[abstract.Endpoint, ...]],
     colors_by_group: dict[int, WireColor],
@@ -173,22 +167,31 @@ def _initial_state(
     relay_positions: dict[int, Position] = {}
     relay_groups: dict[int, int] = {}
     next_relay_id = max((entity.id for entity in circuit.entities), default=0) + 1
-
     occupied = [
         (positions[entity.id], _routing_entity_half_extent(entity), entity.id)
         for entity in circuit.entities
     ]
-    edge_total = sum(max(0, len(endpoints) - 1) for endpoints in endpoints_by_group.values())
+
+    # High-fanout nets that are already reach-connected need no relay planning at all.  This is
+    # important for large broadcast networks: connectivity is O(k^2), whereas constructing and
+    # routing a full unconstrained terminal MST would do unnecessary work.
+    groups_needing_relays = [
+        group
+        for group, endpoints in endpoints_by_group.items()
+        if _terminal_reach_tree(endpoints, positions, safe_wire_span) is None
+    ]
+    edge_total = sum(
+        max(0, len(endpoints_by_group[group]) - 1) for group in groups_needing_relays
+    )
     edge_index = 0
 
-    for group in sorted(endpoints_by_group):
+    for group in sorted(groups_needing_relays):
         endpoints = endpoints_by_group[group]
-        for left, right in _endpoint_mst(endpoints, positions):
+        for left, right in _terminal_metric_mst(endpoints, positions):
             edge_index += 1
             source = positions[left.entity]
             target = positions[right.entity]
-            distance = _distance(source, target)
-            if distance <= safe_wire_span + 1e-9:
+            if _distance(source, target) <= safe_wire_span + 1e-9:
                 continue
             candidates = _find_relay_positions(
                 source,
@@ -216,42 +219,91 @@ def _initial_state(
         safe_span=safe_wire_span,
         forbidden_areas=forbidden_areas,
     )
-    disconnected = [
-        group for group in endpoints_by_group if _group_spanning_tree(state, group) is None
-    ]
+    disconnected = [group for group in endpoints_by_group if _group_spanning_tree(state, group) is None]
     if disconnected:
         raise ValueError(f"joint relay seed left physical net group(s) disconnected: {disconnected}")
     return state
 
 
-def _endpoint_mst(
+def _terminal_reach_tree(
+    endpoints: tuple[abstract.Endpoint, ...],
+    positions: dict[int, Position],
+    safe_span: float,
+) -> tuple[tuple[tuple[abstract.Endpoint, abstract.Endpoint], ...], float] | None:
+    vertices = tuple(endpoints)
+
+    def position(item: abstract.Endpoint) -> Position:
+        return positions[item.entity]
+
+    return _prim_tree(vertices, position, maximum_span=safe_span)
+
+
+def _terminal_metric_mst(
     endpoints: tuple[abstract.Endpoint, ...],
     positions: dict[int, Position],
 ) -> tuple[tuple[abstract.Endpoint, abstract.Endpoint], ...]:
-    if len(endpoints) < 2:
-        return ()
-    connected = {0}
-    remaining = set(range(1, len(endpoints)))
-    result: list[tuple[abstract.Endpoint, abstract.Endpoint]] = []
+    def position(item: abstract.Endpoint) -> Position:
+        return positions[item.entity]
+
+    tree = _prim_tree(endpoints, position, maximum_span=None)
+    assert tree is not None
+    return tree[0]
+
+
+def _prim_tree[T](
+    vertices: tuple[T, ...],
+    position: object,
+    *,
+    maximum_span: float | None,
+) -> tuple[tuple[tuple[T, T], ...], float] | None:
+    """Build a deterministic Euclidean Prim tree in O(k^2)."""
+
+    if len(vertices) < 2:
+        return ((), 0.0)
+
+    # `position` is intentionally a tiny local callable; spelling a Protocol here would add more
+    # machinery than value.  The cast-free helper below keeps mypy aware of the concrete calls.
+    def point(vertex: T) -> Position:
+        return position(vertex)  # type: ignore[operator, no-any-return]
+
+    remaining = set(range(1, len(vertices)))
+    best: dict[int, tuple[float, int]] = {}
+
+    def consider(left_index: int, right_index: int) -> None:
+        distance = _distance(point(vertices[left_index]), point(vertices[right_index]))
+        if maximum_span is not None and distance > maximum_span + 1e-9:
+            return
+        candidate = (distance, left_index)
+        previous = best.get(right_index)
+        if previous is None or candidate < previous:
+            best[right_index] = candidate
+
+    for right_index in remaining:
+        consider(0, right_index)
+
+    edges: list[tuple[T, T]] = []
+    total_length = 0.0
     while remaining:
-        best: tuple[tuple[float, abstract.Endpoint, abstract.Endpoint], int, int] | None = None
-        for left_index in connected:
-            left = endpoints[left_index]
-            for right_index in remaining:
-                right = endpoints[right_index]
-                key = (_distance(positions[left.entity], positions[right.entity]), left, right)
-                if best is None or key < best[0]:
-                    best = (key, left_index, right_index)
-        assert best is not None
-        _, left_index, right_index = best
-        result.append((endpoints[left_index], endpoints[right_index]))
-        connected.add(right_index)
+        choices = [
+            (distance, vertices[left], vertices[right], left, right)
+            for right, (distance, left) in best.items()
+            if right in remaining
+        ]
+        if not choices:
+            return None
+        distance, _left_key, _right_key, left_index, right_index = min(choices)
+        edges.append((vertices[left_index], vertices[right_index]))
+        total_length += distance
         remaining.remove(right_index)
-    return tuple(result)
+        best.pop(right_index, None)
+        for candidate_index in remaining:
+            consider(right_index, candidate_index)
+
+    return (tuple(edges), total_length)
 
 
 def _joint_anneal(state: _JointState, options: PlacementOptions) -> None:
-    if not state.relay_positions:
+    if not state.relay_positions or options.iterations == 0:
         return
 
     relay_groups = set(state.relay_groups.values())
@@ -269,8 +321,6 @@ def _joint_anneal(state: _JointState, options: PlacementOptions) -> None:
     if len(movable_objects) < 2:
         return
 
-    if options.iterations == 0:
-        return
     iterations = (
         min(10_000, 10 * len(movable_objects))
         if options.iterations is None
@@ -289,9 +339,9 @@ def _joint_anneal(state: _JointState, options: PlacementOptions) -> None:
     rng = Random(options.random_seed ^ 0x5EED5EED)
 
     best_energy = sum(group_lengths.values()) + _object_compactness(state, movable_objects, center)
+    current_energy = best_energy
     best_positions = dict(state.positions)
     best_relays = dict(state.relay_positions)
-    current_energy = best_energy
 
     for step in range(iterations):
         progress = step / max(1, iterations - 1)
@@ -317,13 +367,10 @@ def _joint_anneal(state: _JointState, options: PlacementOptions) -> None:
             continue
         if other is not None and other not in movable_objects:
             continue
-        moved = {object_id}
-        if other is not None:
-            moved.add(other)
-
         if not _move_is_collision_free(state, object_id, target, other):
             continue
 
+        moved = {object_id} if other is None else {object_id, other}
         affected = _object_groups(state, object_id, incident_groups)
         if other is not None:
             affected.update(_object_groups(state, other, incident_groups))
@@ -346,8 +393,8 @@ def _joint_anneal(state: _JointState, options: PlacementOptions) -> None:
             delta = after - before
             accepted = delta <= 0 or rng.random() < exp(-delta / temperature)
         else:
-            accepted = False
             delta = 0.0
+            accepted = False
 
         if accepted:
             for group, length in updated.items():
@@ -392,8 +439,7 @@ def _matching_candidate_grid(
         if all(
             entity_id in options.anchors
             or (options.anchor_io and entity_id in io_ids)
-            or positions[entity_id]
-            in _candidate_positions(circuit.entity_by_id(entity_id), grid)
+            or positions[entity_id] in _candidate_positions(circuit.entity_by_id(entity_id), grid)
             for entity_id in positions
         ):
             return grid
@@ -412,11 +458,12 @@ def _movable_entity_ids(circuit: PhysicalCircuit, options: PlacementOptions) -> 
 
 def _relay_move_bounds(state: _JointState) -> tuple[float, float, float, float]:
     points = [*state.positions.values(), *state.relay_positions.values()]
-    min_x = min(x for x, _ in points) - state.safe_span
-    max_x = max(x for x, _ in points) + state.safe_span
-    min_y = min(y for _, y in points) - state.safe_span
-    max_y = max(y for _, y in points) + state.safe_span
-    return (min_x, max_x, min_y, max_y)
+    return (
+        min(x for x, _ in points) - state.safe_span,
+        max(x for x, _ in points) + state.safe_span,
+        min(y for _, y in points) - state.safe_span,
+        max(y for _, y in points) + state.safe_span,
+    )
 
 
 def _proposed_position(
@@ -461,13 +508,10 @@ def _preferred_object_position(
     incident_groups: dict[int, set[int]],
     fallback: Position,
 ) -> Position:
-    groups = _object_groups(state, object_id, incident_groups)
     peers: list[Position] = []
-    for group in groups:
+    for group in _object_groups(state, object_id, incident_groups):
         for vertex in state.group_vertices(group):
-            if vertex[0] == 0 and vertex[1] == object_id:
-                continue
-            if vertex[0] == 1 and vertex[1] == object_id:
+            if vertex[1] == object_id:
                 continue
             peers.append(state.vertex_position(vertex))
     return _centroid(peers) if peers else fallback
@@ -511,9 +555,7 @@ def _move_is_collision_free(
 ) -> bool:
     if object_id in state.relay_positions and _relay_overlaps_forbidden(target, state.forbidden_areas):
         return False
-    ignored = {object_id}
-    if other is not None:
-        ignored.add(other)
+    ignored = {object_id} if other is None else {object_id, other}
     if not _position_clear_of_objects(state, object_id, target, ignored):
         return False
     if other is None:
@@ -540,12 +582,12 @@ def _position_clear_of_objects(
         if other_id in ignored:
             continue
         other_half = state.object_half_extent(other_id)
-        overlaps = (
+        overlap = (
             _routing_boxes_overlap(position, half, other_position, other_half)
             if object_is_relay
             else _placement_boxes_overlap(position, half, other_position, other_half)
         )
-        if overlaps:
+        if overlap:
             return False
     for relay_id, relay_position in state.relay_positions.items():
         if relay_id in ignored:
@@ -587,17 +629,15 @@ def _set_object_position(state: _JointState, object_id: int, position: Position)
 
 
 def _prune_relays(state: _JointState) -> None:
-    changed = True
-    while changed:
-        changed = False
-        for relay_id in sorted(tuple(state.relay_positions)):
-            group = state.relay_groups[relay_id]
-            position = state.relay_positions.pop(relay_id)
-            if _group_spanning_tree(state, group) is not None:
-                del state.relay_groups[relay_id]
-                changed = True
-                continue
-            state.relay_positions[relay_id] = position
+    # One pass is sufficient.  If a relay is essential while all remaining relays are present,
+    # deleting some of those other relays later cannot make this relay become removable.
+    for relay_id in sorted(tuple(state.relay_positions)):
+        group = state.relay_groups[relay_id]
+        position = state.relay_positions.pop(relay_id)
+        if _group_spanning_tree(state, group) is not None:
+            del state.relay_groups[relay_id]
+            continue
+        state.relay_positions[relay_id] = position
 
 
 def _required_group_length(state: _JointState, group: int) -> float:
@@ -612,34 +652,11 @@ def _group_spanning_tree(
     group: int,
 ) -> tuple[tuple[tuple[Vertex, Vertex], ...], float] | None:
     vertices = state.group_vertices(group)
-    if len(vertices) < 2:
-        return ((), 0.0)
 
-    connected = {0}
-    remaining = set(range(1, len(vertices)))
-    edges: list[tuple[Vertex, Vertex]] = []
-    total_length = 0.0
-    while remaining:
-        best: tuple[tuple[float, Vertex, Vertex], int, int] | None = None
-        for left_index in connected:
-            left = vertices[left_index]
-            left_position = state.vertex_position(left)
-            for right_index in remaining:
-                right = vertices[right_index]
-                distance = _distance(left_position, state.vertex_position(right))
-                if distance > state.safe_span + 1e-9:
-                    continue
-                key = (distance, left, right)
-                if best is None or key < best[0]:
-                    best = (key, left_index, right_index)
-        if best is None:
-            return None
-        (distance, _left_key, _right_key), left_index, right_index = best
-        edges.append((vertices[left_index], vertices[right_index]))
-        total_length += distance
-        connected.add(right_index)
-        remaining.remove(right_index)
-    return (tuple(edges), total_length)
+    def position(vertex: Vertex) -> Position:
+        return state.vertex_position(vertex)
+
+    return _prim_tree(vertices, position, maximum_span=state.safe_span)
 
 
 def _routing_plan(state: _JointState) -> RoutingPlan:
@@ -662,8 +679,7 @@ def _routing_plan(state: _JointState) -> RoutingPlan:
         if tree is None:
             raise ValueError(f"physical net group {group} became disconnected during refinement")
         color = state.colors_by_group[group]
-        for left, right in tree[0]:
-            wires.append(_routed_edge(state, left, right, color))
+        wires.extend(_routed_edge(state, left, right, color) for left, right in tree[0])
     return RoutingPlan(relays=relays, wires=tuple(wires))
 
 
@@ -690,8 +706,7 @@ def _vertex_connector(
     color: WireColor,
 ) -> tuple[int, int]:
     if vertex[0] == 1:
-        connector = _colorize_connector(_relay_connector_id(color), color)
-        return (vertex[1], connector)
+        return (vertex[1], _colorize_connector(_relay_connector_id(color), color))
 
     endpoint = _vertex_endpoint(state, vertex)
     physical_endpoint = WireEndpoint(endpoint.entity, Connector(endpoint.connector.value))
@@ -703,13 +718,12 @@ def _vertex_connector(
 
 
 def _vertex_endpoint(state: _JointState, vertex: Vertex) -> abstract.Endpoint:
-    group_candidates = (
+    return next(
         endpoint
         for endpoints in state.endpoints_by_group.values()
         for endpoint in endpoints
         if _terminal_vertex(endpoint) == vertex
     )
-    return next(group_candidates)
 
 
 def _terminal_vertex(endpoint: abstract.Endpoint) -> Vertex:
