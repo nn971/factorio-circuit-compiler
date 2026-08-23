@@ -3,8 +3,8 @@ from collections import deque
 import pytest
 
 from examples.autonomous_mall.worker_pool import build_worker_pool
-from factorio_circuit import lower_to_abstract_physical
 from factorio_circuit import compiler as compiler_module
+from factorio_circuit import lower_to_abstract_physical
 from factorio_circuit.ir.abstract_physical import AbstractPhysicalCircuit
 from factorio_circuit.ir.physical import PhysicalCircuit
 from factorio_circuit.synthesis.layout import Layout
