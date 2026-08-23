@@ -18,26 +18,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install uv
         run: python -m pip install uv
+      - name: Compare main mapped accounting
+        if: github.head_ref == 'agent/periodic-wire-sum'
+        run: |
+          git worktree add /tmp/fcc-main origin/main
+          cd /tmp/fcc-main
+          uv run --with 'ortools>=9.14,<10' python -m benchmarks.snake.lower_mapping \
+            --period 60 --time-limit 30 --workers 1 --max-delay-buses 0
+          exit 1
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Test periodic wire sums with OR-Tools
-        if: github.head_ref == 'agent/periodic-wire-sum'
-        run: |
-          uv run --with 'ortools>=9.14,<10' pytest tests/mapping/test_periodic_wire_sum.py
-      - name: Diagnose Snake mapped transport accounting
-        if: github.head_ref == 'agent/periodic-wire-sum'
-        run: |
-          echo '=== no wire sum, shared bus ==='
-          uv run --with 'ortools>=9.14,<10' python -m benchmarks.snake.lower_mapping \
-            --period 60 --time-limit 30 --workers 1 --without-wire-sum
-          echo '=== no wire sum, private transport ==='
-          uv run --with 'ortools>=9.14,<10' python -m benchmarks.snake.lower_mapping \
-            --period 60 --time-limit 30 --workers 1 --without-wire-sum --max-delay-buses 0
       - name: Test
         run: uv run pytest
       - name: Ruff lint
