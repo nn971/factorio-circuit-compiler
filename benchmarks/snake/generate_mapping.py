@@ -2,9 +2,9 @@
 
 This is an opt-in benchmark path. It does not change ``compile_circuit()``: the Snake semantic
 module is extracted into the implementation-neutral periodic mapping problem, solved jointly for
-operation/state timing and scalar delay buses, lowered from the selected ``RealizationPlan`` to
-Abstract Physical IR, and then handed to the established physical synthesis/layout/blueprint
-backend.
+operation/state timing, wire sums, and scalar delay buses, lowered from the selected
+``RealizationPlan`` to Abstract Physical IR, and then handed to the established physical
+synthesis/layout/blueprint backend.
 
 The mapped benchmark currently uses ``benchmarks.snake.model`` and therefore the deterministic food
 sequence encoded by that model. Random Input selector/oracle technology mapping is a later
@@ -28,6 +28,7 @@ from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.mapping import (
     add_decider_condition_cover_candidates,
     add_select_constant_candidates,
+    add_wire_sum_candidates,
     build_periodic_state_mapping_problem,
     lower_periodic_state_mapping_plan,
     ordinary_candidates,
@@ -130,6 +131,11 @@ def _parser() -> argparse.ArgumentParser:
         help="CP-SAT worker count (default: 8)",
     )
     parser.add_argument(
+        "--without-wire-sum",
+        action="store_true",
+        help="disable conservative zero-delay wire-sum alternatives",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("snake-mapped-blueprint.txt"),
@@ -164,6 +170,8 @@ def main() -> None:
     operation_candidates = ordinary_candidates(problem)
     operation_candidates = add_select_constant_candidates(problem, operation_candidates)
     operation_candidates = add_decider_condition_cover_candidates(problem, operation_candidates)
+    if not args.without_wire_sum:
+        operation_candidates = add_wire_sum_candidates(problem, operation_candidates)
     state_candidates = ordinary_state_candidates(problem)
 
     print("solving mapped Snake recurrence...", file=sys.stderr)
@@ -230,7 +238,8 @@ def main() -> None:
         "mapped snake: "
         f"plan={solve.plan.total_cost}, abstract={lowered.emitted_combinators}, "
         f"physical={layout.circuit.combinator_count}, relays={len(layout.relays)}, "
-        f"period={args.period}, buses={len(solve.plan.delay_buses)}, food=deterministic",
+        f"period={args.period}, buses={len(solve.plan.delay_buses)}, "
+        f"wire_sums={len(solve.plan.wire_sums)}, food=deterministic",
         file=sys.stderr,
     )
     print(

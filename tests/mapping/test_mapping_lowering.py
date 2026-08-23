@@ -46,7 +46,7 @@ def _mapped_wire_sum_fixture():
     wire = next(
         item
         for item in candidates
-        if item.operation == sum_op.id and item.name == "zero-delay wire sum"
+        if item.operation == sum_op.id and item.name == "zero-delay scalar wire sum"
     )
 
     deliveries = []
