@@ -579,6 +579,8 @@ def _worker_component() -> ConstrainedComponent:
 
 
 def _tail_component() -> ConstrainedComponent:
+    """Terminate every lane explicitly and return blocked when a probe reaches the end."""
+
     footprint = ComponentFootprint(0.0, 0.0, _CONTROLLER_WIDTH, 8.0, _PITCH)
     docks = _bus_docks(
         side=ComponentSide.NORTH,
@@ -603,28 +605,116 @@ def _tail_component() -> ConstrainedComponent:
         connector = 1 if dock.wire is WireColor.RED else 2
         anchors.append(BoundAnchor(dock.spec(), entity_id, connector, position))
 
-    converter_id = len(entities) + 1
-    entities.append(
-        {
-            "entity_number": converter_id,
+    def arithmetic(
+        entity_number: int,
+        x: float,
+        first: SignalId,
+        multiplier: int,
+        output: SignalId,
+        description: str,
+    ) -> dict[str, object]:
+        return {
+            "entity_number": entity_number,
             "name": "arithmetic-combinator",
-            "position": {"x": 4.5, "y": 3.0},
+            "position": {"x": x, "y": 3.0},
             "direction": 4,
-            "player_description": "MALL BUS tail V -> B",
+            "player_description": description,
             "control_behavior": {
                 "arithmetic_conditions": {
                     "operation": "*",
-                    "first_signal": {"type": "virtual", "name": OFFER_VALID_SIGNAL.name},
+                    "first_signal": {"type": first.kind, "name": first.name},
                     "first_signal_networks": {"red": False, "green": True},
-                    "second_constant": 1,
-                    "output_signal": {"type": "virtual", "name": OFFER_BLOCKED_SIGNAL.name},
+                    "second_constant": multiplier,
+                    "output_signal": {"type": output.kind, "name": output.name},
                 }
             },
         }
+
+    blocked_id = 11
+    accepted_id = 12
+    busy_id = 13
+    completion_id = 14
+    recipe_sink_id = 15
+    reserved_id = 16
+    promised_id = 17
+    entities.extend(
+        (
+            arithmetic(
+                blocked_id,
+                4.5,
+                OFFER_VALID_SIGNAL,
+                1,
+                OFFER_BLOCKED_SIGNAL,
+                "MALL BUS tail V -> B",
+            ),
+            arithmetic(
+                accepted_id,
+                9.0,
+                OFFER_VALID_SIGNAL,
+                0,
+                OFFER_ACCEPTED_SIGNAL,
+                "MALL BUS tail accepted zero",
+            ),
+            arithmetic(
+                busy_id,
+                12.0,
+                OFFER_VALID_SIGNAL,
+                0,
+                BUSY_COUNT_SIGNAL,
+                "MALL BUS tail busy zero",
+            ),
+            arithmetic(
+                completion_id,
+                15.0,
+                OFFER_VALID_SIGNAL,
+                0,
+                COMPLETION_COUNT_SIGNAL,
+                "MALL BUS tail completion zero",
+            ),
+            arithmetic(
+                recipe_sink_id,
+                18.0,
+                _EACH,
+                0,
+                _EACH,
+                "MALL BUS tail recipe sink",
+            ),
+            arithmetic(
+                reserved_id,
+                27.0,
+                _EACH,
+                0,
+                _EACH,
+                "MALL BUS tail reserved zero",
+            ),
+            arithmetic(
+                promised_id,
+                30.0,
+                _EACH,
+                0,
+                _EACH,
+                "MALL BUS tail promised zero",
+            ),
+        )
     )
+
+    # Arithmetic input connector 2 carries GREEN; output connector 3 carries RED. The valid signal
+    # fans through the three scalar-zero generators. Vector sinks/zero-generators remain on separate
+    # GREEN input networks so the recipe, input, and product vectors never merge at the terminator.
     wires = [
-        [ids["north_offer_valid"], 2, converter_id, 2],
-        [ids["north_blocked"], 1, converter_id, 3],
+        [ids["north_offer_valid"], 2, blocked_id, 2],
+        [blocked_id, 3, ids["north_blocked"], 1],
+        [ids["north_offer_valid"], 2, accepted_id, 2],
+        [accepted_id, 3, ids["north_accepted"], 1],
+        [accepted_id, 2, busy_id, 2],
+        [busy_id, 3, ids["north_busy_count"], 1],
+        [busy_id, 2, completion_id, 2],
+        [completion_id, 3, ids["north_completion_count"], 1],
+        [ids["north_offer_recipe"], 2, recipe_sink_id, 2],
+        [ids["north_offer_inputs"], 2, reserved_id, 2],
+        [reserved_id, 3, ids["north_reserved"], 1],
+        [ids["north_offer_product"], 2, promised_id, 2],
+        [promised_id, 3, ids["north_promised"], 1],
     ]
     blueprint: Blueprint = {
         "item": "blueprint",
