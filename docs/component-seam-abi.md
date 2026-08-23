@@ -80,6 +80,16 @@ For compiler-generated components, final public dock coordinates SHOULD be suppl
 entities are then pinned in the abstract physical graph and the normal net-aware/annealing placer
 optimizes implementation logic around those fixed docks.
 
+Any target-owned infrastructure that will be materialized only after compilation, such as the 1x2
+arithmetic isolation adapter used by `compiled_module_as_anchored_blueprint(...)`, SHOULD reserve its
+real collision footprint up front through `PlacementOptions(hard_keepouts=...)`. Hard keepouts apply
+to both ordinary implementation placement and layout-only routing relays. Constrained components
+SHOULD then use `strict_adapter_placement=True`, so a violated reservation is a generation error
+rather than a post-layout adapter relocation.
+
+`compiled_anchor_adapter_keepout(marker_position, anchor_position)` computes the exact preferred
+adapter reservation used by the current compiled-anchor ABI.
+
 Do not first generate an arbitrary finished layout and then route long adapter chains to distant ABI
 coordinates unless a legacy component makes that unavoidable.
 
@@ -100,10 +110,12 @@ constrained component ABI
   footprint + side/slot + seam
         ↓
 compiler I/O pinned before placement
+  + target-owned hard keepouts
         ↓
 net-aware / annealing physical placement
+  + relay routing honoring same keepouts
         ↓
-component-owned internal routing
+strict boundary-adapter materialization
         ↓
 exact seam composition
 ```
@@ -113,16 +125,18 @@ and composition invariants; it does not replace the electrical checks.
 
 ## Current limitations
 
-The first implementation intentionally does not yet model:
+The implementation still intentionally does not yet model:
 
-- prototype-specific collision boxes;
-- a hard placement region consumed directly by the annealing candidate-grid generator; current
-  compiler integration pins public docks before placement and `ConstrainedComponent` rejects emitted
-  entities outside declared footprints afterwards;
+- a complete prototype database of collision boxes; the generic placer knows the combinator
+  footprints it emits, while `ComponentFootprint` itself still validates entity centres only;
+- automatic derivation of every seam keepout from `ConstrainedComponent` metadata; compiled
+  component generators currently compute target-owned adapter reservations explicitly before
+  calling the compiler;
 - explicit through-bus/tap/contribute roles;
 - seam-level red/green multiplexing policy beyond the underlying anchor specs;
 - automatic compiler signal/color allocation to eliminate all interface isolation adapters;
 - arbitrary non-rectangular component regions.
 
-These are later extensions. The urgent invariant is that reusable modules no longer expose arbitrary
-floating coordinates or composer-generated wandering relay routes as their normal physical ABI.
+The important invariant is now stronger than the original implementation: stable seam infrastructure
+can reserve real occupied geometry before annealing, and the same geometry is protected from routing
+relays before exact seam composition.
