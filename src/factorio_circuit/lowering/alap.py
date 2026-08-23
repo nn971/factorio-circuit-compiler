@@ -196,6 +196,31 @@ class AlapVectorLowerer(SharedVectorDelayLowerer):
         self._record_scalar_semantics(value, result)
         return result
 
+    def _record_scalar_semantics(self, semantic: Value, result: RealizedValue) -> None:
+        """Track scalar validity from the actual ALAP input phase."""
+
+        if isinstance(semantic, (BinaryOp, Compare)):
+            left = self._scalar_child(semantic.left)
+            right = self._scalar_child(semantic.right)
+            realized = tuple(item for item in (left, right) if item is not None)
+            base = max((item.phase for item in realized), default=0)
+            family = "scalar_binary" if isinstance(semantic, BinaryOp) else "compare"
+            target = self._operation_input_phase(
+                semantic,
+                family,
+                semantic.op,
+                base,
+            )
+            window = self._scalar_operation_window(
+                result,
+                (semantic.left, semantic.right),
+                target_phase=target,
+            )
+            self._remember_scalar(result, window)
+            return
+
+        super()._record_scalar_semantics(semantic, result)
+
     def _record_vector_semantics(
         self,
         semantic: VectorValue,
