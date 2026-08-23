@@ -4,23 +4,25 @@ This directory is a research area rather than an accepted final circuit architec
 manual worker rows, compiled policy ROMs, and sequential scanners were exploratory implementations
 and should not be treated as architectural precedent.
 
-The retained pieces now form three deliberately separate layers:
+The retained pieces now form four deliberately separate layers:
 
 - `scheduler.py`: an offline deterministic, quality-free multi-worker scheduling oracle;
-- `worker_pool.py`: the first circuit-facing anonymous-worker dispatch/execution protocol;
+- `worker_pool.py`: the compact monolithic semantic reference for anonymous worker execution;
+- `seamed_worker_pool.py`: the preferred physical worker-pool prototype built from constrained
+  components and exact seams;
 - the older quality/recycling modules: an offline material-efficiency oracle for later milestones.
 
-Generic `AssemblerDevice`, exact-overlap anchors, and `ModuleInterface` live under
-`src/factorio_circuit/` and remain reusable compiler infrastructure.
+Generic `AssemblerDevice`, exact-overlap anchors, constrained component seams, and compiler port
+pinning live under `src/factorio_circuit/` and remain reusable compiler infrastructure.
 
 ## Deterministic scheduler
 
 `scheduler.py` models the simplified milestone where recipes are deterministic and quality is
 irrelevant. It contains no raw-material objective and no configured raw-material boundary.
 
-Its inputs are a target-stock vector, observed physical stock, already-active jobs, and a deterministic
-`RecipeCatalog`. Items with no supported producer are inferred to be external inputs. Multiple
-producers use the catalog's canonical selection/override rule.
+Its inputs are a target-stock vector, observed physical stock, already-active jobs, and a
+deterministic `RecipeCatalog`. Items with no supported producer are inferred to be external inputs.
+Multiple producers use the catalog's canonical selection/override rule.
 
 Each planning pass:
 
@@ -44,14 +46,10 @@ For this offline reference, `stock` means mall-owned physical inventory before s
 reservations. A future Factorio integration must reconstruct that logical quantity from the roboport
 view plus worker-local holdings according to the chosen device protocol.
 
-## Circuit-facing worker pool
+## One-craft worker semantics
 
-`worker_pool.py` implements the next layer down. It accepts one already-formed deterministic craft
-job and routes it to the first idle anonymous worker.
-
-### One-craft job envelope
-
-The first physical protocol intentionally makes one accepted envelope equal to **one craft**:
+Both worker implementations use the same first physical contract: one accepted envelope equals
+**one craft**.
 
 ```text
 offer_valid    scalar Level
@@ -65,17 +63,6 @@ batch as that setpoint while the machine consumes ingredients would cause contin
 Keeping the first protocol one-craft makes the requester semantics exact. Batching can later be added
 with an explicit preload/escrow protocol while preserving the same reservation/promise accounting.
 
-### Offer handshake
-
-The producer may hold one envelope high until it observes `offer_accepted`. It must then drop
-`offer_valid` before presenting the next envelope. An internal `offer_seen` latch prevents a held-high
-envelope from being claimed twice.
-
-If every worker is busy, `offer_blocked` remains asserted. The unseen envelope stays pending and is
-claimed automatically when a worker becomes idle.
-
-### Worker state
-
 Each worker stores exactly three whole vectors:
 
 ```text
@@ -87,48 +74,114 @@ held promise
 A nonempty promise means the worker is busy. While its held recipe is nonempty, the controller drives
 that recipe and the one-craft requester demand into `AssemblerDevice`. When `working=1` is observed,
 the recipe/request demand are withdrawn. The validated Factorio Set-recipe behavior lets the active
-craft finish while preventing a second craft from starting. Reservation and promise remain held until
-`working` later returns to zero.
+craft finish while preventing a second craft from starting. Reservation and promise remain held
+until `working` later returns to zero.
 
-The pool publishes additive whole-vector buses:
+Workers contribute additive whole-vector ledgers:
 
 ```text
 reserved = sum(worker reservations)
 promised = sum(worker promises)
 ```
 
-A newly claimed envelope appears on these buses immediately in the claim reaction and then from held
-worker state, so central accounting has no dispatch gap.
+The item/recipe database therefore does not determine the number of physical ROM combinators.
 
-Adding workers changes worker-local state and one `working` observation per worker. The shared job
-envelope stays constant-size and does not depend on the number of item or recipe prototypes.
+## Preferred physical prototype: constrained seams
 
-### Generate the physical probe
+`seamed_worker_pool.py` regenerates the worker pool around the constrained component ABI instead of
+placing one giant controller and manually routing to N devices.
 
-The default generator compiles the controller and attaches real `AssemblerDevice` instances using the
-typed exact-overlap anchor ABI:
+Its physical topology is regular:
 
-```bash
-uv run python -m examples.autonomous_mall.worker_pool --workers 2 > mall-workers.txt
+```text
+            external offer / ledgers
+                     │
+                ┌────▼────┐
+                │  HEAD   │
+                └────┬────┘
+                     │  fixed 10-lane bus
+             ┌───────▼────────┐     ┌───────────────┐
+             │ worker control │────▶│ AssemblerDevice│
+             └───────┬────────┘     └───────────────┘
+                     │
+             ┌───────▼────────┐     ┌───────────────┐
+             │ worker control │────▶│ AssemblerDevice│
+             └───────┬────────┘     └───────────────┘
+                     │
+                    ...
+                     │
+                ┌────▼────┐
+                │  TAIL   │
+                └─────────┘
 ```
 
-For the controller alone:
+Every head, worker controller, assembler attachment, and tail owns a declared rectangular footprint.
+North/south bus terminals are derived from stable side/slot coordinates. Repetition uses
+`compose_component_seams(...)`; callers no longer choose arbitrary translation offsets or relay
+waypoints between cells.
 
-```bash
-uv run python -m examples.autonomous_mall.worker_pool \
-  --workers 2 \
-  --controller-only > mall-worker-controller.txt
+### Mall bus
+
+The bus has ten fixed lanes:
+
+```text
+forward:  offer_valid, offer_recipe, offer_inputs, offer_product
+reverse:  blocked, accepted, busy_count, completion_count, reserved, promised
 ```
 
-The worker-pool CLI selects the deterministic `safe-folded-crossbar` physical layout. The compiler
-still attempts ordinary combinator packing first. If a packed Level graph creates an abstract net
-conflict that cannot be assigned to Factorio's two wire colors, `compile_circuit()` retries the same
-optimized semantic module with physical packing disabled. Intrinsically non-two-colorable unpacked
-graphs still fail normally; this fallback only prevents an optional packing transform from making an
-otherwise realizable circuit uncompilable.
+The bus width stays fixed as workers are added. Each repeated worker contributes only its local state,
+controller implementation, and one assembler device.
 
-The composed probe deliberately leaves the external job-envelope and aggregate-ledger anchors exposed
-for manual wiring. Unused worker observation ports also remain available for inspection.
+### Stop-and-wait claim protocol
+
+A physically tiled bus has propagation latency. Therefore the new prototype does **not** hold a
+combinational first-free claim token high while waiting for a distant acknowledgement.
+
+The dispatch head sends one probe token at a time:
+
+1. a busy worker forwards the probe;
+2. the first idle worker consumes it and sends `accepted` back toward the head;
+3. if every worker is busy, the probe reaches the tail, which returns `blocked`;
+4. the head waits for one of those responses before it may retry the still-held external offer.
+
+This makes the important physical invariant explicit: at most one probe for an offer is in flight, so
+a delayed acknowledgement cannot cause two workers to claim the same held envelope.
+
+### Controller / assembler seam
+
+Each worker controller has one four-lane east seam:
+
+```text
+recipe
+ enable
+working
+requester_demand
+```
+
+The first three commands/observations needed by the mall already live near the west side of
+`AssemblerDevice`, except `working`. The mall adapter therefore adds a short, device-owned working
+relay path *inside the assembler footprint* and exposes a coherent west seam. It does not route a
+wire around the outside of the whole worker as the old probe did. Other assembler observation ports
+remain private to the physical device for this milestone.
+
+### Generate the blueprint
+
+Generate the preferred two-worker prototype with:
+
+```bash
+uv run python -m examples.autonomous_mall.seamed_worker_pool --workers 2 > mall-workers.txt
+```
+
+Change `--workers` to tile more identical worker cells.
+
+For comparison, the older monolithic semantic/physical reference is still available as:
+
+```bash
+uv run python -m examples.autonomous_mall.worker_pool --workers 2 > mall-workers-legacy.txt
+```
+
+That older generator deliberately remains available while the constrained version is being probed in
+game, but it should not be used as the physical-layout precedent for later mall components.
 
 ## Retained quality oracle
 
@@ -158,9 +211,9 @@ uv run python -m examples.autonomous_mall.quality_policy \
 
 ## What remains unresolved
 
-The worker execution/claim protocol now has a concrete prototype. The next missing layer is the
-**circuit-side job former** that turns live mall demand and stock into the four-field offer envelope.
-In particular we still need to settle:
+The worker execution/claim protocol now has both a compact semantic reference and a constrained
+physical prototype. The next missing application layer is the **circuit-side job former** that turns
+live mall demand and stock into the four-field offer envelope. In particular we still need to settle:
 
 - how live roboport stock is combined with worker reservation/promise buses;
 - how recipe ingredients and product amounts are discovered/queryable in game without a physical
@@ -169,6 +222,10 @@ In particular we still need to settle:
 - how repeated one-craft offers are paced and whether a later explicit batch escrow protocol is worth
   the extra worker complexity;
 - how quality/productivity worker roles extend this deterministic core later.
+
+At the synthesis layer, constrained components currently pin public docks before annealing and reject
+entities outside their declared footprints afterward. A hard placement region consumed directly by
+the annealer remains a separate compiler improvement.
 
 Before physical-size reasoning, read `docs/factorio-2-circuit-mechanics.md`. Factorio 2.x constant
 combinators are whole-vector sources; the legacy "20 values per constant combinator" assumption must
@@ -182,13 +239,13 @@ Focused deterministic routine tests:
 uv run pytest \
   tests/examples/autonomous_mall/test_scheduler.py \
   tests/examples/autonomous_mall/test_worker_pool.py \
+  tests/examples/autonomous_mall/test_seamed_worker_pool.py \
   tests/examples/autonomous_mall/test_worker_pool_compile_probe.py
 ```
 
-The worker-pool tests cover held-valid deduplication, first-free assignment, blocked-offer retention,
-recipe withdrawal after craft start, reservation/promise release, packed/unpacked wire-color
-regressions, compiler fallback orchestration, and abstract-physical lowering. The two-`AssemblerDevice`
-composed-blueprint check remains marked `slow`; run it explicitly with marker filtering when desired.
+The seamed-worker tests cover stop-and-wait probe/retry behavior, accepted-offer suppression, and
+worker consume/forward semantics. Its two-worker full physical construction check is marked `slow`;
+run it explicitly when validating changes to physical composition.
 
 The retained quality-oracle suite is:
 
