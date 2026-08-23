@@ -4,7 +4,12 @@ import pytest
 
 from examples.autonomous_mall.worker_pool import build_worker_pool
 from factorio_circuit import lower_to_abstract_physical
+from factorio_circuit import compiler as compiler_module
+from factorio_circuit.ir.physical import PhysicalCircuit
+from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.open_vector import VectorPhysicalSynthesizer
+
+_TWO_WIRE_COLOR_ERROR = "abstract net constraints require more than the two Factorio wire colors"
 
 
 def _odd_cycle_labels(synthesizer: VectorPhysicalSynthesizer) -> list[str]:
@@ -68,6 +73,11 @@ def _odd_cycle_labels(synthesizer: VectorPhysicalSynthesizer) -> list[str]:
         hard.update(unsafe)
 
 
+def _contains_packed_entity(circuit: object) -> bool:
+    entities = getattr(circuit, "entities")
+    return any("packed " in (getattr(entity, "description", None) or "") for entity in entities)
+
+
 @pytest.mark.parametrize("worker_count", [1, 2])
 def test_worker_pool_unpacked_net_constraints_are_two_colorable(worker_count: int) -> None:
     lowered = lower_to_abstract_physical(build_worker_pool(worker_count), optimize=False)
@@ -82,3 +92,43 @@ def test_two_worker_packing_currently_creates_an_odd_wire_color_cycle() -> None:
     cycle = _odd_cycle_labels(synthesizer)
     assert cycle
     assert any("packed pairwise + output" in label for label in cycle)
+
+
+def test_compile_circuit_retries_without_packing_after_wire_color_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[object] = []
+
+    def fake_synthesize(circuit: object, **_kwargs: object) -> Layout:
+        attempts.append(circuit)
+        if _contains_packed_entity(circuit):
+            raise ValueError(_TWO_WIRE_COLOR_ERROR)
+        return Layout(
+            circuit=PhysicalCircuit("unpacked-fallback"),
+            positions={},
+            relays=(),
+            wires=(),
+            signal_allocation=(),
+            net_colors=(),
+        )
+
+    monkeypatch.setattr(compiler_module, "_synthesize", fake_synthesize)
+    monkeypatch.setattr(
+        compiler_module,
+        "layout_to_blueprint_json",
+        lambda _layout: {"blueprint": {}},
+    )
+    monkeypatch.setattr(
+        compiler_module,
+        "encode_layout_blueprint_string",
+        lambda _layout: "0fallback",
+    )
+
+    result = compiler_module.compile_circuit(build_worker_pool(2))
+
+    assert len(attempts) == 2
+    assert _contains_packed_entity(attempts[0])
+    assert not _contains_packed_entity(attempts[1])
+    assert result.abstract_physical is attempts[1]
+    assert result.naive_physical is result.physical_circuit
+    assert result.blueprint_string == "0fallback"
