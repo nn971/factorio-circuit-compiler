@@ -21,6 +21,8 @@ from factorio_circuit.devices.assembler import (
 )
 from factorio_circuit.devices.compiled_anchors import (
     CompiledAnchorBinding,
+    compiled_anchor_adapter_keepout,
+    compiled_anchor_adapter_position,
     compiled_module_as_anchored_blueprint,
 )
 from factorio_circuit.devices.component_seams import (
@@ -94,6 +96,8 @@ __all__ = [
     "build_assembler_device_blueprint",
     "build_lamp_screen_blueprint",
     "build_player_movement_detector_blueprint",
+    "compiled_anchor_adapter_keepout",
+    "compiled_anchor_adapter_position",
     "compiled_module_as_anchored_blueprint",
     "compose_anchored_blueprints",
     "compose_component_seams",
