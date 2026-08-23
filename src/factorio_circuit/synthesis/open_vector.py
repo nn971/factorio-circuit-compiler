@@ -14,6 +14,7 @@ from factorio_circuit.ir.physical import (
 )
 from factorio_circuit.lowering.vector_unary import VECTOR_EACH_PLACEHOLDER
 from factorio_circuit.progress import ProgressCallback, report_progress
+from factorio_circuit.synthesis.joint_layout import refine_joint_layout
 from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
 from factorio_circuit.synthesis.physical import PhysicalSynthesizer
 from factorio_circuit.synthesis.placement import PlacementOptions, Position, plan_physical_circuit
@@ -26,7 +27,7 @@ from factorio_circuit.synthesis.signal_coloring import allocate_abstract_signals
 def _placement_attempt_count(options: PlacementOptions) -> int:
     """Return deterministic synthesis attempts for the requested placement policy."""
 
-    # Row placement is invariant under target-fill/corridor retry parameters. Greedy net-aware
+    # Row placement is invariant under target-fill/corridor retry parameters. Greedy annealed
     # placement (iterations=0), however, changes when the candidate grid is made sparser, so it
     # should retain deterministic retries instead of being forced to a single attempt.
     return 1 if options.strategy == "row" else options.restarts
@@ -92,7 +93,7 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
             if selected.anchors:
                 raise ValueError(
                     f"{strategy} does not yet support fixed placement anchors; "
-                    "use the net-aware layout for anchored synthesis"
+                    "use the annealed layout for anchored synthesis"
                 )
             if strategy == "safe-crossbar":
                 report_progress(
@@ -159,15 +160,35 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                 detail=f"placed {len(positions)} entities",
             )
 
-            self._materialize_connections(physical, net_colors, net_groups, positions)
             try:
-                routing = route_wires(
-                    physical,
-                    positions,
-                    safe_span=self.safe_wire_span,
-                    relay_forbidden_areas=placement.relay_forbidden_areas,
-                    progress=self.progress,
-                )
+                if strategy in {"annealed", "net-aware"}:
+                    report_progress(
+                        self.progress,
+                        "joint-layout",
+                        detail="jointly refining combinators and shared-net relays",
+                    )
+                    joint = refine_joint_layout(
+                        physical,
+                        self.circuit,
+                        net_groups,
+                        net_colors,
+                        positions,
+                        safe_wire_span=self.safe_wire_span,
+                        options=attempt_options,
+                        relay_forbidden_areas=placement.relay_forbidden_areas,
+                    )
+                    positions = joint.positions
+                    routing = joint.routing
+                    self._materialize_connections(physical, net_colors, net_groups, positions)
+                else:
+                    self._materialize_connections(physical, net_colors, net_groups, positions)
+                    routing = route_wires(
+                        physical,
+                        positions,
+                        safe_span=self.safe_wire_span,
+                        relay_forbidden_areas=placement.relay_forbidden_areas,
+                        progress=self.progress,
+                    )
             except ValueError as exc:
                 if "parallel lanes and grid search were both exhausted" not in str(exc):
                     raise
