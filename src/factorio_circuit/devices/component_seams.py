@@ -12,14 +12,14 @@ prototype-size database while still preventing wandering implementation entities
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Iterable
 
 from factorio_circuit.devices.anchors import (
     AnchorBinding,
-    AnchorSpec,
     AnchoredBlueprint,
+    AnchorSpec,
     BoundAnchor,
     compose_anchored_blueprints,
 )
