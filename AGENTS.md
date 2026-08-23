@@ -7,12 +7,12 @@ Before semantic/compiler work, read:
 1. `docs/data-contract.md`
 2. `docs/compiler-pipeline.md`
 3. `docs/factorio-2-circuit-mechanics.md`
+4. `docs/component-seam-abi.md` for reusable physical devices/components
 
-Those files are the source of truth for the supported data contract, compilation boundaries, and
-target-game circuit mechanics that affect physical architecture. In particular, do **not** use the
-legacy "20 values per constant combinator" assumption for Factorio 2.x; see
-`docs/factorio-2-circuit-mechanics.md`. Historical milestone notes and completed physical probes are
-intentionally not kept in the repository.
+Those files are the source of truth for the supported data contract, compilation boundaries, target-game
+circuit mechanics, and physical composition rules. In particular, do **not** use the legacy "20 values
+per constant combinator" assumption for Factorio 2.x; see `docs/factorio-2-circuit-mechanics.md`.
+Historical milestone notes and completed physical probes are intentionally not kept in the repository.
 
 ## Architectural rules
 
@@ -27,6 +27,8 @@ intentionally not kept in the repository.
 - Both Level and Event lanes must converge on `AbstractPhysicalCircuit`; physical synthesis owns concrete signal allocation, red/green wiring, placement, wire reach, and final `Layout`.
 - Blueprint serialization consumes a finished `Layout`; it does not repair geometry or semantic timing.
 - For Factorio 2.x, treat a constant combinator as a whole-vector source. Never estimate its entity count by dividing configured signal values by 20; consult `docs/factorio-2-circuit-mechanics.md` before ROM/storage sizing.
+- Reusable physical modules use the constrained component seam ABI: boundary positions are derived from side/slot geometry, named seams compose by exact overlap, and compiler ports should be pinned before placement rather than connected later by wandering relay chains.
+- `safe-crossbar` and `safe-folded-crossbar` are correctness/debug fallbacks, not the default layout policy for human-facing reusable modules when net-aware annealing is applicable.
 
 ## Change discipline
 
