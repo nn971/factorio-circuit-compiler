@@ -7,7 +7,7 @@ from factorio_circuit.synthesis.placement import PlacementOptions
 
 def test_zero_iteration_greedy_layout_still_uses_deterministic_retries() -> None:
     options = PlacementOptions(
-        strategy="net-aware",
+        strategy="annealed",
         iterations=0,
         target_fill=0.60,
         corridor_width=4.0,
