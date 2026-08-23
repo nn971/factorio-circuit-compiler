@@ -177,14 +177,22 @@ def test_max_lowers_to_one_factorio_selector_combinator() -> None:
 def test_indexed_selector_semantics_and_target_configuration() -> None:
     result = compile_circuit(_selector_circuit())
     values = {IRON: 7, COPPER: -3, COAL: 4, STONE: 9}
-    rows = simulate_semantic_stream(result.semantic_ir, [{"values": values}])
+    rows = simulate_semantic_stream(
+        result.semantic_ir,
+        [
+            {"values": values},
+            {"values": {IRON: 7}},
+        ],
+    )
     names = result.semantic_ir.output.names
     observed = dict(zip(names, rows[0], strict=True))
+    single = dict(zip(names, rows[1], strict=True))
 
     assert observed["minimum"] == {COPPER: -3}
     assert observed["second_largest"] == {IRON: 7}
     assert observed["second_smallest"] == {COAL: 4}
     assert observed["out_of_range"] == {}
+    assert single["out_of_range"] == {IRON: 7}
 
     selectors = [
         entity
