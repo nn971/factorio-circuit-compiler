@@ -22,7 +22,8 @@ there is no composer-generated route around the assembler footprint.
 Compiled controller seams deliberately live in four-tile guard bands outside the annealer's dense
 body envelope.  The compiler marker sits at the inner edge, the isolation adapter occupies the
 middle, and the exact-overlap anchor sits on the outer component boundary.  This keeps public docks
-visible and prevents post-placement anchor adapters from being buried under unrelated logic.
+visible and prevents post-placement anchor adapters from being buried under unrelated logic.  A
+separate west routing strip absorbs ordinary synthesis spill without weakening those seam corridors.
 """
 
 from __future__ import annotations
@@ -295,11 +296,18 @@ def _compiled_component(
         for dock in docks
     )
     anchored = compiled_module_as_anchored_blueprint(result, bindings, label=label)
-    return ConstrainedComponent.bounded(
+    routing_strip = ComponentFootprint(
+        footprint.min_x - _SEAM_GUARD,
+        footprint.min_y,
+        footprint.min_x,
+        footprint.max_y,
+        footprint.slot_pitch,
+    )
+    return ConstrainedComponent(
         anchored,
-        footprint,
-        slots=(BoundarySlot(dock.anchor, dock.side, dock.slot) for dock in docks),
-        seams=seams,
+        (footprint, routing_strip),
+        tuple(BoundarySlot(dock.anchor, dock.side, dock.slot) for dock in docks),
+        seams,
     )
 
 
