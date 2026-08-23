@@ -27,6 +27,7 @@ from .plan import (
     RealizationPlan,
     SelectedRealization,
     SelectedStateCell,
+    WireSumResource,
 )
 from .problem import MappingProblem, MappingProblemError, MappingUse
 from .solver import _add_delay_bus_model, _DelayBusModel, _LifetimeModel
@@ -40,8 +41,13 @@ from .state_solver import (
     validate_periodic_state_plan,
 )
 from .state_templates import StateCellCandidate, ordinary_state_candidates
-from .templates import ImplementationCandidate, ordinary_candidates
-from .validate import _validate_delay_buses, source_delivery_kind, transport_anchor
+from .templates import ImplementationCandidate, ImplementationKind, ordinary_candidates
+from .validate import (
+    _validate_delay_buses,
+    _validate_wire_sums,
+    source_delivery_kind,
+    transport_anchor,
+)
 
 
 def _load_cp_model() -> Any:
@@ -54,6 +60,19 @@ def _load_cp_model() -> Any:
         ) from exc
 
 
+def _wire_sum_validation_shadow(
+    candidates: tuple[ImplementationCandidate, ...],
+) -> tuple[ImplementationCandidate, ...]:
+    """Reuse the baseline state validator while wire sums remain a bus-solver extension."""
+
+    return tuple(
+        replace(candidate, kind=ImplementationKind.ORDINARY)
+        if candidate.kind is ImplementationKind.WIRE_SUM
+        else candidate
+        for candidate in candidates
+    )
+
+
 def solve_periodic_state_bus_mapping_problem(
     problem: MappingProblem,
     *,
@@ -64,10 +83,11 @@ def solve_periodic_state_bus_mapping_problem(
     time_limit_seconds: float = 30.0,
     workers: int = 1,
 ) -> PeriodicStateMappingOptimizationResult:
-    """Jointly solve periodic state timing and shared scalar exact transport.
+    """Jointly solve periodic state timing, wire sums, and shared scalar exact transport.
 
-    The operation/state-cell candidate contracts are identical to the private-only state solver.
-    ``max_delay_buses=0`` disables the shared resource and provides a useful parity baseline.
+    ``max_delay_buses=0`` disables the shared delay-bus resource. Conservative scalar wire-sum
+    candidates remain available independently and require both contributing operation results to be
+    produced on the sum's output phase by concrete physical output connectors.
     """
 
     if problem.period is None:
@@ -91,7 +111,7 @@ def solve_periodic_state_bus_mapping_problem(
     selected_state_candidates = (
         state_candidates if state_candidates is not None else ordinary_state_candidates(problem)
     )
-    _validate_operation_candidates(problem, selected_candidates)
+    _validate_operation_candidates(problem, _wire_sum_validation_shadow(selected_candidates))
     _validate_state_candidates(problem, selected_state_candidates)
 
     cp_model = _load_cp_model()
@@ -170,6 +190,25 @@ def solve_periodic_state_bus_mapping_problem(
                     choose[candidate.id]
                 )
 
+            if candidate.kind is ImplementationKind.WIRE_SUM:
+                for producer in operation.operands:
+                    if producer not in operations:
+                        raise MappingProblemError(
+                            "wire-sum candidate requires operation-result operands"
+                        )
+                    model.Add(output_phase[producer] == output_phase[operation.id]).OnlyEnforceIf(
+                        choose[candidate.id]
+                    )
+                    for producer_candidate in candidates_by_operation[producer]:
+                        if producer_candidate.kind in {
+                            ImplementationKind.ZERO_COST_VIEW,
+                            ImplementationKind.COVERED,
+                            ImplementationKind.WIRE_SUM,
+                        }:
+                            model.Add(
+                                choose[candidate.id] + choose[producer_candidate.id] <= 1
+                            )
+
     for register_name, register_candidates in state_candidates_by_register.items():
         base = state_base_phase[register_name]
         for state_candidate in register_candidates:
@@ -218,7 +257,7 @@ def solve_periodic_state_bus_mapping_problem(
             model.Add(phase >= sources[use.producer].start_phase)
         elif use.producer in state_reads:
             model.Add(phase >= state_read_start[use.producer])
-        else:  # pragma: no cover - MappingProblem validates the namespace
+        else:  # pragma: no cover - MappingProblem validates the value namespace
             raise AssertionError(use.producer)
 
     lifetimes: dict[int, _LifetimeModel] = {}
@@ -387,6 +426,7 @@ def _extract_plan(
     }
 
     realizations: list[SelectedRealization] = []
+    selected_by_operation: dict[int, ImplementationCandidate] = {}
     output_values: dict[int, int] = {}
     for operation in problem.operations:
         selected_operation_candidate = next(
@@ -395,6 +435,7 @@ def _extract_plan(
             if solver.BooleanValue(choose[item.id])
         )
         phase = int(solver.Value(output_phase[operation.id]))
+        selected_by_operation[operation.id] = selected_operation_candidate
         output_values[operation.id] = phase
         realizations.append(
             SelectedRealization(
@@ -479,6 +520,16 @@ def _extract_plan(
             current[1].append(phase)
 
     exact_lifetimes = _lifetimes_from_transport(transport_taps)
+    wire_sums = tuple(
+        WireSumResource(
+            operation=operation.id,
+            left_producer=operation.operands[0],
+            right_producer=operation.operands[1],
+            phase=output_values[operation.id],
+        )
+        for operation in problem.operations
+        if selected_by_operation[operation.id].kind is ImplementationKind.WIRE_SUM
+    )
 
     delay_buses: list[DelayBusResource] = []
     if bus_model is not None:
@@ -536,7 +587,7 @@ def _extract_plan(
             )
         ),
         exact_lifetimes=exact_lifetimes,
-        wire_sums=(),
+        wire_sums=wire_sums,
         delay_buses=tuple(delay_buses),
         entity_cost=entity_cost,
         transport_cost=transport_cost,
@@ -549,8 +600,9 @@ def _validate_bus_state_plan(
     state_candidates: tuple[StateCellCandidate, ...],
     plan: RealizationPlan,
 ) -> None:
-    """Validate state timing through the baseline validator, then validate bus realization."""
+    """Validate state timing, wire sums, and shared-bus realization independently."""
 
+    validation_candidates = _wire_sum_validation_shadow(candidates)
     private_shadow = replace(
         plan,
         deliveries=tuple(
@@ -559,15 +611,34 @@ def _validate_bus_state_plan(
             else delivery
             for delivery in plan.deliveries
         ),
+        wire_sums=(),
         delay_buses=(),
         transport_cost=sum(item.length for item in plan.exact_lifetimes),
     )
     validate_periodic_state_plan(
         problem,
-        candidates,
+        validation_candidates,
         state_candidates,
         private_shadow,
     )
+
+    candidate_by_id = {item.id: item for item in candidates}
+    realizations = {item.operation: item for item in plan.realizations}
+    selected = {
+        operation: candidate_by_id[realization.candidate]
+        for operation, realization in realizations.items()
+    }
+    _validate_wire_sums(problem, selected, realizations, plan.wire_sums)
+    for resource in plan.wire_sums:
+        for producer in (resource.left_producer, resource.right_producer):
+            if selected[producer].kind in {
+                ImplementationKind.ZERO_COST_VIEW,
+                ImplementationKind.COVERED,
+                ImplementationKind.WIRE_SUM,
+            }:
+                raise MappingProblemError(
+                    "periodic wire-sum contributors require concrete scalar output connectors"
+                )
 
     bus_producers = _validate_delay_buses(plan, plan.exact_lifetimes)
     private_transport_cost = sum(
