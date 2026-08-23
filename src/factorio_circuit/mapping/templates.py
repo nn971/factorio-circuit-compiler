@@ -286,22 +286,30 @@ def _semantic_use_counts(problem: MappingProblem) -> dict[int, int]:
     return counts
 
 
+def _is_addition(value: object) -> bool:
+    return isinstance(value, (BinaryOp, VectorBinaryOp)) and value.op == "+"
+
+
 def wire_sum_candidate(
     problem: MappingProblem,
     operation: MappingOperation,
     *,
     candidate_id: int,
 ) -> ImplementationCandidate:
-    """Return the first conservative zero-delay same-signal wire-sum implementation.
+    """Return a conservative zero-delay same-carrier addition implementation.
 
-    This milestone only admits ``x + y`` when both operands are non-addition operation results and
-    each operand has exactly this one semantic use. That restriction ensures both contributors have
-    real output connectors and avoids nested aggregation until an n-way wire-resource model exists.
+    The first aggregate milestone supports scalar ``BinaryOp('+')`` and whole-vector
+    ``VectorBinaryOp('+')`` roots. Both operands must be non-addition operation results and each
+    operand must have exactly this one semantic use. This guarantees that the physical lowerer may
+    rebind both producer output connectors onto one shared carrier without preserving an independent
+    fanout network or recursively flattening another addition.
     """
 
     semantic = operation.semantic
-    if not isinstance(semantic, BinaryOp) or semantic.op != "+":
-        raise MappingProblemError("wire-sum candidate requires a scalar BinaryOp('+')")
+    if not _is_addition(semantic):
+        raise MappingProblemError(
+            "wire-sum candidate requires scalar or vector addition semantics"
+        )
     if len(operation.operands) != 2:
         raise MappingProblemError("wire-sum candidate requires exactly two operands")
 
@@ -311,10 +319,7 @@ def wire_sum_candidate(
             "first wire-sum candidate requires both operands to be operation results"
         )
     producer_operations = tuple(problem.operation_by_id(item) for item in operation.operands)
-    if any(
-        isinstance(producer.semantic, BinaryOp) and producer.semantic.op == "+"
-        for producer in producer_operations
-    ):
+    if any(_is_addition(producer.semantic) for producer in producer_operations):
         raise MappingProblemError(
             "first wire-sum candidate does not nest another semantic addition contributor"
         )
@@ -325,10 +330,11 @@ def wire_sum_candidate(
             "first wire-sum candidate requires each operand result to have exactly one use"
         )
 
+    payload = "vector" if isinstance(semantic, VectorBinaryOp) else "scalar"
     return ImplementationCandidate(
         id=candidate_id,
         operation=operation.id,
-        name="zero-delay wire sum",
+        name=f"zero-delay {payload} wire sum",
         input_phase_offsets=(0, 0),
         entity_cost=0,
         kind=ImplementationKind.WIRE_SUM,
