@@ -1,11 +1,11 @@
 """Constrained physical component boundaries and seam composition.
 
 The low-level :mod:`factorio_circuit.devices.anchors` API proves electrical compatibility between
-named terminals.  This module adds the geometric contract needed for reusable physical modules:
+named terminals. This module adds the geometric contract needed for reusable physical modules:
 component confinement, boundary side/slot placement, ordered named seams, and composition whose
 translation is derived from the seam rather than supplied as an arbitrary coordinate offset.
 
-Coordinates in :class:`ComponentFootprint` bound entity *centres*.  Prototype-specific collision
+Coordinates in :class:`ComponentFootprint` bound entity *centres*. Prototype-specific collision
 boxes remain the responsibility of the component generator; this layer deliberately avoids a hidden
 prototype-size database while still preventing wandering implementation entities and floating docks.
 """
@@ -170,6 +170,7 @@ class ConstrainedComponent:
             )
 
         slots_by_name = {slot.anchor: slot for slot in self.slots}
+        dock_positions: list[tuple[str, tuple[float, float]]] = []
         for slot in self.slots:
             try:
                 footprint = self.footprints[slot.footprint_index]
@@ -185,6 +186,13 @@ class ConstrainedComponent:
                     f"anchor {slot.anchor!r} is not on its declared {slot.side.value} slot "
                     f"{slot.slot}: expected {expected!r}, got {actual!r}"
                 )
+            for previous_name, previous_position in dock_positions:
+                if _same_position(expected, previous_position):
+                    raise ValueError(
+                        f"boundary anchors {previous_name!r} and {slot.anchor!r} occupy the same "
+                        f"dock coordinate {expected!r}"
+                    )
+            dock_positions.append((slot.anchor, expected))
 
         seam_names = [seam.name for seam in self.seams]
         if len(set(seam_names)) != len(seam_names):
@@ -198,6 +206,9 @@ class ConstrainedComponent:
             seam_slots = [slots_by_name[name] for name in seam.anchors]
             if any(slot.side is not seam.side for slot in seam_slots):
                 raise ValueError(f"seam {seam.name!r} contains an anchor on the wrong side")
+            footprint_indices = {slot.footprint_index for slot in seam_slots}
+            if len(footprint_indices) != 1:
+                raise ValueError(f"seam {seam.name!r} cannot span multiple component footprints")
             indices = [slot.slot for slot in seam_slots]
             if indices != sorted(indices):
                 raise ValueError(f"seam {seam.name!r} anchors must be ordered by boundary slot")
