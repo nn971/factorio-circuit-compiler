@@ -8,22 +8,24 @@ from factorio_circuit.synthesis.open_vector import (
 from factorio_circuit.synthesis.placement import PlacementOptions
 
 
-def test_zero_iteration_greedy_layout_still_uses_deterministic_retries() -> None:
+def test_annealed_retries_keep_one_geometry_and_vary_seed_only() -> None:
     options = PlacementOptions(
         strategy="annealed",
-        iterations=0,
+        iterations=250,
         target_fill=0.60,
         corridor_width=4.0,
         restarts=4,
         retry_fill_scale=0.8,
+        random_seed=10,
     )
 
     assert _placement_attempt_count(options) == 4
 
     attempts = [_placement_attempt_options(options, index) for index in range(4)]
-    assert [round(item.target_fill, 3) for item in attempts] == [0.600, 0.480, 0.384, 0.307]
-    assert [round(item.corridor_width, 2) for item in attempts] == [4.00, 5.00, 6.25, 7.81]
-    assert all(item.iterations == 0 for item in attempts)
+    assert [item.target_fill for item in attempts] == [0.60] * 4
+    assert [item.corridor_width for item in attempts] == [4.0] * 4
+    assert [item.random_seed for item in attempts] == [10, 11, 12, 13]
+    assert all(item.iterations == 250 for item in attempts)
     assert all(item.restarts == 1 for item in attempts)
 
 
