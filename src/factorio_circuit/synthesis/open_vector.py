@@ -2,7 +2,6 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from math import hypot
 from typing import Any
 
 from factorio_circuit.blueprint.routing import RoutingPlan, route_wires, routed_positions
@@ -17,7 +16,7 @@ from factorio_circuit.ir.physical import (
 )
 from factorio_circuit.lowering.vector_unary import VECTOR_EACH_PLACEHOLDER
 from factorio_circuit.progress import ProgressCallback, report_progress
-from factorio_circuit.synthesis.joint_layout import refine_joint_layout
+from factorio_circuit.synthesis.incremental_joint_layout import refine_incremental_joint_layout
 from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
 from factorio_circuit.synthesis.physical import PhysicalSynthesizer
 from factorio_circuit.synthesis.placement import PlacementOptions, Position, plan_physical_circuit
@@ -40,14 +39,23 @@ class _LayoutCandidate:
 def _placement_attempt_count(options: PlacementOptions) -> int:
     """Return deterministic synthesis attempts for the requested placement policy."""
 
-    # Row placement is invariant under target-fill/corridor retry parameters. Greedy annealed
-    # placement (iterations=0), however, changes when the candidate grid is made sparser, so it
-    # should retain deterministic retries instead of being forced to a single attempt.
     return 1 if options.strategy == "row" else options.restarts
 
 
 def _placement_attempt_options(options: PlacementOptions, restart: int) -> PlacementOptions:
-    """Make later deterministic attempts progressively easier to route."""
+    """Build one deterministic layout attempt.
+
+    Annealed retries now keep one physical envelope/corridor geometry and vary only the random seed.
+    Empty placement sites are working space for implementation entities and relays, not a retry-time
+    dropout ratio. Historical greedy routing retains its progressively looser retry geometry.
+    """
+
+    if options.strategy in {"annealed", "net-aware"}:
+        return replace(
+            options,
+            random_seed=options.random_seed + restart,
+            restarts=1,
+        )
 
     scale = options.retry_fill_scale**restart
     corridor_width = options.corridor_width
@@ -62,20 +70,17 @@ def _placement_attempt_options(options: PlacementOptions, restart: int) -> Place
     )
 
 
-def _connections_need_relays(
-    circuit: PhysicalCircuit,
-    positions: dict[int, Position],
-    *,
-    safe_wire_span: float,
-) -> bool:
-    """Return whether the chosen physical-net trees contain any over-reach edge."""
-
-    for connection in circuit.connections:
-        left = positions[connection.source.entity]
-        right = positions[connection.target.entity]
-        if hypot(left[0] - right[0], left[1] - right[1]) > safe_wire_span + 1e-9:
-            return True
-    return False
+def _retryable_layout_error(error: ValueError) -> bool:
+    message = str(error)
+    return any(
+        marker in message
+        for marker in (
+            "parallel lanes and grid search were both exhausted",
+            "joint relay seed left physical net group",
+            "outside conservative wire reach",
+            "could not recover annealed candidate grid",
+        )
+    )
 
 
 def _layout_candidate_score(
@@ -116,7 +121,9 @@ def _layout_candidate_score(
     for wire in routing.wires:
         source = final_positions[wire.source_entity]
         target = final_positions[wire.target_entity]
-        wire_length += hypot(source[0] - target[0], source[1] - target[1])
+        wire_length += (
+            (source[0] - target[0]) ** 2 + (source[1] - target[1]) ** 2
+        ) ** 0.5
 
     return (len(routing.relays), area, wire_length, restart)
 
@@ -200,6 +207,7 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
 
         selected.validate()
         attempts = _placement_attempt_count(selected)
+        annealed = strategy in {"annealed", "net-aware"}
 
         last_routing_error: ValueError | None = None
         best_candidate: _LayoutCandidate | None = None
@@ -217,12 +225,18 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                     f"corridor={attempt_options.corridor_width:.2f}"
                 ),
             )
+
+            # Annealed synthesis now has one hot loop: first build a deterministic legal seed,
+            # then jointly anneal implementation entities and relays. Running the historical
+            # exact-net annealer here would duplicate work and restore the O(k^2)-per-proposal
+            # bottleneck that large Snake nets exposed.
+            seed_options = replace(attempt_options, iterations=0) if annealed else attempt_options
             placement = plan_physical_circuit(
                 physical,
                 self.circuit,
                 net_groups,
                 safe_wire_span=self.safe_wire_span,
-                options=attempt_options,
+                options=seed_options,
             )
             positions = placement.positions
             report_progress(
@@ -230,28 +244,20 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                 "placement",
                 completed=restart + 1,
                 total=attempts,
-                detail=f"placed {len(positions)} entities",
-            )
-
-            # Materialize the relay-minimizing tree first. Most compiled circuits are already
-            # directly reach-safe after placement; keep those on the cheap historical routing
-            # path and invoke the joint combinator/relay refinement only when a relay is actually
-            # required.
-            self._materialize_connections(physical, net_colors, net_groups, positions)
-            needs_joint = strategy in {"annealed", "net-aware"} and _connections_need_relays(
-                physical,
-                positions,
-                safe_wire_span=self.safe_wire_span,
+                detail=f"seeded {len(positions)} entities",
             )
 
             try:
-                if needs_joint:
+                if annealed:
                     report_progress(
                         self.progress,
                         "joint-layout",
-                        detail="jointly refining relay-bearing physical nets",
+                        detail=(
+                            "incrementally annealing implementation entities and relays; "
+                            "exact net trees rebuild at epoch boundaries"
+                        ),
                     )
-                    joint = refine_joint_layout(
+                    joint = refine_incremental_joint_layout(
                         physical,
                         self.circuit,
                         net_groups,
@@ -259,12 +265,9 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                         positions,
                         safe_wire_span=self.safe_wire_span,
                         options=attempt_options,
-                        relay_forbidden_areas=placement.relay_forbidden_areas,
                     )
                     positions = joint.positions
                     routing = joint.routing
-                    # The concrete circuit keeps a conventional terminal spanning tree for
-                    # simulation/inspection. Blueprint routing itself uses the shared relay tree.
                     self._materialize_connections(physical, net_colors, net_groups, positions)
                     report_progress(
                         self.progress,
@@ -274,6 +277,7 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                         detail=f"shared-net routing complete; relays={len(routing.relays)}",
                     )
                 else:
+                    self._materialize_connections(physical, net_colors, net_groups, positions)
                     routing = route_wires(
                         physical,
                         positions,
@@ -282,21 +286,26 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                         progress=self.progress,
                     )
             except ValueError as exc:
-                if "parallel lanes and grid search were both exhausted" not in str(exc):
+                if not _retryable_layout_error(exc):
                     raise
                 last_routing_error = exc
                 if restart + 1 < attempts:
                     next_options = _placement_attempt_options(selected, restart + 1)
+                    detail = (
+                        f"joint layout failed; retrying with seed={next_options.random_seed}"
+                        if annealed
+                        else (
+                            "routing failed; rebuilding with more space: "
+                            f"fill={next_options.target_fill:.3f}; "
+                            f"corridor={next_options.corridor_width:.2f}"
+                        )
+                    )
                     report_progress(
                         self.progress,
                         "retry",
                         completed=restart + 1,
                         total=attempts,
-                        detail=(
-                            "routing failed; rebuilding with more space: "
-                            f"fill={next_options.target_fill:.3f}; "
-                            f"corridor={next_options.corridor_width:.2f}"
-                        ),
+                        detail=detail,
                     )
                 continue
 
@@ -315,9 +324,6 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                 ),
             )
 
-            # Zero relays is the theoretical minimum for the dominant objective. Later retries
-            # intentionally expand the placement basin, so do not spend extra synthesis work on
-            # secondary tie-breaking after reaching that minimum.
             if score[0] == 0:
                 break
 
@@ -325,8 +331,8 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
             assert last_routing_error is not None
             raise ValueError(
                 f"physical synthesis exhausted {attempts} deterministic placement attempt(s) "
-                "without finding a collision-free, reach-safe route that keeps reserved "
-                "corridors clear of relay entities"
+                "without finding a collision-free, reach-safe joint layout outside reserved "
+                "corridors"
             ) from last_routing_error
 
         positions = best_candidate.positions
