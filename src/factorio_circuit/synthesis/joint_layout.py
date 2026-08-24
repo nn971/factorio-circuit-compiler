@@ -161,9 +161,7 @@ def _seed_state(
         for group, endpoints in endpoints_by_group.items()
         if _terminal_reach_tree(endpoints, positions, safe_wire_span) is None
     ]
-    edge_total = sum(
-        max(0, len(endpoints_by_group[group]) - 1) for group in groups_needing_relays
-    )
+    edge_total = sum(max(0, len(endpoints_by_group[group]) - 1) for group in groups_needing_relays)
     edge_index = 0
 
     for group in sorted(groups_needing_relays):
@@ -201,14 +199,11 @@ def _seed_state(
         forbidden_areas=forbidden_areas,
     )
     disconnected = [
-        group
-        for group in endpoints_by_group
-        if _group_spanning_tree(state, group) is None
+        group for group in endpoints_by_group if _group_spanning_tree(state, group) is None
     ]
     if disconnected:
         raise ValueError(
-            "joint relay seed left physical net group(s) disconnected: "
-            f"{disconnected}"
+            f"joint relay seed left physical net group(s) disconnected: {disconnected}"
         )
     return state
 
@@ -289,9 +284,7 @@ def _joint_anneal(state: _JointState, options: PlacementOptions) -> None:
 
     relay_groups = set(state.relay_groups.values())
     active_entities = {
-        endpoint.entity
-        for group in relay_groups
-        for endpoint in state.endpoints_by_group[group]
+        endpoint.entity for group in relay_groups for endpoint in state.endpoints_by_group[group]
     }
     movable_entities = [
         entity_id
@@ -304,9 +297,7 @@ def _joint_anneal(state: _JointState, options: PlacementOptions) -> None:
         return
 
     iterations = (
-        min(10_000, 10 * len(movable_objects))
-        if options.iterations is None
-        else options.iterations
+        min(10_000, 10 * len(movable_objects)) if options.iterations is None else options.iterations
     )
     if iterations <= 0:
         return
@@ -412,9 +403,7 @@ def _matching_candidate_grid(
     output_ids = {port.marker_entity for port in circuit.outputs}
     io_ids = input_ids | output_ids
     body_ids = [
-        entity.id
-        for entity in circuit.entities
-        if not options.anchor_io or entity.id not in io_ids
+        entity.id for entity in circuit.entities if not options.anchor_io or entity.id not in io_ids
     ]
     entities = {entity.id: entity for entity in circuit.entities}
     tile_demand = sum(
