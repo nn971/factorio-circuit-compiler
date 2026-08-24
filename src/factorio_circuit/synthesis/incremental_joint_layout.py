@@ -8,8 +8,9 @@ nets.
 
 The bootstrap and every annealing move use the same discrete placement grid. Reserved corridors are
 therefore unavailable to implementation entities and relays alike. If the first common grid cannot
-host a feasible routed topology, bootstrap expands that common grid and reseeds all implementation
-entities; it does not reserve a relay-only region or require a separate relay dropout ratio.
+host a feasible routed topology, bootstrap expands that common grid while keeping the compact
+implementation seed fixed. This adds legal relay/workspace sites without simultaneously increasing
+the terminal distances that must be routed.
 
 Epoch boundaries simplify the already-feasible topology locally: useless relay leaves disappear and
 degree-two relays are bypassed whenever their neighbors are directly in reach. No routine annealing
@@ -540,10 +541,13 @@ def _simplify_feasible_topology(
             continue
         left_entity, left_connector = _remote_endpoint(first, relay_id)
         right_entity, right_connector = _remote_endpoint(second, relay_id)
-        if _distance(
-            state.object_position(left_entity),
-            state.object_position(right_entity),
-        ) > state.safe_span + _EPSILON:
+        if (
+            _distance(
+                state.object_position(left_entity),
+                state.object_position(right_entity),
+            )
+            > state.safe_span + _EPSILON
+        ):
             continue
 
         remove_wire(relay_edges[0])
@@ -565,9 +569,7 @@ def _simplify_feasible_topology(
 
     routing = wire_routing.RoutingPlan(
         relays=tuple(
-            relay
-            for relay in topology.routing.relays
-            if relay.entity_id in state.relay_positions
+            relay for relay in topology.routing.relays if relay.entity_id in state.relay_positions
         ),
         wires=tuple(wires[key] for key in sorted(wires, key=str)),
     )
@@ -647,14 +649,6 @@ def refine_incremental_joint_layout(
             if next_options.target_fill >= bootstrap_options.target_fill - _EPSILON:
                 break
             bootstrap_options = next_options
-            placement = base_placement.plan_physical_circuit(
-                circuit,
-                abstract_circuit,
-                net_groups,
-                safe_wire_span=safe_wire_span,
-                options=bootstrap_options,
-            )
-            bootstrap_positions = placement.positions
             continue
 
         state = candidate_state
