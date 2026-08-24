@@ -401,9 +401,7 @@ def _find_relay_chain(
 
     push(start, (0, 0.0))
     while queue:
-        _estimated_relays, _estimated_length, relay_cost, length, _x, _y, position = heappop(
-            queue
-        )
+        _estimated_relays, _estimated_length, relay_cost, length, _x, _y, position = heappop(queue)
         if costs.get(position, infinity) != (relay_cost, length):
             continue
         if position == goal:
