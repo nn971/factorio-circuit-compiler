@@ -7,10 +7,11 @@ proposal work scales with the moved objects' topology degree, not with the size 
 nets.
 
 The bootstrap and every annealing move use the same discrete placement grid. Reserved corridors are
-therefore unavailable to implementation entities and relays alike. If the first common grid cannot
-host a feasible routed topology, bootstrap expands that common grid while keeping the compact
-implementation seed fixed. This adds legal relay/workspace sites without simultaneously increasing
-the terminal distances that must be routed.
+therefore unavailable to implementation entities and relays alike. If the dense implementation seed
+cannot expose a reachable relay site near every terminal, bootstrap falls back to a deliberately
+porous implementation placement on that same grid: every other row and column cell is left open as
+routing workspace. This creates a connected local relay lattice before topology construction, after
+which annealing compacts the already-feasible joint state.
 
 Epoch boundaries simplify the already-feasible topology locally: useless relay leaves disappear and
 degree-two relays are bypassed whenever their neighbors are directly in reach. No routine annealing
@@ -265,7 +266,8 @@ def _construct_feasible_bootstrap(
                     "could not construct an initial reach-safe joint topology on the candidate "
                     f"grid: group={group}; edge={left}->{right}; source={source}; target={target}; "
                     f"free_sites={len(free_sites)}; source_free_neighbors={source_neighbors}; "
-                    f"target_free_neighbors={target_neighbors}; claimed_relays={len(state.relay_positions)}"
+                    f"target_free_neighbors={target_neighbors}; "
+                    f"claimed_relays={len(state.relay_positions)}"
                 )
             for position in chain:
                 relay_id = next_relay_id
@@ -620,6 +622,61 @@ def _expanded_bootstrap_grid(
     return expanded
 
 
+def _porous_bootstrap_positions(
+    circuit: PhysicalCircuit,
+    preferred_positions: dict[int, Position],
+    options: PlacementOptions,
+    grid: base_placement._GridGeometry,
+) -> dict[int, Position] | None:
+    """Place implementation entities on alternating cells, leaving connected relay lanes."""
+
+    entities = {entity.id: entity for entity in circuit.entities}
+    movable = set(exact._movable_entity_ids(circuit, options))
+    fixed = {entity_id: preferred_positions[entity_id] for entity_id in entities if entity_id not in movable}
+    occupancy = base_placement._DiscreteOccupancy(entities, fixed)
+
+    sparse_x = set(grid.x_positions[::2])
+    sparse_y = set(grid.y_positions[::2])
+    sparse_unit_x = {value for center in sparse_x for value in (center - 0.5, center + 0.5)}
+    wide_candidates = tuple(
+        position
+        for position in grid.slots
+        if position[0] in sparse_x and position[1] in sparse_y
+    )
+    unit_candidates = tuple(
+        position
+        for position in grid.unit_slots
+        if position[0] in sparse_unit_x and position[1] in sparse_y
+    )
+
+    result = dict(fixed)
+    order = sorted(
+        movable,
+        key=lambda entity_id: (
+            0 if not isinstance(entities[entity_id], ConstantCombinator) else 1,
+            entity_id,
+        ),
+    )
+    for entity_id in order:
+        entity = entities[entity_id]
+        candidates = unit_candidates if isinstance(entity, ConstantCombinator) else wide_candidates
+        preferred = preferred_positions[entity_id]
+        legal = (candidate for candidate in candidates if occupancy.is_clear(entity_id, candidate))
+        try:
+            position = min(
+                legal,
+                key=lambda item: (
+                    (item[0] - preferred[0]) ** 2 + (item[1] - preferred[1]) ** 2,
+                    item,
+                ),
+            )
+        except ValueError:
+            return None
+        result[entity_id] = position
+        occupancy.add(entity_id, position)
+    return result
+
+
 def refine_incremental_joint_layout(
     circuit: PhysicalCircuit,
     abstract_circuit: abstract.AbstractPhysicalCircuit,
@@ -638,38 +695,58 @@ def refine_incremental_joint_layout(
         net_colors,
     )
     bootstrap_options = replace(options, iterations=0, restarts=1)
-    bootstrap_positions = dict(positions)
+    preferred_positions = dict(positions)
+    grid = exact._matching_candidate_grid(circuit, preferred_positions, bootstrap_options)
     state: exact._JointState | None = None
     topology: _FeasibleTopology | None = None
-    grid = exact._matching_candidate_grid(circuit, bootstrap_positions, bootstrap_options)
     last_error: ValueError | None = None
 
-    for expansion in range(_BOOTSTRAP_EXPANSIONS + 1):
-        candidate_state = _new_joint_state(
-            circuit,
-            endpoints_by_group,
-            colors_by_group,
-            bootstrap_positions,
-            safe_wire_span=safe_wire_span,
-        )
-        try:
-            candidate_topology = _construct_feasible_bootstrap(candidate_state, grid)
-        except ValueError as exc:
-            last_error = exc
+    dense_state = _new_joint_state(
+        circuit,
+        endpoints_by_group,
+        colors_by_group,
+        preferred_positions,
+        safe_wire_span=safe_wire_span,
+    )
+    try:
+        topology = _construct_feasible_bootstrap(dense_state, grid)
+        state = dense_state
+    except ValueError as exc:
+        last_error = exc
+
+    if state is None:
+        for expansion in range(_BOOTSTRAP_EXPANSIONS + 1):
+            porous_positions = _porous_bootstrap_positions(
+                circuit,
+                preferred_positions,
+                bootstrap_options,
+                grid,
+            )
+            if porous_positions is not None:
+                candidate_state = _new_joint_state(
+                    circuit,
+                    endpoints_by_group,
+                    colors_by_group,
+                    porous_positions,
+                    safe_wire_span=safe_wire_span,
+                )
+                try:
+                    candidate_topology = _construct_feasible_bootstrap(candidate_state, grid)
+                except ValueError as exc:
+                    last_error = exc
+                else:
+                    state = candidate_state
+                    topology = candidate_topology
+                    break
             if expansion >= _BOOTSTRAP_EXPANSIONS:
                 break
             grid = _expanded_bootstrap_grid(circuit, grid, bootstrap_options)
-            continue
-
-        state = candidate_state
-        topology = candidate_topology
-        break
 
     if state is None or topology is None:
         detail = str(last_error) if last_error is not None else "unknown bootstrap failure"
         raise ValueError(
-            "could not construct a reach-safe joint bootstrap after expanding the common "
-            f"corridor-aware workspace: {detail}"
+            "could not construct a reach-safe joint bootstrap from either the dense or porous "
+            f"corridor-aware placement: {detail}"
         ) from last_error
 
     topology = _anneal_feasible(state, topology, options, grid)
