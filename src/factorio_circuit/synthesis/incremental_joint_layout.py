@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from heapq import heappop, heappush
 from math import exp, floor, hypot
 from random import Random
 
@@ -169,6 +170,70 @@ class _SpatialOccupancy:
         }
 
 
+def _prune_relays_to_terminal_paths(state: exact._JointState) -> None:
+    """Drop relays unused by deterministic minimum-relay root-to-terminal paths.
+
+    The historical exact pruning routine rebuilt a whole reach tree once for every candidate relay.
+    Here each physical net pays one O(k^2) reach-graph construction plus one Dijkstra search. The
+    union of the selected root-to-terminal paths is reach-connected by construction, so every relay
+    outside that union can be removed in one batch.
+    """
+
+    keep_relays: set[int] = set()
+    for group in sorted(state.endpoints_by_group):
+        vertices = state.group_vertices(group)
+        terminal_indexes = [index for index, vertex in enumerate(vertices) if vertex[0] == 0]
+        if len(terminal_indexes) <= 1:
+            continue
+
+        adjacency: list[list[tuple[int, float]]] = [[] for _ in vertices]
+        for left in range(len(vertices)):
+            left_position = state.vertex_position(vertices[left])
+            for right in range(left + 1, len(vertices)):
+                distance = _distance(left_position, state.vertex_position(vertices[right]))
+                if distance <= state.safe_span + _EPSILON:
+                    adjacency[left].append((right, distance))
+                    adjacency[right].append((left, distance))
+
+        root = terminal_indexes[0]
+        infinity = (10**18, float("inf"))
+        costs = [infinity for _ in vertices]
+        previous: list[int | None] = [None for _ in vertices]
+        costs[root] = (0, 0.0)
+        queue: list[tuple[int, float, tuple[int, int, int], int]] = []
+        heappush(queue, (0, 0.0, vertices[root], root))
+
+        while queue:
+            relay_cost, length, _vertex_key, index = heappop(queue)
+            if (relay_cost, length) != costs[index]:
+                continue
+            for neighbor, edge_length in adjacency[index]:
+                enters_relay = 1 if vertices[neighbor][0] == 1 else 0
+                candidate = (relay_cost + enters_relay, length + edge_length)
+                if candidate < costs[neighbor]:
+                    costs[neighbor] = candidate
+                    previous[neighbor] = index
+                    heappush(queue, (*candidate, vertices[neighbor], neighbor))
+
+        for terminal in terminal_indexes[1:]:
+            if costs[terminal] == infinity:
+                raise ValueError(f"physical net group {group} is outside conservative wire reach")
+            cursor = terminal
+            while cursor != root:
+                vertex = vertices[cursor]
+                if vertex[0] == 1:
+                    keep_relays.add(vertex[1])
+                parent = previous[cursor]
+                if parent is None:
+                    raise AssertionError("reachable terminal path has no predecessor")
+                cursor = parent
+
+    for relay_id in tuple(state.relay_positions):
+        if relay_id not in keep_relays:
+            del state.relay_positions[relay_id]
+            del state.relay_groups[relay_id]
+
+
 def refine_incremental_joint_layout(
     circuit: PhysicalCircuit,
     abstract_circuit: abstract.AbstractPhysicalCircuit,
@@ -183,8 +248,8 @@ def refine_incremental_joint_layout(
 
     Exact reach-safe topology is rebuilt only once per epoch. Within an epoch, connectivity is
     guaranteed by requiring every edge of the cached reach-safe tree to remain within wire reach.
-    Relay pruning is deliberately outside the epoch hot path: an exact relay-by-relay removability
-    check is much more expensive than rebuilding one tree and is paid only before and after annealing.
+    Relay pruning uses one terminal-connectivity graph search per net instead of rebuilding a whole
+    exact tree once per candidate relay.
     """
 
     endpoints_by_group, colors_by_group = exact._physical_groups(
@@ -203,9 +268,9 @@ def refine_incremental_joint_layout(
         forbidden_areas=reserved_areas,
     )
 
-    exact._prune_relays(state)
+    _prune_relays_to_terminal_paths(state)
     _anneal_incrementally(state, grid, options)
-    exact._prune_relays(state)
+    _prune_relays_to_terminal_paths(state)
 
     routing = exact._routing_plan(state)
     all_positions = dict(state.positions)
@@ -331,9 +396,12 @@ def _anneal_incrementally(
                 occupancy.add(other, current)
             topology.total_length += wire_delta
 
-        # One exact O(k^2) reach-safe rebuild refreshes the surrogate topology for the next epoch.
-        # Relay-by-relay exact pruning is intentionally not performed here.
+        # Accurate work belongs here, not in the proposal loop. One reach graph prunes unused
+        # relays, then one exact O(k^2) tree rebuild refreshes the local surrogate topology.
+        _prune_relays_to_terminal_paths(state)
         topology = _TopologyCache.build(state)
+        occupancy = _SpatialOccupancy.build(state)
+        movable_set = set(movable_entities) | set(state.relay_positions)
         score = _exact_score(state, topology, movable_set, center)
         if score < best_score:
             best_score = score
