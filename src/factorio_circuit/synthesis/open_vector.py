@@ -5,9 +5,10 @@ from dataclasses import dataclass, replace
 from math import hypot
 from typing import Any
 
-from factorio_circuit.blueprint.routing import route_wires, routed_positions
+from factorio_circuit.blueprint.routing import RoutingPlan, route_wires, routed_positions
 from factorio_circuit.ir import abstract_physical as abstract
 from factorio_circuit.ir.physical import (
+    ConstantCombinator,
     DeciderCombinator,
     PhysicalCircuit,
     SelectorCombinator,
@@ -24,6 +25,16 @@ from factorio_circuit.synthesis.placement_constraints import resolve_placement_c
 from factorio_circuit.synthesis.safe_crossbar import build_safe_crossbar_layout
 from factorio_circuit.synthesis.safe_folded_crossbar import build_safe_folded_crossbar_layout
 from factorio_circuit.synthesis.signal_coloring import allocate_abstract_signals_dsat
+
+LayoutScore = tuple[int, float, float, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _LayoutCandidate:
+    positions: dict[int, Position]
+    routing: RoutingPlan
+    score: LayoutScore
+    restart: int
 
 
 def _placement_attempt_count(options: PlacementOptions) -> int:
@@ -65,6 +76,49 @@ def _connections_need_relays(
         if hypot(left[0] - right[0], left[1] - right[1]) > safe_wire_span + 1e-9:
             return True
     return False
+
+
+def _layout_candidate_score(
+    circuit: PhysicalCircuit,
+    positions: dict[int, Position],
+    routing: RoutingPlan,
+    *,
+    restart: int,
+) -> LayoutScore:
+    """Rank legal layouts by relay count, occupied area, then total routed wire length.
+
+    Relay count is deliberately dominant because every layout-only constant combinator is a real
+    blueprint entity. The restart index is a final deterministic tie-break. Once a candidate has
+    zero relays, synthesis may stop: the primary objective has reached its absolute lower bound.
+    """
+
+    final_positions = routed_positions(circuit, positions, routing)
+    entities = {entity.id: entity for entity in circuit.entities}
+    relay_ids = {relay.entity_id for relay in routing.relays}
+
+    left = float("inf")
+    right = float("-inf")
+    top = float("inf")
+    bottom = float("-inf")
+    for entity_id, (x, y) in final_positions.items():
+        half_x = (
+            0.5
+            if entity_id in relay_ids or isinstance(entities[entity_id], ConstantCombinator)
+            else 1.0
+        )
+        left = min(left, x - half_x)
+        right = max(right, x + half_x)
+        top = min(top, y - 0.5)
+        bottom = max(bottom, y + 0.5)
+    area = 0.0 if not final_positions else (right - left) * (bottom - top)
+
+    wire_length = 0.0
+    for wire in routing.wires:
+        source = final_positions[wire.source_entity]
+        target = final_positions[wire.target_entity]
+        wire_length += hypot(source[0] - target[0], source[1] - target[1])
+
+    return (len(routing.relays), area, wire_length, restart)
 
 
 @dataclass(slots=True)
@@ -148,6 +202,7 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
         attempts = _placement_attempt_count(selected)
 
         last_routing_error: ValueError | None = None
+        best_candidate: _LayoutCandidate | None = None
         for restart in range(attempts):
             attempt_options = _placement_attempt_options(selected, restart)
             report_progress(
@@ -245,43 +300,68 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                     )
                 continue
 
-            final_positions = routed_positions(physical, positions, routing)
+            score = _layout_candidate_score(physical, positions, routing, restart=restart)
+            candidate = _LayoutCandidate(dict(positions), routing, score, restart)
+            if best_candidate is None or candidate.score < best_candidate.score:
+                best_candidate = candidate
             report_progress(
                 self.progress,
-                "synthesis",
+                "selection",
+                completed=restart + 1,
+                total=attempts,
                 detail=(
-                    f"physical layout complete; combinators={physical.combinator_count}; "
-                    f"relays={len(routing.relays)}"
+                    f"candidate={restart + 1}; relays={score[0]}; "
+                    f"area={score[1]:.1f}; wire={score[2]:.1f}"
                 ),
-            )
-            return Layout(
-                circuit=physical,
-                positions=final_positions,
-                relays=tuple(
-                    LayoutRelay(relay.entity_id, relay.position, relay.description)
-                    for relay in routing.relays
-                ),
-                wires=tuple(
-                    LayoutWire(
-                        wire.source_entity,
-                        wire.source_connector_id,
-                        wire.target_entity,
-                        wire.target_connector_id,
-                        wire.color,
-                    )
-                    for wire in routing.wires
-                ),
-                signal_allocation=tuple(sorted(signal_allocation.items())),
-                net_colors=tuple(sorted(net_colors.items())),
-                net_groups=tuple(sorted(net_groups.items())),
             )
 
-        assert last_routing_error is not None
-        raise ValueError(
-            f"physical synthesis exhausted {attempts} deterministic placement attempt(s) "
-            "without finding a collision-free, reach-safe route that keeps reserved "
-            "corridors clear of relay entities"
-        ) from last_routing_error
+            # Zero relays is the theoretical minimum for the dominant objective. Later retries
+            # intentionally expand the placement basin, so do not spend extra synthesis work on
+            # secondary tie-breaking after reaching that minimum.
+            if score[0] == 0:
+                break
+
+        if best_candidate is None:
+            assert last_routing_error is not None
+            raise ValueError(
+                f"physical synthesis exhausted {attempts} deterministic placement attempt(s) "
+                "without finding a collision-free, reach-safe route that keeps reserved "
+                "corridors clear of relay entities"
+            ) from last_routing_error
+
+        positions = best_candidate.positions
+        routing = best_candidate.routing
+        self._materialize_connections(physical, net_colors, net_groups, positions)
+        final_positions = routed_positions(physical, positions, routing)
+        report_progress(
+            self.progress,
+            "synthesis",
+            detail=(
+                f"physical layout complete; combinators={physical.combinator_count}; "
+                f"relays={len(routing.relays)}; selected_attempt={best_candidate.restart + 1}"
+            ),
+        )
+        return Layout(
+            circuit=physical,
+            positions=final_positions,
+            relays=tuple(
+                LayoutRelay(relay.entity_id, relay.position, relay.description)
+                for relay in routing.relays
+            ),
+            wires=tuple(
+                LayoutWire(
+                    wire.source_entity,
+                    wire.source_connector_id,
+                    wire.target_entity,
+                    wire.target_connector_id,
+                    wire.color,
+                )
+                for wire in routing.wires
+            ),
+            signal_allocation=tuple(sorted(signal_allocation.items())),
+            net_colors=tuple(sorted(net_colors.items())),
+            net_groups=tuple(sorted(net_groups.items())),
+        )
 
     def _materialize_entity(
         self,
