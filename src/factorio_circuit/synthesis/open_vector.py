@@ -79,6 +79,7 @@ def _retryable_layout_error(error: ValueError) -> bool:
             "joint relay seed left physical net group",
             "outside conservative wire reach",
             "could not recover annealed candidate grid",
+            "joint annealing could not repair the final placement",
         )
     )
 
