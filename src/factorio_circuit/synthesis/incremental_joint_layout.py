@@ -6,9 +6,10 @@ would make any cached incident wire exceed the configured safe span. This keeps 
 proposal work scales with the moved objects' topology degree, not with the size of their physical
 nets.
 
-At epoch boundaries the implementation may spend O(k^2) work on a physical net: optional relays are
-pruned and a fresh exact reach-safe spanning tree is built. The optimizer therefore compacts a
-feasible layout instead of hoping an infeasible Euclidean surrogate can later be repaired.
+Epoch boundaries simplify that already-feasible topology locally: useless relay leaves disappear and
+degree-two relays are bypassed whenever their neighbors are directly in reach. No routine annealing
+step reconstructs an all-pairs reach graph merely to rediscover feasibility that the cached routing
+already guarantees.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ _RELAY_HALF_EXTENT = (0.5, 0.5)
 _SLACK_START = 0.85
 Bucket = tuple[int, int]
 Node = tuple[int, int]
+WireKey = tuple[int, int, int, int, WireColor]
 
 
 @dataclass(slots=True)
@@ -360,7 +362,7 @@ def _state_from_bootstrap_layout(
     )
     routing = _routing_from_layout(layout)
     _infer_relay_groups(state, routing)
-    _validate_joint_clearance(circuit, state.positions, routing)
+    _validate_joint_clearance(state, routing)
     return state, _FeasibleTopology.build(state, routing)
 
 
@@ -379,18 +381,11 @@ def _construct_feasible_bootstrap(
         routing = exact._routing_plan(state)
         return _FeasibleTopology.build(state, routing)
 
+    occupancy = _SpatialOccupancy.build(state)
     free_sites = {
         site
         for site in grid.unit_slots
-        if not any(
-            base_placement._boxes_overlap(
-                site,
-                _RELAY_HALF_EXTENT,
-                state.object_position(object_id),
-                state.object_half_extent(object_id),
-            )
-            for object_id in [*state.positions, *state.relay_positions]
-        )
+        if not _box_overlaps_occupancy(occupancy, site, _RELAY_HALF_EXTENT, ignored=set())
     }
     next_relay_id = max((entity.id for entity in state.circuit.entities), default=0) + 1
 
@@ -427,6 +422,7 @@ def _construct_feasible_bootstrap(
                 next_relay_id += 1
                 state.relay_positions[relay_id] = position
                 state.relay_groups[relay_id] = group
+                occupancy.add(relay_id, position)
                 free_sites.discard(position)
 
         if exact._group_spanning_tree(state, group) is None:
@@ -437,6 +433,29 @@ def _construct_feasible_bootstrap(
     _prune_relays_to_terminal_paths(state)
     routing = exact._routing_plan(state)
     return _FeasibleTopology.build(state, routing)
+
+
+def _box_overlaps_occupancy(
+    occupancy: _SpatialOccupancy,
+    position: Position,
+    half: tuple[float, float],
+    *,
+    ignored: set[int],
+) -> set[int]:
+    candidates: set[int] = set()
+    for key in occupancy._box_keys(position, half):
+        candidates.update(occupancy.buckets.get(key, ()))
+    candidates.difference_update(ignored)
+    return {
+        other_id
+        for other_id in candidates
+        if base_placement._boxes_overlap(
+            position,
+            half,
+            occupancy.state.object_position(other_id),
+            occupancy.state.object_half_extent(other_id),
+        )
+    }
 
 
 def _find_relay_chain(
@@ -597,35 +616,140 @@ def _prune_relays_to_terminal_paths(state: exact._JointState) -> None:
             del state.relay_groups[relay_id]
 
 
-def _refresh_feasible_topology(state: exact._JointState) -> _FeasibleTopology:
-    """Prune optional relays and rebuild an exact reach-safe tree for every net."""
+def _wire_key(wire: wire_routing.RoutedWire) -> WireKey:
+    left = (wire.source_entity, wire.source_connector_id)
+    right = (wire.target_entity, wire.target_connector_id)
+    if right < left:
+        left, right = right, left
+    return (left[0], left[1], right[0], right[1], wire.color)
 
-    _prune_relays_to_terminal_paths(state)
-    routing = exact._routing_plan(state)
+
+def _remote_endpoint(
+    wire: wire_routing.RoutedWire,
+    relay_id: int,
+) -> tuple[int, int]:
+    if wire.source_entity == relay_id:
+        return (wire.target_entity, wire.target_connector_id)
+    if wire.target_entity == relay_id:
+        return (wire.source_entity, wire.source_connector_id)
+    raise AssertionError(f"wire is not incident to relay {relay_id}")
+
+
+def _simplify_feasible_topology(
+    state: exact._JointState,
+    topology: _FeasibleTopology,
+) -> _FeasibleTopology:
+    """Remove locally redundant relays without ever leaving the feasible region."""
+
+    wires: dict[WireKey, wire_routing.RoutedWire] = {
+        _wire_key(wire): wire for wire in topology.routing.wires
+    }
+    incident: dict[int, set[WireKey]] = defaultdict(set)
+    for key, wire in wires.items():
+        incident[wire.source_entity].add(key)
+        incident[wire.target_entity].add(key)
+
+    queue = sorted(state.relay_positions, reverse=True)
+    queued = set(queue)
+
+    def enqueue(object_id: int) -> None:
+        if object_id in state.relay_positions and object_id not in queued:
+            queue.append(object_id)
+            queued.add(object_id)
+
+    def remove_wire(key: WireKey) -> wire_routing.RoutedWire:
+        wire = wires.pop(key)
+        incident[wire.source_entity].discard(key)
+        incident[wire.target_entity].discard(key)
+        return wire
+
+    def add_wire(wire: wire_routing.RoutedWire) -> None:
+        key = _wire_key(wire)
+        if key in wires:
+            return
+        wires[key] = wire
+        incident[wire.source_entity].add(key)
+        incident[wire.target_entity].add(key)
+
+    while queue:
+        relay_id = queue.pop()
+        queued.discard(relay_id)
+        if relay_id not in state.relay_positions:
+            continue
+        relay_edges = tuple(incident.get(relay_id, ()))
+        if len(relay_edges) > 2:
+            continue
+
+        if len(relay_edges) == 0:
+            del state.relay_positions[relay_id]
+            del state.relay_groups[relay_id]
+            continue
+
+        if len(relay_edges) == 1:
+            wire = remove_wire(relay_edges[0])
+            remote, _connector = _remote_endpoint(wire, relay_id)
+            del state.relay_positions[relay_id]
+            del state.relay_groups[relay_id]
+            enqueue(remote)
+            continue
+
+        first = wires[relay_edges[0]]
+        second = wires[relay_edges[1]]
+        if first.color is not second.color:
+            continue
+        left_entity, left_connector = _remote_endpoint(first, relay_id)
+        right_entity, right_connector = _remote_endpoint(second, relay_id)
+        if _distance(
+            state.object_position(left_entity),
+            state.object_position(right_entity),
+        ) > state.safe_span + _EPSILON:
+            continue
+
+        remove_wire(relay_edges[0])
+        remove_wire(relay_edges[1])
+        if (left_entity, left_connector) != (right_entity, right_connector):
+            add_wire(
+                wire_routing.RoutedWire(
+                    left_entity,
+                    left_connector,
+                    right_entity,
+                    right_connector,
+                    first.color,
+                )
+            )
+        del state.relay_positions[relay_id]
+        del state.relay_groups[relay_id]
+        enqueue(left_entity)
+        enqueue(right_entity)
+
+    routing = wire_routing.RoutingPlan(
+        relays=tuple(
+            relay
+            for relay in topology.routing.relays
+            if relay.entity_id in state.relay_positions
+        ),
+        wires=tuple(wires[key] for key in sorted(wires, key=str)),
+    )
     return _FeasibleTopology.build(state, routing)
 
 
 def _validate_joint_clearance(
-    circuit: PhysicalCircuit,
-    positions: dict[int, Position],
+    state: exact._JointState,
     routing: wire_routing.RoutingPlan,
 ) -> None:
-    """Validate joint relays with the same nominal tile boxes used by placement."""
+    """Validate relay clearance with the same spatial hash used by annealing."""
 
-    originals = [
-        (positions[entity.id], base_placement._entity_half_extent(entity), entity.id)
-        for entity in circuit.entities
-    ]
-    relays = [(relay.position, _RELAY_HALF_EXTENT, relay.entity_id) for relay in routing.relays]
-    for relay_pos, relay_half, relay_id in relays:
-        for position, half, entity_id in originals:
-            if base_placement._boxes_overlap(relay_pos, relay_half, position, half):
-                raise ValueError(f"joint wire relay {relay_id} overlaps entity {entity_id}")
-        for other_pos, other_half, other_id in relays:
-            if other_id <= relay_id:
-                continue
-            if base_placement._boxes_overlap(relay_pos, relay_half, other_pos, other_half):
+    routed_relays = {relay.entity_id for relay in routing.relays}
+    if routed_relays != set(state.relay_positions):
+        raise ValueError("reach-safe routing relay set disagrees with joint placement state")
+    occupancy = _SpatialOccupancy.build(state)
+    for relay_id, position in state.relay_positions.items():
+        overlaps = occupancy.overlaps(relay_id, position, ignored={relay_id})
+        if overlaps:
+            other_id = min(overlaps)
+            if other_id in state.relay_positions:
                 raise ValueError(f"joint wire relay {relay_id} overlaps relay {other_id}")
+            raise ValueError(f"joint wire relay {relay_id} overlaps entity {other_id}")
 
 
 def refine_incremental_joint_layout(
@@ -698,7 +822,7 @@ def refine_incremental_joint_layout(
         all_positions,
         maximum_span=safe_wire_span,
     )
-    _validate_joint_clearance(circuit, state.positions, routing)
+    _validate_joint_clearance(state, routing)
     return exact.JointLayoutResult(dict(state.positions), routing)
 
 
@@ -724,6 +848,7 @@ def _anneal_feasible(
     best_positions = dict(state.positions)
     best_relays = dict(state.relay_positions)
     best_relay_groups = dict(state.relay_groups)
+    best_routing = topology.routing
 
     for epoch_start in range(0, iterations, _EPOCH_PROPOSALS):
         epoch_end = min(iterations, epoch_start + _EPOCH_PROPOSALS)
@@ -800,7 +925,7 @@ def _anneal_feasible(
                 occupancy.add(other, current)
             topology.total_energy += wire_delta
 
-        topology = _refresh_feasible_topology(state)
+        topology = _simplify_feasible_topology(state, topology)
         occupancy = _SpatialOccupancy.build(state)
         score = _exact_score(state, topology, center)
         if score < best_score:
@@ -808,6 +933,7 @@ def _anneal_feasible(
             best_positions = dict(state.positions)
             best_relays = dict(state.relay_positions)
             best_relay_groups = dict(state.relay_groups)
+            best_routing = topology.routing
 
     state.positions.clear()
     state.positions.update(best_positions)
@@ -815,7 +941,7 @@ def _anneal_feasible(
     state.relay_positions.update(best_relays)
     state.relay_groups.clear()
     state.relay_groups.update(best_relay_groups)
-    return _refresh_feasible_topology(state)
+    return _FeasibleTopology.build(state, best_routing)
 
 
 def _exact_score(
