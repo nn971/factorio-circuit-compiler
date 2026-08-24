@@ -3,7 +3,12 @@ from math import sqrt
 import pytest
 
 from factorio_circuit.blueprint import routing as wire_routing
-from factorio_circuit.blueprint.routing import RoutedWire, RoutingPlan, validate_wire_spans
+from factorio_circuit.blueprint.routing import (
+    BlueprintRelay,
+    RoutedWire,
+    RoutingPlan,
+    validate_wire_spans,
+)
 from factorio_circuit.ir import abstract_physical as abstract
 from factorio_circuit.ir.physical import ConstantCombinator, PhysicalCircuit, WireColor
 from factorio_circuit.synthesis import incremental_joint_layout as incremental
@@ -168,6 +173,42 @@ def test_feasible_topology_rejects_move_that_breaks_reach() -> None:
 
     assert topology.proposal_delta(state, {1: (-2.0, 0.0)}) is None
     assert topology.proposal_delta(state, {1: (0.5, 0.0)}) is not None
+
+
+def test_local_feasible_simplifier_bypasses_redundant_degree_two_relay() -> None:
+    abstract_circuit, physical = _two_terminal_circuit("local_simplify")
+    endpoints_by_group, colors_by_group = incremental.exact._physical_groups(
+        abstract_circuit,
+        {1: 1},
+        {1: WireColor.RED},
+    )
+    state = incremental.exact._JointState(
+        circuit=physical,
+        endpoints_by_group=endpoints_by_group,
+        colors_by_group=colors_by_group,
+        positions={1: (0.0, 0.0), 2: (4.0, 0.0)},
+        relay_positions={3: (2.0, 0.0)},
+        relay_groups={3: 1},
+        safe_span=5.0,
+        forbidden_areas=(),
+    )
+    topology = incremental._FeasibleTopology.build(
+        state,
+        RoutingPlan(
+            relays=(BlueprintRelay(3, (2.0, 0.0), "relay"),),
+            wires=(
+                RoutedWire(1, 1, 3, 1, WireColor.RED),
+                RoutedWire(3, 1, 2, 1, WireColor.RED),
+            ),
+        ),
+    )
+
+    simplified = incremental._simplify_feasible_topology(state, topology)
+
+    assert state.relay_positions == {}
+    assert simplified.routing.relays == ()
+    assert len(simplified.routing.wires) == 1
+    validate_wire_spans(simplified.routing.wires, state.positions, maximum_span=5.0)
 
 
 def test_incremental_bootstrap_does_not_require_legacy_point_to_point_router(
