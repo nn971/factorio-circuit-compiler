@@ -252,6 +252,13 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                 if annealed:
                     report_progress(
                         self.progress,
+                        "routing",
+                        completed=0,
+                        total=max(1, len(set(net_groups.values()))),
+                        detail="planning shared-net routing",
+                    )
+                    report_progress(
+                        self.progress,
                         "joint-layout",
                         detail=(
                             "incrementally annealing implementation entities and relays; "
