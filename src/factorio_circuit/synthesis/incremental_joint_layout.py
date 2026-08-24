@@ -255,8 +255,17 @@ def _construct_feasible_bootstrap(
                 continue
             chain = _find_relay_chain(state, group, left[1], right[1], free_sites)
             if chain is None:
+                source_neighbors = sum(
+                    _distance(source, site) <= state.safe_span + _EPSILON for site in free_sites
+                )
+                target_neighbors = sum(
+                    _distance(target, site) <= state.safe_span + _EPSILON for site in free_sites
+                )
                 raise ValueError(
-                    "could not construct an initial reach-safe joint topology on the candidate grid"
+                    "could not construct an initial reach-safe joint topology on the candidate "
+                    f"grid: group={group}; edge={left}->{right}; source={source}; target={target}; "
+                    f"free_sites={len(free_sites)}; source_free_neighbors={source_neighbors}; "
+                    f"target_free_neighbors={target_neighbors}; claimed_relays={len(state.relay_positions)}"
                 )
             for position in chain:
                 relay_id = next_relay_id
