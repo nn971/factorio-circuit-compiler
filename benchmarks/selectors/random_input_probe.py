@@ -30,7 +30,8 @@ def _marker_wire_color(result: CompilationResult, marker_entity: int) -> WireCol
     if len(colors) != 1:
         rendered = ", ".join(sorted(color.value for color in colors)) or "none"
         raise ValueError(
-            f"expected exactly one synthesized wire color at marker {marker_entity}; found {rendered}"
+            "expected exactly one synthesized wire color at marker "
+            f"{marker_entity}; found {rendered}"
         )
     return next(iter(colors))
 
@@ -91,12 +92,14 @@ def main() -> None:
     args.output.write_text(result.blueprint_string + "\n", encoding="utf-8")
     print(
         "random selector probe: "
-        f"update_interval={args.update_interval}, combinators={result.physical_circuit.combinator_count}",
+        f"update_interval={args.update_interval}, "
+        f"combinators={result.physical_circuit.combinator_count}",
         file=sys.stderr,
     )
     print(
         "wire a constant-combinator candidate vector -> INPUT candidates with "
-        f"{candidates_color.value.upper()}; observe OUTPUT choice with {choice_color.value.upper()}",
+        f"{candidates_color.value.upper()}; observe OUTPUT choice with "
+        f"{choice_color.value.upper()}",
         file=sys.stderr,
     )
     print(f"wrote Random Input probe blueprint to {args.output}", file=sys.stderr)
