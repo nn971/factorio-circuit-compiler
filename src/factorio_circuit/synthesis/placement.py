@@ -1,9 +1,9 @@
 """Discrete annealed placement policies for physical synthesis.
 
-Placement is deliberately expressed on Factorio-compatible grid slots instead of continuous
-coordinates. The annealed optimizer treats synthesized electrical networks as hyperedges and
-rewards layouts in which every physical net can already be connected through short hops between
-real entities. Long-hop relay count and total spanning-tree length are secondary costs.
+Placement is expressed on Factorio-compatible grid slots instead of continuous coordinates. The
+annealed optimizer treats synthesized electrical networks as hyperedges and rewards layouts in
+which every physical net can already be connected through short hops between real entities.
+Long-hop relay count and total spanning-tree length are secondary costs.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from factorio_circuit.ir.physical import (
     ConstantCombinator,
     DeciderCombinator,
     PhysicalCircuit,
+    PhysicalEntity,
 )
 
 Position = tuple[float, float]
@@ -32,22 +33,18 @@ _SUBSTATION_FOOTPRINT = 2.0
 class PlacementOptions:
     """Configuration for physical placement.
 
-    ``anchors`` fixes concrete entity ids at exact positions. By default the placer also
-    anchors public input/output marker entities in ordered columns on the left/right perimeter;
-    an explicit entity anchor overrides the corresponding automatic I/O position.
+    ``anchors`` fixes concrete entity ids at exact positions. By default the placer also anchors
+    public input/output marker entities in ordered columns on the left/right perimeter; an explicit
+    entity anchor overrides the corresponding automatic I/O position.
 
-    Reserved corridors are empty of ordinary implementation combinators. They preserve regular
-    walking/power-access gaps between dense computation blocks. Layout-only wire relays may use
-    those corridors except for local 2x2 footprints reserved at corridor intersections for
-    substations. ``block_width_tiles`` and ``block_height_tiles`` describe the dense computation
-    block in Factorio tiles. Horizontal arithmetic/decider combinators occupy two tiles, while
-    constant combinators occupy one tile and may share the two one-tile subslots of a 2x1 cell.
-    ``corridor_width`` is inserted between adjacent blocks. Routing retries use deterministic
-    placement basins; later retries also reduce ``target_fill`` by ``retry_fill_scale`` so a
-    circuit can trade compactness for legal relay space.
+    Reserved corridors preserve regular walking/power-access gaps between dense computation
+    blocks. Layout-only wire relays may use those corridors except for local 2x2 footprints
+    reserved at corridor intersections for substations. Horizontal arithmetic/decider combinators
+    occupy two tiles, while constant combinators occupy one tile and may share the two one-tile
+    subslots of a 2x1 cell.
 
-    ``net-aware`` is retained as a compatibility spelling for the previous public strategy name.
-    New callers should use ``annealed``.
+    ``net-aware`` remains as a compatibility spelling for the previous public strategy name. New
+    callers should use ``annealed``.
     """
 
     strategy: PlacementStrategy = "annealed"
@@ -109,10 +106,73 @@ class PlacementPlan:
 class _GridGeometry:
     # 2x1 cell centres used by arithmetic/decider combinators.
     slots: tuple[Position, ...]
-    # Two 1x1 subslots inside each 2x1 cell, used by constant combinators and later relay nodes.
+    # Two 1x1 subslots inside each 2x1 cell, used by constant combinators and relay nodes.
     unit_slots: tuple[Position, ...]
     bounds: RelayForbiddenArea
     relay_forbidden_areas: tuple[RelayForbiddenArea, ...]
+    x_positions: tuple[float, ...]
+    unit_x_positions: tuple[float, ...]
+    y_positions: tuple[float, ...]
+
+
+@dataclass(slots=True)
+class _DiscreteOccupancy:
+    """Constant-time occupancy for entities constrained to the annealed grid.
+
+    Movable entities are represented by the one-tile subslots they cover. Fixed anchors can be at
+    arbitrary coordinates, so they remain a usually-small geometric blocker set.
+    """
+
+    entities: dict[int, PhysicalEntity]
+    anchors: dict[int, Position]
+    units: dict[Position, int] = field(default_factory=dict)
+
+    def add(self, entity_id: int, position: Position) -> None:
+        for key in _unit_keys(self.entities[entity_id], position):
+            self.units[key] = entity_id
+
+    def remove(self, entity_id: int, position: Position) -> None:
+        for key in _unit_keys(self.entities[entity_id], position):
+            if self.units.get(key) == entity_id:
+                del self.units[key]
+
+    def owners(
+        self,
+        entity_id: int,
+        position: Position,
+        *,
+        ignore_ids: set[int] | None = None,
+    ) -> set[int]:
+        ignored = ignore_ids or set()
+        return {
+            owner
+            for key in _unit_keys(self.entities[entity_id], position)
+            if (owner := self.units.get(key)) is not None and owner not in ignored
+        }
+
+    def clear_of_anchors(
+        self,
+        entity_id: int,
+        position: Position,
+        *,
+        ignore_ids: set[int] | None = None,
+    ) -> bool:
+        ignored = ignore_ids or set()
+        entity_half = _entity_half_extent(self.entities[entity_id])
+        for anchor_id, anchor_position in self.anchors.items():
+            if anchor_id in ignored:
+                continue
+            if _boxes_overlap(
+                position,
+                entity_half,
+                anchor_position,
+                _entity_half_extent(self.entities[anchor_id]),
+            ):
+                return False
+        return True
+
+    def is_clear(self, entity_id: int, position: Position) -> bool:
+        return not self.owners(entity_id, position) and self.clear_of_anchors(entity_id, position)
 
 
 def row_positions(circuit: PhysicalCircuit) -> dict[int, Position]:
@@ -223,7 +283,8 @@ def _annealed_plan(
     safe_wire_span: float,
     options: PlacementOptions,
 ) -> PlacementPlan:
-    entity_ids = [entity.id for entity in circuit.entities]
+    entities = {entity.id: entity for entity in circuit.entities}
+    entity_ids = list(entities)
     input_ids = {port.marker_entity for port in circuit.inputs}
     output_ids = {port.marker_entity for port in circuit.outputs}
     io_ids = input_ids | output_ids
@@ -234,17 +295,12 @@ def _annealed_plan(
 
     groups = _physical_net_entities(abstract_circuit, net_groups)
     incident = _incident_groups(entity_ids, groups)
-
-    # Size the computation rectangle by tile demand rather than entity count. A 2x1
-    # arithmetic/decider consumes one whole cell, while two 1x1 constants can share a cell.
     body_tile_demand = sum(
-        1 if isinstance(circuit.entity_by_id(entity_id), ConstantCombinator) else 2
-        for entity_id in body_ids
+        1 if isinstance(entities[entity_id], ConstantCombinator) else 2 for entity_id in body_ids
     )
     requested_body_count = max(1, ceil(body_tile_demand / 2))
+    initial_body_count = requested_body_count
 
-    # Keep the computation rectangle stable when explicit anchors are added. Grow only when the
-    # anchor geometry or heterogeneous footprints leave too few legal positions for the greedy seed.
     while True:
         grid = _candidate_grid(requested_body_count, minimum_io_rows, options)
         auto_io = _automatic_io_anchors(circuit, grid.bounds) if options.anchor_io else {}
@@ -253,11 +309,12 @@ def _annealed_plan(
 
         movable = [entity_id for entity_id in entity_ids if entity_id not in effective_anchors]
         positions: dict[int, Position] = dict(effective_anchors)
+        occupancy = _DiscreteOccupancy(entities, effective_anchors)
         center = _centroid(grid.slots)
         order = sorted(
             movable,
             key=lambda entity_id: (
-                0 if not isinstance(circuit.entity_by_id(entity_id), ConstantCombinator) else 1,
+                0 if not isinstance(entities[entity_id], ConstantCombinator) else 1,
                 -sum(max(1, len(groups[group]) - 1) for group in incident[entity_id]),
                 entity_id,
             ),
@@ -266,24 +323,23 @@ def _annealed_plan(
         seeded = True
         for entity_id in order:
             preferred = _preferred_position(entity_id, positions, groups, incident, center)
-            candidates = _candidate_positions(circuit.entity_by_id(entity_id), grid)
-            legal = [
-                candidate
-                for candidate in candidates
-                if _position_is_clear(circuit, entity_id, candidate, positions)
-            ]
-            if not legal:
+            candidates = _candidate_positions(entities[entity_id], grid)
+            legal = (
+                candidate for candidate in candidates if occupancy.is_clear(entity_id, candidate)
+            )
+            try:
+                position = min(legal, key=lambda item: (_distance_sq(item, preferred), item))
+            except ValueError:
                 seeded = False
                 break
-            positions[entity_id] = min(
-                legal,
-                key=lambda item: (_distance_sq(item, preferred), item),
-            )
+            positions[entity_id] = position
+            occupancy.add(entity_id, position)
 
         if seeded:
             break
         requested_body_count += max(4, ceil(max(1, len(movable)) / 8))
-        if requested_body_count > max(1, ceil(body_tile_demand / 2)) + len(effective_anchors) * 16 + 1024:
+        maximum_body_count = initial_body_count + len(effective_anchors) * 16 + 1024
+        if requested_body_count > maximum_body_count:
             raise ValueError("placement anchors leave too few legal grid slots")
 
     if movable:
@@ -292,7 +348,7 @@ def _annealed_plan(
             iterations = 0 if len(movable) < 6 else min(20_000, 30 * len(movable))
         if iterations:
             _anneal(
-                circuit,
+                entities,
                 movable,
                 positions,
                 grid,
@@ -304,7 +360,7 @@ def _annealed_plan(
                 seed=options.random_seed,
             )
             _relax(
-                circuit,
+                entities,
                 movable,
                 positions,
                 grid,
@@ -320,7 +376,7 @@ def _annealed_plan(
 
 
 def _anneal(
-    circuit: PhysicalCircuit,
+    entities: dict[int, PhysicalEntity],
     movable: list[int],
     positions: dict[int, Position],
     grid: _GridGeometry,
@@ -333,10 +389,22 @@ def _anneal(
     seed: int,
 ) -> None:
     rng = Random(seed)
-    occupancy = {positions[entity_id]: entity_id for entity_id in movable}
-    all_slots = (*grid.slots, *grid.unit_slots)
-    span_x = max(x for x, _ in all_slots) - min(x for x, _ in all_slots) if len(all_slots) > 1 else 1.0
-    span_y = max(y for _, y in all_slots) - min(y for _, y in all_slots) if len(all_slots) > 1 else 1.0
+    movable_set = set(movable)
+    anchors = {
+        entity_id: position
+        for entity_id, position in positions.items()
+        if entity_id not in movable_set
+    }
+    occupancy = _DiscreteOccupancy(entities, anchors)
+    for entity_id in movable:
+        occupancy.add(entity_id, positions[entity_id])
+
+    if len(grid.unit_slots) > 1:
+        span_x = max(grid.unit_x_positions) - min(grid.unit_x_positions)
+        span_y = max(grid.y_positions) - min(grid.y_positions)
+    else:
+        span_x = 1.0
+        span_y = 1.0
     spatial_scale = max(1.0, span_x, span_y)
 
     current_energy = sum(
@@ -350,8 +418,9 @@ def _anneal(
         normalized_temperature = 0.03**progress
         energy_temperature = 35.0 * normalized_temperature + 0.05
         entity_id = movable[rng.randrange(len(movable))]
+        entity = entities[entity_id]
         current = positions[entity_id]
-        candidates = _candidate_positions(circuit.entity_by_id(entity_id), grid)
+        candidates = _candidate_positions(entity, grid)
 
         if rng.random() < 0.12:
             target = candidates[rng.randrange(len(candidates))]
@@ -362,43 +431,42 @@ def _anneal(
                 preferred[0] + rng.uniform(-noise, noise),
                 preferred[1] + rng.uniform(-noise, noise),
             )
-            target = min(candidates, key=lambda item: _distance_sq(item, target_point))
+            target = _nearest_candidate(entity, target_point, grid)
 
         if target == current:
             continue
-        other = occupancy.get(target)
-        if other is not None and not _same_footprint(circuit, entity_id, other):
-            continue
-        if other is None:
-            if not _position_is_clear(
-                circuit,
-                entity_id,
-                target,
-                positions,
-                ignore_ids={entity_id},
-            ):
+        owners = occupancy.owners(entity_id, target, ignore_ids={entity_id})
+        other: int | None = None
+        if owners:
+            if len(owners) != 1:
                 continue
-        elif not _swap_is_clear(circuit, entity_id, other, positions):
+            candidate_other = next(iter(owners))
+            if positions[candidate_other] != target:
+                continue
+            if _entity_half_extent(entities[candidate_other]) != _entity_half_extent(entity):
+                continue
+            other = candidate_other
+        if not occupancy.clear_of_anchors(entity_id, target):
             continue
 
         affected = set(incident[entity_id])
         if other is not None:
             affected.update(incident[other])
-
         before = sum(_group_energy(groups[group], positions, safe_wire_span) for group in affected)
         before += _compactness_energy(entity_id, positions, center)
         if other is not None:
             before += _compactness_energy(other, positions, center)
 
+        occupancy.remove(entity_id, current)
         if other is None:
             positions[entity_id] = target
-            del occupancy[current]
-            occupancy[target] = entity_id
+            occupancy.add(entity_id, target)
         else:
+            occupancy.remove(other, target)
             positions[entity_id] = target
             positions[other] = current
-            occupancy[target] = entity_id
-            occupancy[current] = other
+            occupancy.add(entity_id, target)
+            occupancy.add(other, current)
 
         after = sum(_group_energy(groups[group], positions, safe_wire_span) for group in affected)
         after += _compactness_energy(entity_id, positions, center)
@@ -406,31 +474,26 @@ def _anneal(
             after += _compactness_energy(other, positions, center)
 
         delta = after - before
-        accepted = delta <= 0 or rng.random() < exp(-delta / energy_temperature)
-        if accepted:
+        if delta <= 0 or rng.random() < exp(-delta / energy_temperature):
             current_energy += delta
             if current_energy + 1e-12 < best_energy:
                 best_energy = current_energy
                 best_positions = {item: positions[item] for item in movable}
             continue
 
-        if other is None:
-            del occupancy[target]
-            occupancy[current] = entity_id
-            positions[entity_id] = current
-        else:
-            occupancy[target] = other
-            occupancy[current] = entity_id
-            positions[entity_id] = current
+        occupancy.remove(entity_id, target)
+        positions[entity_id] = current
+        occupancy.add(entity_id, current)
+        if other is not None:
+            occupancy.remove(other, current)
             positions[other] = target
+            occupancy.add(other, target)
 
-    # Annealing deliberately accepts uphill moves, but synthesis should never return a later
-    # degraded state merely because the temperature had not quite reached zero.
     positions.update(best_positions)
 
 
 def _relax(
-    circuit: PhysicalCircuit,
+    entities: dict[int, PhysicalEntity],
     movable: list[int],
     positions: dict[int, Position],
     grid: _GridGeometry,
@@ -443,35 +506,43 @@ def _relax(
 ) -> None:
     """Finish annealing with deterministic force-directed swap/move sweeps."""
 
-    occupancy = {positions[entity_id]: entity_id for entity_id in movable}
+    movable_set = set(movable)
+    anchors = {
+        entity_id: position
+        for entity_id, position in positions.items()
+        if entity_id not in movable_set
+    }
+    occupancy = _DiscreteOccupancy(entities, anchors)
+    for entity_id in movable:
+        occupancy.add(entity_id, positions[entity_id])
+
     for _sweep in range(sweeps):
         improved = False
         for entity_id in sorted(movable):
+            entity = entities[entity_id]
             current = positions[entity_id]
             preferred = _preferred_position(entity_id, positions, groups, incident, center)
-            candidates = _candidate_positions(circuit.entity_by_id(entity_id), grid)
-            target = min(candidates, key=lambda item: _distance_sq(item, preferred))
+            target = _nearest_candidate(entity, preferred, grid)
             if target == current:
                 continue
-            other = occupancy.get(target)
-            if other is not None and not _same_footprint(circuit, entity_id, other):
-                continue
-            if other is None:
-                if not _position_is_clear(
-                    circuit,
-                    entity_id,
-                    target,
-                    positions,
-                    ignore_ids={entity_id},
-                ):
+
+            owners = occupancy.owners(entity_id, target, ignore_ids={entity_id})
+            other: int | None = None
+            if owners:
+                if len(owners) != 1:
                     continue
-            elif not _swap_is_clear(circuit, entity_id, other, positions):
+                candidate_other = next(iter(owners))
+                if positions[candidate_other] != target:
+                    continue
+                if _entity_half_extent(entities[candidate_other]) != _entity_half_extent(entity):
+                    continue
+                other = candidate_other
+            if not occupancy.clear_of_anchors(entity_id, target):
                 continue
 
             affected = set(incident[entity_id])
             if other is not None:
                 affected.update(incident[other])
-
             before = sum(
                 _group_energy(groups[group], positions, safe_wire_span) for group in affected
             )
@@ -479,15 +550,16 @@ def _relax(
             if other is not None:
                 before += _compactness_energy(other, positions, center)
 
+            occupancy.remove(entity_id, current)
             if other is None:
                 positions[entity_id] = target
-                del occupancy[current]
-                occupancy[target] = entity_id
+                occupancy.add(entity_id, target)
             else:
+                occupancy.remove(other, target)
                 positions[entity_id] = target
                 positions[other] = current
-                occupancy[target] = entity_id
-                occupancy[current] = other
+                occupancy.add(entity_id, target)
+                occupancy.add(other, current)
 
             after = sum(
                 _group_energy(groups[group], positions, safe_wire_span) for group in affected
@@ -500,15 +572,13 @@ def _relax(
                 improved = True
                 continue
 
-            if other is None:
-                del occupancy[target]
-                occupancy[current] = entity_id
-                positions[entity_id] = current
-            else:
-                occupancy[target] = other
-                occupancy[current] = entity_id
-                positions[entity_id] = current
+            occupancy.remove(entity_id, target)
+            positions[entity_id] = current
+            occupancy.add(entity_id, current)
+            if other is not None:
+                occupancy.remove(other, current)
                 positions[other] = target
+                occupancy.add(other, target)
         if not improved:
             break
 
@@ -538,15 +608,11 @@ def _candidate_grid(
             gap = (row // rows_per_block) * options.corridor_width
         return float(row) + gap
 
-    x_positions = [x_position(column) for column in range(columns)]
-    y_positions = [y_position(row) for row in range(rows)]
+    x_positions = tuple(x_position(column) for column in range(columns))
+    y_positions = tuple(y_position(row) for row in range(rows))
+    unit_x_positions = tuple(value for x in x_positions for value in (x - 0.5, x + 0.5))
     slots = tuple((x, y) for y in y_positions for x in x_positions)
-    unit_slots = tuple(
-        (x + offset, y)
-        for y in y_positions
-        for x in x_positions
-        for offset in (-0.5, 0.5)
-    )
+    unit_slots = tuple((x, y) for y in y_positions for x in unit_x_positions)
     bounds: RelayForbiddenArea = (
         x_positions[0] - 1.0,
         x_positions[-1] + 1.0,
@@ -557,11 +623,11 @@ def _candidate_grid(
     forbidden: list[RelayForbiddenArea] = []
     if options.reserve_corridors and options.corridor_width >= _SUBSTATION_FOOTPRINT:
         vertical_centers = [
-            (x_positions[column - 1] + 1.0 + x_positions[column] - 1.0) / 2.0
+            (x_positions[column - 1] + x_positions[column]) / 2.0
             for column in range(columns_per_block, columns, columns_per_block)
         ]
         horizontal_centers = [
-            (y_positions[row - 1] + 0.5 + y_positions[row] - 0.5) / 2.0
+            (y_positions[row - 1] + y_positions[row]) / 2.0
             for row in range(rows_per_block, rows, rows_per_block)
         ]
         half = _SUBSTATION_FOOTPRINT / 2.0
@@ -571,7 +637,15 @@ def _candidate_grid(
             for y in horizontal_centers
         )
 
-    return _GridGeometry(slots, unit_slots, bounds, tuple(forbidden))
+    return _GridGeometry(
+        slots,
+        unit_slots,
+        bounds,
+        tuple(forbidden),
+        x_positions,
+        unit_x_positions,
+        y_positions,
+    )
 
 
 def _candidate_positions(entity: object, grid: _GridGeometry) -> tuple[Position, ...]:
@@ -580,6 +654,18 @@ def _candidate_positions(entity: object, grid: _GridGeometry) -> tuple[Position,
     if isinstance(entity, (ArithmeticCombinator, DeciderCombinator)):
         return grid.slots
     raise TypeError(entity)
+
+
+def _nearest_candidate(entity: object, point: Position, grid: _GridGeometry) -> Position:
+    if isinstance(entity, ConstantCombinator):
+        x_choices = grid.unit_x_positions
+    elif isinstance(entity, (ArithmeticCombinator, DeciderCombinator)):
+        x_choices = grid.x_positions
+    else:
+        raise TypeError(entity)
+    x = min(x_choices, key=lambda value: (abs(value - point[0]), value))
+    y = min(grid.y_positions, key=lambda value: (abs(value - point[1]), value))
+    return (x, y)
 
 
 def _automatic_io_anchors(
@@ -658,37 +744,35 @@ def _group_metrics(
     if len(points) <= 1:
         return (0, 0, 0.0, 0.0)
 
-    component_count = _reach_component_count(points, safe_wire_span)
-    excess_components = component_count - 1
-
-    connected = {0}
+    excess_components = _reach_component_count(points, safe_wire_span) - 1
     remaining = set(range(1, len(points)))
+    best_edges: dict[int, tuple[tuple[int, float, float, int, int], int, float]] = {}
+
+    def consider(left: int, right: int) -> None:
+        distance = _distance(points[left][1], points[right][1])
+        relay_count = _relay_estimate(distance, safe_wire_span)
+        overreach = max(0.0, distance - safe_wire_span) / safe_wire_span
+        key = (relay_count, overreach, distance, points[left][0], points[right][0])
+        previous = best_edges.get(right)
+        if previous is None or key < previous[0]:
+            best_edges[right] = (key, left, distance)
+
+    for right in remaining:
+        consider(0, right)
+
     relays = 0
     total_length = 0.0
     smooth_overreach = 0.0
     while remaining:
-        best: tuple[tuple[int, float, float, int, int], int, int, float] | None = None
-        for left in connected:
-            for right in remaining:
-                distance = _distance(points[left][1], points[right][1])
-                relay_count = _relay_estimate(distance, safe_wire_span)
-                overreach = max(0.0, distance - safe_wire_span) / safe_wire_span
-                key = (
-                    relay_count,
-                    overreach,
-                    distance,
-                    points[left][0],
-                    points[right][0],
-                )
-                if best is None or key < best[0]:
-                    best = (key, left, right, distance)
-        assert best is not None
-        _, _left, right, distance = best
-        connected.add(right)
+        right = min(remaining, key=lambda item: best_edges[item][0])
+        key, _left, distance = best_edges.pop(right)
+        relay_count, overreach = key[0], key[1]
         remaining.remove(right)
-        relays += _relay_estimate(distance, safe_wire_span)
+        relays += relay_count
         total_length += distance
-        smooth_overreach += (max(0.0, distance - safe_wire_span) / safe_wire_span) ** 2
+        smooth_overreach += overreach**2
+        for candidate in remaining:
+            consider(right, candidate)
 
     energy = (
         _DISCONNECTED_NET_PENALTY * excess_components
@@ -732,13 +816,12 @@ def _relay_estimate(distance: float, safe_wire_span: float) -> int:
 
 
 def _compactness_energy(entity_id: int, positions: dict[int, Position], center: Position) -> float:
-    _ = entity_id
     return 0.002 * _distance_sq(positions[entity_id], center)
 
 
 def _validate_anchors(circuit: PhysicalCircuit, anchors: dict[int, Position]) -> None:
-    entity_ids = {entity.id for entity in circuit.entities}
-    unknown = sorted(set(anchors) - entity_ids)
+    entities = {entity.id: entity for entity in circuit.entities}
+    unknown = sorted(set(anchors) - set(entities))
     if unknown:
         raise ValueError(f"placement anchors reference unknown entity ids: {unknown}")
     anchored = sorted(anchors)
@@ -746,9 +829,9 @@ def _validate_anchors(circuit: PhysicalCircuit, anchors: dict[int, Position]) ->
         for right_id in anchored[index + 1 :]:
             if _boxes_overlap(
                 anchors[left_id],
-                _entity_half_extent(circuit.entity_by_id(left_id)),
+                _entity_half_extent(entities[left_id]),
                 anchors[right_id],
-                _entity_half_extent(circuit.entity_by_id(right_id)),
+                _entity_half_extent(entities[right_id]),
             ):
                 raise ValueError(f"placement anchors overlap entities {left_id} and {right_id}")
 
@@ -768,56 +851,12 @@ def _validate_entity_positions(circuit: PhysicalCircuit, positions: dict[int, Po
                 raise ValueError(f"placement overlaps entities {left.id} and {right.id}")
 
 
-def _position_is_clear(
-    circuit: PhysicalCircuit,
-    entity_id: int,
-    position: Position,
-    positions: dict[int, Position],
-    *,
-    ignore_ids: set[int] | None = None,
-) -> bool:
-    ignored = ignore_ids or set()
-    entity_half = _entity_half_extent(circuit.entity_by_id(entity_id))
-    return all(
-        other_id in ignored
-        or not _boxes_overlap(
-            position,
-            entity_half,
-            other_position,
-            _entity_half_extent(circuit.entity_by_id(other_id)),
-        )
-        for other_id, other_position in positions.items()
-    )
-
-
-def _same_footprint(circuit: PhysicalCircuit, left_id: int, right_id: int) -> bool:
-    return _entity_half_extent(circuit.entity_by_id(left_id)) == _entity_half_extent(
-        circuit.entity_by_id(right_id)
-    )
-
-
-def _swap_is_clear(
-    circuit: PhysicalCircuit,
-    left_id: int,
-    right_id: int,
-    positions: dict[int, Position],
-) -> bool:
-    left_target = positions[right_id]
-    right_target = positions[left_id]
-    ignored = {left_id, right_id}
-    return _position_is_clear(
-        circuit,
-        left_id,
-        left_target,
-        positions,
-        ignore_ids=ignored,
-    ) and _position_is_clear(
-        circuit,
-        right_id,
-        right_target,
-        positions,
-        ignore_ids=ignored,
-    )
+def _unit_keys(entity: object, position: Position) -> tuple[Position, ...]:
+    if isinstance(entity, ConstantCombinator):
+        return (position,)
+    if isinstance(entity, (ArithmeticCombinator, DeciderCombinator)):
+        return ((position[0] - 0.5, position[1]), (position[0] + 0.5, position[1]))
+    raise TypeError(entity)
 
 
 def _entity_half_extent(entity: object) -> tuple[float, float]:
