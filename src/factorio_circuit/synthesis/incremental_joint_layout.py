@@ -348,7 +348,10 @@ def _state_from_bootstrap_layout(
     implementation_ids = {entity.id for entity in circuit.entities}
     missing = implementation_ids - set(layout.positions)
     if missing:
-        raise ValueError(f"reach-safe bootstrap is missing implementation entities {sorted(missing)}")
+        raise ValueError(
+            "reach-safe bootstrap is missing implementation entities "
+            f"{sorted(missing)}"
+        )
 
     state = exact._JointState(
         circuit=circuit,
@@ -377,7 +380,11 @@ def _construct_feasible_bootstrap(
     state.
     """
 
-    if all(exact._group_spanning_tree(state, group) is not None for group in state.endpoints_by_group):
+    already_reach_safe = all(
+        exact._group_spanning_tree(state, group) is not None
+        for group in state.endpoints_by_group
+    )
+    if already_reach_safe:
         routing = exact._routing_plan(state)
         return _FeasibleTopology.build(state, routing)
 
@@ -385,7 +392,12 @@ def _construct_feasible_bootstrap(
     free_sites = {
         site
         for site in grid.unit_slots
-        if not _box_overlaps_occupancy(occupancy, site, _RELAY_HALF_EXTENT, ignored=set())
+        if not _box_overlaps_occupancy(
+            occupancy,
+            site,
+            _RELAY_HALF_EXTENT,
+            ignored=set(),
+        )
     }
     next_relay_id = max((entity.id for entity in state.circuit.entities), default=0) + 1
 
