@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from heapq import heappop, heappush
-from math import exp, floor, hypot
+from math import ceil, exp, floor, hypot
 from random import Random
 
 from factorio_circuit.blueprint import routing as wire_routing
@@ -38,7 +38,6 @@ _EPSILON = 1e-9
 _RELAY_HALF_EXTENT = (0.5, 0.5)
 _SLACK_START = 0.85
 _BOOTSTRAP_EXPANSIONS = 4
-_MIN_BOOTSTRAP_FILL = 0.04
 Bucket = tuple[int, int]
 WireKey = tuple[int, int, int, int, WireColor]
 
@@ -595,15 +594,21 @@ def _validate_joint_clearance(
             raise ValueError(f"joint wire relay {relay_id} overlaps entity {other_id}")
 
 
-def _expanded_bootstrap_options(options: PlacementOptions) -> PlacementOptions:
-    """Double common placement capacity without creating relay-specific reserved space."""
+def _expanded_bootstrap_grid(
+    circuit: PhysicalCircuit,
+    grid: base_placement._GridGeometry,
+    options: PlacementOptions,
+) -> base_placement._GridGeometry:
+    """Double legal joint workspace while keeping all existing grid sites unchanged."""
 
-    return replace(
-        options,
-        target_fill=max(_MIN_BOOTSTRAP_FILL, options.target_fill * 0.5),
-        iterations=0,
-        restarts=1,
-    )
+    minimum_rows = max(len(circuit.inputs), len(circuit.outputs), 1) if options.anchor_io else 1
+    target_slots = max(len(grid.slots) + 1, len(grid.slots) * 2)
+    body_count = max(1, ceil(target_slots * options.target_fill))
+    expanded = base_placement._candidate_grid(body_count, minimum_rows, options)
+    while len(expanded.slots) <= len(grid.slots):
+        body_count += max(1, ceil(len(grid.slots) * options.target_fill))
+        expanded = base_placement._candidate_grid(body_count, minimum_rows, options)
+    return expanded
 
 
 def refine_incremental_joint_layout(
@@ -627,11 +632,10 @@ def refine_incremental_joint_layout(
     bootstrap_positions = dict(positions)
     state: exact._JointState | None = None
     topology: _FeasibleTopology | None = None
-    grid: base_placement._GridGeometry | None = None
+    grid = exact._matching_candidate_grid(circuit, bootstrap_positions, bootstrap_options)
     last_error: ValueError | None = None
 
     for expansion in range(_BOOTSTRAP_EXPANSIONS + 1):
-        grid = exact._matching_candidate_grid(circuit, bootstrap_positions, bootstrap_options)
         candidate_state = _new_joint_state(
             circuit,
             endpoints_by_group,
@@ -645,21 +649,18 @@ def refine_incremental_joint_layout(
             last_error = exc
             if expansion >= _BOOTSTRAP_EXPANSIONS:
                 break
-            next_options = _expanded_bootstrap_options(bootstrap_options)
-            if next_options.target_fill >= bootstrap_options.target_fill - _EPSILON:
-                break
-            bootstrap_options = next_options
+            grid = _expanded_bootstrap_grid(circuit, grid, bootstrap_options)
             continue
 
         state = candidate_state
         topology = candidate_topology
         break
 
-    if state is None or topology is None or grid is None:
+    if state is None or topology is None:
         detail = str(last_error) if last_error is not None else "unknown bootstrap failure"
         raise ValueError(
             "could not construct a reach-safe joint bootstrap after expanding the common "
-            f"corridor-aware placement grid: {detail}"
+            f"corridor-aware workspace: {detail}"
         ) from last_error
 
     topology = _anneal_feasible(state, topology, options, grid)
