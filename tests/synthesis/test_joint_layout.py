@@ -213,6 +213,7 @@ def test_local_feasible_simplifier_bypasses_redundant_degree_two_relay() -> None
 
 
 def test_bootstrap_capacity_expands_common_grid_without_changing_corridor_policy() -> None:
+    _abstract_circuit, physical = _two_terminal_circuit("workspace_expand")
     options = PlacementOptions(
         target_fill=0.6,
         corridor_width=4.0,
@@ -220,14 +221,15 @@ def test_bootstrap_capacity_expands_common_grid_without_changing_corridor_policy
         iterations=100,
         restarts=3,
     )
+    initial = incremental.base_placement._candidate_grid(32, 1, options)
 
-    expanded = incremental._expanded_bootstrap_options(options)
+    expanded = incremental._expanded_bootstrap_grid(physical, initial, options)
 
-    assert expanded.target_fill == pytest.approx(0.3)
-    assert expanded.corridor_width == 4.0
-    assert expanded.reserve_corridors
-    assert expanded.iterations == 0
-    assert expanded.restarts == 1
+    assert len(expanded.slots) > len(initial.slots)
+    assert set(initial.slots).issubset(expanded.slots)
+    assert set(initial.unit_slots).issubset(expanded.unit_slots)
+    assert expanded.x_positions[: len(initial.x_positions)] == initial.x_positions
+    assert expanded.y_positions[: len(initial.y_positions)] == initial.y_positions
 
 
 def test_incremental_bootstrap_does_not_require_legacy_point_to_point_router(
