@@ -20,9 +20,7 @@ def _two_terminal_circuit(name: str) -> tuple[abstract.AbstractPhysicalCircuit, 
         abstract.AbstractNet(
             1,
             (),
-            tuple(
-                abstract.Endpoint(entity_id, abstract.Connector.SINGLE) for entity_id in (1, 2)
-            ),
+            tuple(abstract.Endpoint(entity_id, abstract.Connector.SINGLE) for entity_id in (1, 2)),
         )
     )
     physical = PhysicalCircuit(
