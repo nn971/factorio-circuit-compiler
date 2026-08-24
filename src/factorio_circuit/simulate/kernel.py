@@ -126,15 +126,11 @@ def evaluate_vector(value: VectorValue, context: EvaluationContext) -> SignalMap
             if i32(apply_binary(value.op, amount, scalar)) != 0
         }
     if isinstance(value, VectorSelect):
-        vector = evaluate_vector(value.vector, context)
-        if not vector:
-            return {}
-        if value.select_max:
-            signal, amount = max(
-                vector.items(), key=lambda item: (item[1], item[0].kind, item[0].name)
-            )
-            return {signal: amount}
-        return dict(vector)
+        return _vector_select(
+            evaluate_vector(value.vector, context),
+            select_max=value.select_max,
+            index=value.index,
+        )
     if isinstance(value, VectorFilter):
         vector = evaluate_vector(value.vector, context)
         return {
@@ -143,6 +139,36 @@ def evaluate_vector(value: VectorValue, context: EvaluationContext) -> SignalMap
             if apply_compare(value.op, amount, value.right)
         }
     raise TypeError(value)
+
+
+def _vector_select(vector: SignalMap, *, select_max: bool, index: int) -> SignalMap:
+    """Evaluate deterministic Factorio Select-input semantics.
+
+    Signal maps contain only nonzero lanes, matching Factorio's notion of present input signals.
+    Equal-valued lanes use a deterministic SignalId tie-break in the reference evaluator; tests that
+    care about selector rank should avoid equal counts because Factorio's public contract specifies
+    value ordering rather than a tie order.
+    """
+
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        raise ValueError("selector index must be a non-negative integer")
+    if not isinstance(select_max, bool):
+        raise ValueError("selector select_max flag must be a bool")
+    if not vector:
+        return {}
+
+    ordered = sorted(
+        vector.items(),
+        key=lambda item: (item[1], item[0].kind, item[0].name),
+        reverse=select_max,
+    )
+    if len(ordered) == 1:
+        signal, amount = ordered[0]
+        return {signal: amount}
+    if index >= len(ordered):
+        return {}
+    signal, amount = ordered[index]
+    return {signal: amount}
 
 
 def _vector_binary(op: str, left: SignalMap, right: SignalMap) -> SignalMap:

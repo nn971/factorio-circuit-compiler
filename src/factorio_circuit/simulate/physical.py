@@ -51,15 +51,21 @@ def simulate_stream(
 ) -> list[tuple[object, ...]]:
     """Simulate the deterministic physical circuit subset tick-by-tick.
 
-    Selector providers are deliberately outside this simulator. In particular, Random Input is an
-    oracle implementation rather than a deterministic target operation; test that behavior through
-    scripted semantic oracle traces or in Factorio itself.
+    Deterministic selector Select-input mode is evaluated here. Nondeterministic/environment
+    selector modes remain outside this simulator; Random Input is an oracle implementation and is
+    tested through scripted semantic oracle traces or in Factorio itself.
     """
 
-    if any(isinstance(entity, SelectorCombinator) for entity in circuit.entities):
+    unsupported_selectors = [
+        entity
+        for entity in circuit.entities
+        if isinstance(entity, SelectorCombinator) and entity.operation != "select"
+    ]
+    if unsupported_selectors:
+        modes = ", ".join(sorted({entity.operation for entity in unsupported_selectors}))
         raise ValueError(
-            "deterministic physical simulation does not evaluate selector combinators; "
-            "use a scripted semantic oracle trace or target execution"
+            "deterministic physical simulation does not evaluate selector mode(s) "
+            f"{modes}; use a scripted semantic oracle trace or target execution"
         )
 
     networks = _build_networks(circuit)
@@ -132,7 +138,10 @@ def simulate_stream(
 
         next_outputs: dict[int, SignalMap] = {}
         for entity in circuit.entities:
-            if isinstance(entity, ArithmeticCombinator):
+            if isinstance(entity, SelectorCombinator):
+                inputs = _read_input_networks(entity.id, network_values, networks)
+                next_outputs[entity.id] = _eval_selector(entity, inputs)
+            elif isinstance(entity, ArithmeticCombinator):
                 inputs = _read_input_networks(entity.id, network_values, networks)
                 next_outputs[entity.id] = _eval_arithmetic(entity, inputs)
             elif isinstance(entity, DeciderCombinator):
@@ -219,6 +228,26 @@ def _combined_inputs(inputs: InputNetworks, networks: tuple[WireColor, ...] | No
         for signal, value in inputs[color].items():
             _add_signal(result, signal, value)
     return result
+
+
+def _eval_selector(entity: SelectorCombinator, inputs: InputNetworks) -> SignalMap:
+    if entity.operation != "select":
+        raise ValueError(f"unsupported deterministic selector operation {entity.operation!r}")
+    vector = _combined_inputs(inputs, None)
+    if not vector:
+        return {}
+    ordered = sorted(
+        vector.items(),
+        key=lambda item: (item[1], item[0].kind, item[0].name),
+        reverse=entity.select_max,
+    )
+    if len(ordered) == 1:
+        signal, amount = ordered[0]
+        return {signal: amount}
+    if entity.index >= len(ordered):
+        return {}
+    signal, amount = ordered[entity.index]
+    return {signal: amount}
 
 
 def _eval_arithmetic(entity: ArithmeticCombinator, inputs: InputNetworks) -> SignalMap:

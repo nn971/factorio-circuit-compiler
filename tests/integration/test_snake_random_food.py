@@ -148,5 +148,5 @@ def test_random_selector_provider_consumes_hidden_tap_and_serializes_random_mode
         "random_update_interval": 1,
     }
 
-    with pytest.raises(ValueError, match="does not evaluate selector combinators"):
+    with pytest.raises(ValueError, match=r"does not evaluate selector mode\(s\) random"):
         simulate_physical_stream(result.physical_circuit, [{"candidates": {}}])
