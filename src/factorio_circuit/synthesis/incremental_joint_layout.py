@@ -6,7 +6,12 @@ would make any cached incident wire exceed the configured safe span. This keeps 
 proposal work scales with the moved objects' topology degree, not with the size of their physical
 nets.
 
-Epoch boundaries simplify that already-feasible topology locally: useless relay leaves disappear and
+The bootstrap and every annealing move use the same discrete placement grid. Reserved corridors are
+therefore unavailable to implementation entities and relays alike. If the first common grid cannot
+host a feasible routed topology, bootstrap expands that common grid and reseeds all implementation
+entities; it does not reserve a relay-only region or require a separate relay dropout ratio.
+
+Epoch boundaries simplify the already-feasible topology locally: useless relay leaves disappear and
 degree-two relays are bypassed whenever their neighbors are directly in reach. No routine annealing
 step reconstructs an all-pairs reach graph merely to rediscover feasibility that the cached routing
 already guarantees.
@@ -15,26 +20,25 @@ already guarantees.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from heapq import heappop, heappush
-from math import ceil, exp, floor, hypot
+from math import exp, floor, hypot
 from random import Random
 
 from factorio_circuit.blueprint import routing as wire_routing
 from factorio_circuit.ir import abstract_physical as abstract
-from factorio_circuit.ir.physical import PhysicalCircuit, WireColor
+from factorio_circuit.ir.physical import ConstantCombinator, PhysicalCircuit, WireColor
 from factorio_circuit.synthesis import joint_layout as exact
 from factorio_circuit.synthesis import placement as base_placement
-from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.placement import PlacementOptions, Position
-from factorio_circuit.synthesis.safe_folded_crossbar import build_safe_folded_crossbar_layout
 
 _EPOCH_PROPOSALS = 256
 _EPSILON = 1e-9
 _RELAY_HALF_EXTENT = (0.5, 0.5)
 _SLACK_START = 0.85
+_BOOTSTRAP_EXPANSIONS = 4
+_MIN_BOOTSTRAP_FILL = 0.04
 Bucket = tuple[int, int]
-Node = tuple[int, int]
 WireKey = tuple[int, int, int, int, WireColor]
 
 
@@ -163,82 +167,11 @@ class _SpatialOccupancy:
         *,
         ignored: set[int],
     ) -> set[int]:
-        half = self.state.object_half_extent(object_id)
-        candidates: set[int] = set()
-        for key in self._box_keys(position, half):
-            candidates.update(self.buckets.get(key, ()))
-        candidates.difference_update(ignored)
-        return {
-            other_id
-            for other_id in candidates
-            if base_placement._boxes_overlap(
-                position,
-                half,
-                self.state.object_position(other_id),
-                self.state.object_half_extent(other_id),
-            )
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class _MoveGeometry:
-    """Finite lattice envelope used for reach-preserving compaction moves."""
-
-    left: float
-    right: float
-    top: float
-    bottom: float
-    phases: dict[int, tuple[float, float]]
-
-    @classmethod
-    def from_state(cls, state: exact._JointState) -> _MoveGeometry:
-        object_ids = [*state.positions, *state.relay_positions]
-        points = [state.object_position(object_id) for object_id in object_ids]
-        if not points:
-            return cls(0.0, 0.0, 0.0, 0.0, {})
-        margin = state.safe_span
-        return cls(
-            min(x for x, _ in points) - margin,
-            max(x for x, _ in points) + margin,
-            min(y for _, y in points) - margin,
-            max(y for _, y in points) + margin,
-            {
-                object_id: (
-                    _fractional_phase(state.object_position(object_id)[0]),
-                    _fractional_phase(state.object_position(object_id)[1]),
-                )
-                for object_id in object_ids
-            },
-        )
-
-    def nearest(self, object_id: int, point: Position) -> Position:
-        phase_x, phase_y = self.phases[object_id]
-        min_x = ceil(self.left - phase_x - _EPSILON)
-        max_x = floor(self.right - phase_x + _EPSILON)
-        min_y = ceil(self.top - phase_y - _EPSILON)
-        max_y = floor(self.bottom - phase_y + _EPSILON)
-        x_index = min(max_x, max(min_x, round(point[0] - phase_x)))
-        y_index = min(max_y, max(min_y, round(point[1] - phase_y)))
-        return (float(x_index) + phase_x, float(y_index) + phase_y)
-
-    def random(self, object_id: int, rng: Random) -> Position:
-        phase_x, phase_y = self.phases[object_id]
-        min_x = ceil(self.left - phase_x - _EPSILON)
-        max_x = floor(self.right - phase_x + _EPSILON)
-        min_y = ceil(self.top - phase_y - _EPSILON)
-        max_y = floor(self.bottom - phase_y + _EPSILON)
-        return (
-            float(rng.randint(min_x, max_x)) + phase_x,
-            float(rng.randint(min_y, max_y)) + phase_y,
-        )
-
-    def position_is_legal(self, object_id: int, position: Position) -> bool:
-        phase_x, phase_y = self.phases[object_id]
-        return (
-            self.left - _EPSILON <= position[0] <= self.right + _EPSILON
-            and self.top - _EPSILON <= position[1] <= self.bottom + _EPSILON
-            and abs(_fractional_phase(position[0]) - phase_x) <= _EPSILON
-            and abs(_fractional_phase(position[1]) - phase_y) <= _EPSILON
+        return _box_overlaps_occupancy(
+            self,
+            position,
+            self.state.object_half_extent(object_id),
+            ignored=ignored,
         )
 
 
@@ -250,135 +183,31 @@ def _wire_energy(distance: float, safe_span: float) -> float:
     return 0.12 * normalized + 4.0 * slack_pressure**2
 
 
-def _routing_from_layout(layout: Layout) -> wire_routing.RoutingPlan:
-    return wire_routing.RoutingPlan(
-        relays=tuple(
-            wire_routing.BlueprintRelay(relay.entity_id, relay.position, relay.description)
-            for relay in layout.relays
-        ),
-        wires=tuple(
-            wire_routing.RoutedWire(
-                wire.source_entity,
-                wire.source_connector_id,
-                wire.target_entity,
-                wire.target_connector_id,
-                wire.color,
-            )
-            for wire in layout.wires
-        ),
-    )
-
-
-def _infer_relay_groups(
-    state: exact._JointState,
-    routing: wire_routing.RoutingPlan,
-) -> None:
-    """Infer each bootstrap relay's physical net from connector-level wire components."""
-
-    parent: dict[Node, Node] = {}
-
-    def find(node: Node) -> Node:
-        parent.setdefault(node, node)
-        while parent[node] != node:
-            parent[node] = parent[parent[node]]
-            node = parent[node]
-        return node
-
-    def union(left: Node, right: Node) -> None:
-        left_root = find(left)
-        right_root = find(right)
-        if left_root != right_root:
-            parent[right_root] = left_root
-
-    for wire in routing.wires:
-        union(
-            (wire.source_entity, wire.source_connector_id),
-            (wire.target_entity, wire.target_connector_id),
-        )
-
-    root_groups: dict[Node, int] = {}
-    for group, endpoints in state.endpoints_by_group.items():
-        color = state.colors_by_group[group]
-        for endpoint in endpoints:
-            entity_id, connector_id = exact._vertex_connector(
-                state,
-                exact._terminal_vertex(endpoint),
-                color,
-            )
-            root = find((entity_id, connector_id))
-            previous = root_groups.setdefault(root, group)
-            if previous != group:
-                raise ValueError(
-                    "bootstrap routing joins distinct physical net groups "
-                    f"{previous} and {group}"
-                )
-
-    relay_nodes: dict[int, set[Node]] = defaultdict(set)
-    for wire in routing.wires:
-        if wire.source_entity in state.relay_positions:
-            relay_nodes[wire.source_entity].add(
-                find((wire.source_entity, wire.source_connector_id))
-            )
-        if wire.target_entity in state.relay_positions:
-            relay_nodes[wire.target_entity].add(
-                find((wire.target_entity, wire.target_connector_id))
-            )
-
-    for relay_id in sorted(state.relay_positions):
-        groups = {
-            root_groups[root]
-            for root in relay_nodes.get(relay_id, ())
-            if root in root_groups
-        }
-        if len(groups) != 1:
-            raise ValueError(
-                f"could not infer exactly one physical net for bootstrap relay {relay_id}"
-            )
-        state.relay_groups[relay_id] = next(iter(groups))
-
-
-def _state_from_bootstrap_layout(
+def _new_joint_state(
     circuit: PhysicalCircuit,
     endpoints_by_group: dict[int, tuple[abstract.Endpoint, ...]],
     colors_by_group: dict[int, WireColor],
-    layout: Layout,
+    positions: dict[int, Position],
     *,
     safe_wire_span: float,
-) -> tuple[exact._JointState, _FeasibleTopology]:
-    implementation_ids = {entity.id for entity in circuit.entities}
-    missing = implementation_ids - set(layout.positions)
-    if missing:
-        raise ValueError(
-            "reach-safe bootstrap is missing implementation entities "
-            f"{sorted(missing)}"
-        )
-
-    state = exact._JointState(
+) -> exact._JointState:
+    return exact._JointState(
         circuit=circuit,
         endpoints_by_group=endpoints_by_group,
         colors_by_group=colors_by_group,
-        positions={entity_id: layout.positions[entity_id] for entity_id in implementation_ids},
-        relay_positions={relay.entity_id: relay.position for relay in layout.relays},
+        positions=dict(positions),
+        relay_positions={},
         relay_groups={},
         safe_span=safe_wire_span,
         forbidden_areas=(),
     )
-    routing = _routing_from_layout(layout)
-    _infer_relay_groups(state, routing)
-    _validate_joint_clearance(state, routing)
-    return state, _FeasibleTopology.build(state, routing)
 
 
 def _construct_feasible_bootstrap(
     state: exact._JointState,
     grid: base_placement._GridGeometry,
 ) -> _FeasibleTopology:
-    """Construct a reach-safe bootstrap on the candidate grid for anchored/small callers.
-
-    Production unanchored annealing may fall back to the proven folded-safe layout instead. This
-    constructor is a one-time bootstrap operation; the annealing loop never repairs an infeasible
-    state.
-    """
+    """Construct one reach-safe topology on the common corridor-aware placement grid."""
 
     already_reach_safe = all(
         exact._group_spanning_tree(state, group) is not None
@@ -764,6 +593,17 @@ def _validate_joint_clearance(
             raise ValueError(f"joint wire relay {relay_id} overlaps entity {other_id}")
 
 
+def _expanded_bootstrap_options(options: PlacementOptions) -> PlacementOptions:
+    """Double common placement capacity without creating relay-specific reserved space."""
+
+    return replace(
+        options,
+        target_fill=max(_MIN_BOOTSTRAP_FILL, options.target_fill * 0.5),
+        iterations=0,
+        restarts=1,
+    )
+
+
 def refine_incremental_joint_layout(
     circuit: PhysicalCircuit,
     abstract_circuit: abstract.AbstractPhysicalCircuit,
@@ -773,7 +613,6 @@ def refine_incremental_joint_layout(
     *,
     safe_wire_span: float,
     options: PlacementOptions,
-    bootstrap_layout: Layout | None = None,
 ) -> exact.JointLayoutResult:
     """Compact a reach-safe joint layout while preserving wire reach on every accepted move."""
 
@@ -782,50 +621,54 @@ def refine_incremental_joint_layout(
         net_groups,
         net_colors,
     )
+    bootstrap_options = replace(options, iterations=0, restarts=1)
+    bootstrap_positions = dict(positions)
+    state: exact._JointState | None = None
+    topology: _FeasibleTopology | None = None
+    grid: base_placement._GridGeometry | None = None
+    last_error: ValueError | None = None
 
-    if bootstrap_layout is not None:
-        state, topology = _state_from_bootstrap_layout(
+    for expansion in range(_BOOTSTRAP_EXPANSIONS + 1):
+        grid = exact._matching_candidate_grid(circuit, bootstrap_positions, bootstrap_options)
+        candidate_state = _new_joint_state(
             circuit,
             endpoints_by_group,
             colors_by_group,
-            bootstrap_layout,
+            bootstrap_positions,
             safe_wire_span=safe_wire_span,
         )
-    else:
-        grid = exact._matching_candidate_grid(circuit, positions, options)
-        state = exact._JointState(
-            circuit=circuit,
-            endpoints_by_group=endpoints_by_group,
-            colors_by_group=colors_by_group,
-            positions=dict(positions),
-            relay_positions={},
-            relay_groups={},
-            safe_span=safe_wire_span,
-            forbidden_areas=(),
-        )
         try:
-            topology = _construct_feasible_bootstrap(state, grid)
-        except ValueError:
-            if options.anchors:
-                raise
-            bootstrap_layout = build_safe_folded_crossbar_layout(
+            candidate_topology = _construct_feasible_bootstrap(candidate_state, grid)
+        except ValueError as exc:
+            last_error = exc
+            if expansion >= _BOOTSTRAP_EXPANSIONS:
+                break
+            next_options = _expanded_bootstrap_options(bootstrap_options)
+            if next_options.target_fill >= bootstrap_options.target_fill - _EPSILON:
+                break
+            bootstrap_options = next_options
+            placement = base_placement.plan_physical_circuit(
+                circuit,
                 abstract_circuit,
-                circuit,
-                net_colors=net_colors,
-                net_groups=net_groups,
-                signal_allocation={},
+                net_groups,
                 safe_wire_span=safe_wire_span,
-                progress=None,
+                options=bootstrap_options,
             )
-            state, topology = _state_from_bootstrap_layout(
-                circuit,
-                endpoints_by_group,
-                colors_by_group,
-                bootstrap_layout,
-                safe_wire_span=safe_wire_span,
-            )
+            bootstrap_positions = placement.positions
+            continue
 
-    topology = _anneal_feasible(state, topology, options)
+        state = candidate_state
+        topology = candidate_topology
+        break
+
+    if state is None or topology is None or grid is None:
+        detail = str(last_error) if last_error is not None else "unknown bootstrap failure"
+        raise ValueError(
+            "could not construct a reach-safe joint bootstrap after expanding the common "
+            f"corridor-aware placement grid: {detail}"
+        ) from last_error
+
+    topology = _anneal_feasible(state, topology, options, grid)
     routing = topology.routing
     all_positions = dict(state.positions)
     all_positions.update(state.relay_positions)
@@ -842,6 +685,7 @@ def _anneal_feasible(
     state: exact._JointState,
     topology: _FeasibleTopology,
     options: PlacementOptions,
+    grid: base_placement._GridGeometry,
 ) -> _FeasibleTopology:
     movable_entities = exact._movable_entity_ids(state.circuit, options)
     initial_movable_count = len(movable_entities) + len(state.relay_positions)
@@ -852,7 +696,8 @@ def _anneal_feasible(
         return topology
 
     center = _centroid([*state.positions.values(), *state.relay_positions.values()])
-    geometry = _MoveGeometry.from_state(state)
+    unit_sites = set(grid.unit_slots)
+    wide_sites = set(grid.slots)
     occupancy = _SpatialOccupancy.build(state)
     rng = Random(options.random_seed ^ 0x61A7E5ED)
 
@@ -879,7 +724,7 @@ def _anneal_feasible(
             target = _proposed_position(
                 state,
                 object_id,
-                geometry,
+                grid,
                 preferred,
                 current,
                 rng,
@@ -900,11 +745,11 @@ def _anneal_feasible(
                     continue
                 if state.object_half_extent(candidate) != state.object_half_extent(object_id):
                     continue
-                if not geometry.position_is_legal(candidate, current):
+                if not _position_is_legal(state, candidate, current, unit_sites, wide_sites):
                     continue
                 other = candidate
 
-            if not geometry.position_is_legal(object_id, target):
+            if not _position_is_legal(state, object_id, target, unit_sites, wide_sites):
                 continue
             ignored = {object_id} if other is None else {object_id, other}
             if occupancy.overlaps(object_id, target, ignored=ignored):
@@ -972,34 +817,61 @@ def _exact_score(
 def _proposed_position(
     state: exact._JointState,
     object_id: int,
-    geometry: _MoveGeometry,
+    grid: base_placement._GridGeometry,
     preferred: Position,
     current: Position,
     rng: Random,
     normalized_temperature: float,
 ) -> Position:
-    if rng.random() < 0.08:
-        return geometry.random(object_id, rng)
+    if object_id in state.relay_positions:
+        if rng.random() < 0.08:
+            return grid.unit_slots[rng.randrange(len(grid.unit_slots))]
+        if rng.random() < 0.35:
+            noise = max(1.0, state.safe_span * (0.8 * normalized_temperature + 0.05))
+            target = (
+                current[0] + rng.uniform(-noise, noise),
+                current[1] + rng.uniform(-noise, noise),
+            )
+        else:
+            noise = state.safe_span * (normalized_temperature + 0.03)
+            target = (
+                preferred[0] + rng.uniform(-noise, noise),
+                preferred[1] + rng.uniform(-noise, noise),
+            )
+        x = min(grid.unit_x_positions, key=lambda value: (abs(value - target[0]), value))
+        y = min(grid.y_positions, key=lambda value: (abs(value - target[1]), value))
+        return (x, y)
 
+    entity = state.circuit.entity_by_id(object_id)
+    candidates = base_placement._candidate_positions(entity, grid)
+    if rng.random() < 0.08:
+        return candidates[rng.randrange(len(candidates))]
     if rng.random() < 0.35:
         noise = max(1.0, state.safe_span * (0.8 * normalized_temperature + 0.05))
         target = (
             current[0] + rng.uniform(-noise, noise),
             current[1] + rng.uniform(-noise, noise),
         )
-        return geometry.nearest(object_id, target)
+    else:
+        noise = state.safe_span * (normalized_temperature + 0.03)
+        target = (
+            preferred[0] + rng.uniform(-noise, noise),
+            preferred[1] + rng.uniform(-noise, noise),
+        )
+    return base_placement._nearest_candidate(entity, target, grid)
 
-    noise = state.safe_span * (1.0 * normalized_temperature + 0.03)
-    target = (
-        preferred[0] + rng.uniform(-noise, noise),
-        preferred[1] + rng.uniform(-noise, noise),
-    )
-    return geometry.nearest(object_id, target)
 
-
-def _fractional_phase(value: float) -> float:
-    phase = value - floor(value)
-    return 0.0 if abs(phase) <= _EPSILON or abs(phase - 1.0) <= _EPSILON else phase
+def _position_is_legal(
+    state: exact._JointState,
+    object_id: int,
+    position: Position,
+    unit_sites: set[Position],
+    wide_sites: set[Position],
+) -> bool:
+    if object_id in state.relay_positions:
+        return position in unit_sites
+    entity = state.circuit.entity_by_id(object_id)
+    return position in (unit_sites if isinstance(entity, ConstantCombinator) else wide_sites)
 
 
 def _centroid(points: list[Position]) -> Position:
