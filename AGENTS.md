@@ -9,6 +9,8 @@ Before semantic/compiler work, read:
 
 Those two files are the source of truth for the supported data contract and compilation boundaries. Historical milestone notes and completed physical probes are intentionally not kept in the repository.
 
+For continuation of the active annealed-layout work on PR #34, also read `handoff.md`. It is a branch handoff, not a replacement for the stable architecture documents above.
+
 ## Architectural rules
 
 - Python is elaboration. Symbolic values describe logical streams; physical Factorio ticks are chosen later.
@@ -21,6 +23,15 @@ Those two files are the source of truth for the supported data contract and comp
 - Sparse flows acquire `HOLD`, `ZERO`, or `VALID` behavior only at output/device boundaries.
 - Both Level and Event lanes must converge on `AbstractPhysicalCircuit`; physical synthesis owns concrete signal allocation, red/green wiring, placement, wire reach, and final `Layout`.
 - Blueprint serialization consumes a finished `Layout`; it does not repair geometry or semantic timing.
+- Constant combinators are 1x1 entities and can emit a whole signal vector. Do not reintroduce stale 20-value or 50-value capacity assumptions.
+
+### Annealed physical-layout invariants
+
+- The joint annealer starts from an explicitly reach-safe topology and must remain in the feasible region. Ordinary proposals may inspect only local incident wires; expensive topology work belongs outside the hot loop.
+- Implementation combinators and relay constant combinators share the same corridor-aware legal workspace. Reserved corridors are unavailable to both classes of entity.
+- `_JointState.relay_positions` is the geometric source of truth while optimizing. Any `RoutingPlan` returned outside the optimizer must materialize relay coordinates from that state, and final validation must check the exact coordinates that will be serialized.
+- If a bootstrap grid expands, automatic public I/O anchors must be recomputed from the expanded bounds before routing. Explicit user anchors always override automatic anchors.
+- A failed sequential relay allocation may be a cross-net congestion problem even when both endpoints have many free neighbors. Do not infer global infeasibility from one greedy net order.
 
 ## Change discipline
 
@@ -66,6 +77,8 @@ uv run python -m benchmarks.snake.census --deep-delays
 # Full physical synthesis/layout/blueprint generation; multi-minute benchmark.
 uv run python -m benchmarks.snake.generate --output snake-blueprint.txt
 ```
+
+For PR #34 annealed-layout acceptance, use the exact benchmark command recorded in `handoff.md` and test the resulting blueprint in Factorio; green CI alone does not validate the heavyweight physical layout.
 
 If routine pytest unexpectedly becomes slow, diagnose before adding exclusions:
 
