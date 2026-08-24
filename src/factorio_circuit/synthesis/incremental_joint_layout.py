@@ -1,13 +1,13 @@
 """Incremental joint annealing for implementation entities and wire relays.
 
-The hot annealing loop deliberately does not rebuild a physical net's spanning tree.  Each epoch
-starts from an exact reach-safe tree and caches only its local edges.  A proposal therefore touches
+The hot annealing loop deliberately does not rebuild a physical net's spanning tree. Each epoch
+starts from an exact reach-safe tree and caches only its local edges. A proposal therefore touches
 the cached edges incident to the moved object, while the exact O(k^2) tree calculation is paid only
 at epoch boundaries and for final routing.
 
-Relays and implementation combinators share one placement geometry.  Implementation entities are
+Relays and implementation combinators share one placement geometry. Implementation entities are
 already seeded on the annealed grid; relay proposals use the same one-tile unit sites, so every
-movable object stays out of the reserved walking/power corridors.  The old relay-only forbidden-area
+movable object stays out of the reserved walking/power corridors. The old relay-only forbidden-area
 concept is used only as a compatibility input to the existing seed router; the areas supplied here
 are the complete corridor geometry, not special relay locations.
 """
@@ -118,7 +118,7 @@ def refine_incremental_joint_layout(
 ) -> exact.JointLayoutResult:
     """Jointly anneal all movable implementation entities and layout-only relays.
 
-    Exact reach-safe topology is rebuilt only once per epoch.  Within an epoch, connectivity is
+    Exact reach-safe topology is rebuilt only once per epoch. Within an epoch, connectivity is
     guaranteed by requiring every edge of the cached reach-safe tree to remain within wire reach.
     Relay pruning at epoch boundaries is therefore safe and can dynamically reduce relay count.
     """
@@ -165,15 +165,12 @@ def _anneal_incrementally(
     grid: base_placement._GridGeometry,
     options: PlacementOptions,
 ) -> None:
-    iterations = (
-        min(20_000, 30 * len(state.positions)) if options.iterations is None else options.iterations
-    )
-    if iterations <= 0:
-        return
-
     movable_entities = exact._movable_entity_ids(state.circuit, options)
-    movable_set = set(movable_entities) | set(state.relay_positions)
-    if not movable_set:
+    initial_movable_count = len(movable_entities) + len(state.relay_positions)
+    iterations = options.iterations
+    if iterations is None:
+        iterations = 0 if initial_movable_count < 6 else min(20_000, 30 * initial_movable_count)
+    if iterations <= 0 or initial_movable_count == 0:
         return
 
     unit_sites = set(grid.unit_slots)
@@ -182,6 +179,7 @@ def _anneal_incrementally(
     rng = Random(options.random_seed ^ 0x61A7E5ED)
 
     topology = _TopologyCache.build(state)
+    movable_set = set(movable_entities) | set(state.relay_positions)
     best_score = _exact_score(state, topology, movable_set, center)
     best_positions = dict(state.positions)
     best_relays = dict(state.relay_positions)
@@ -251,7 +249,7 @@ def _anneal_incrementally(
             exact._apply_move(state, object_id, target, other)
             topology.total_length += wire_delta
 
-        # Accurate work belongs here, not in the proposal loop.  Pruning can change relay
+        # Accurate work belongs here, not in the proposal loop. Pruning can change relay
         # cardinality, then a fresh exact reach-safe tree becomes the cache for the next epoch.
         exact._prune_relays(state)
         topology = _TopologyCache.build(state)
@@ -332,7 +330,7 @@ def _position_is_legal(
 def _corridor_areas(grid: base_placement._GridGeometry) -> tuple[RelayForbiddenArea, ...]:
     """Return the complete empty strips between placement blocks.
 
-    The implementation grid already omits these strips.  Supplying the same geometry to relay
+    The implementation grid already omits these strips. Supplying the same geometry to relay
     seeding makes corridors a property of the whole placement, rather than a relay-specific set of
     substation footprints.
     """
