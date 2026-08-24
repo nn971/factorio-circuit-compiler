@@ -176,6 +176,36 @@ class _SpatialOccupancy:
         )
 
 
+@dataclass(slots=True)
+class _RelayWorkspace:
+    """Reusable reach-bucket index for one bootstrap placement attempt."""
+
+    safe_span: float
+    buckets: dict[Bucket, tuple[Position, ...]]
+
+    @classmethod
+    def build(cls, free_sites: set[Position], safe_span: float) -> _RelayWorkspace:
+        buckets: dict[Bucket, list[Position]] = defaultdict(list)
+        for position in sorted(free_sites):
+            buckets[(floor(position[0] / safe_span), floor(position[1] / safe_span))].append(
+                position
+            )
+        return cls(
+            safe_span,
+            {key: tuple(positions) for key, positions in buckets.items()},
+        )
+
+    def nearby_sites(self, position: Position) -> tuple[Position, ...]:
+        bucket_x = floor(position[0] / self.safe_span)
+        bucket_y = floor(position[1] / self.safe_span)
+        return tuple(
+            candidate
+            for dx in (-1, 0, 1)
+            for dy in (-1, 0, 1)
+            for candidate in self.buckets.get((bucket_x + dx, bucket_y + dy), ())
+        )
+
+
 def _wire_energy(distance: float, safe_span: float) -> float:
     """Prefer short wires and preserve slack well before the hard reach boundary."""
 
@@ -211,8 +241,7 @@ def _construct_feasible_bootstrap(
     """Construct one reach-safe topology on the common corridor-aware placement grid."""
 
     already_reach_safe = all(
-        exact._group_spanning_tree(state, group) is not None
-        for group in state.endpoints_by_group
+        exact._group_spanning_tree(state, group) is not None for group in state.endpoints_by_group
     )
     if already_reach_safe:
         routing = exact._routing_plan(state)
@@ -229,6 +258,7 @@ def _construct_feasible_bootstrap(
             ignored=set(),
         )
     }
+    workspace = _RelayWorkspace.build(free_sites, state.safe_span)
     next_relay_id = max((entity.id for entity in state.circuit.entities), default=0) + 1
 
     group_order: list[tuple[float, int, tuple[tuple[exact.Vertex, exact.Vertex], ...]]] = []
@@ -254,7 +284,14 @@ def _construct_feasible_bootstrap(
             target = state.vertex_position(right)
             if _distance(source, target) <= state.safe_span + _EPSILON:
                 continue
-            chain = _find_relay_chain(state, group, left[1], right[1], free_sites)
+            chain = _find_relay_chain(
+                state,
+                group,
+                left[1],
+                right[1],
+                free_sites,
+                workspace,
+            )
             if chain is None:
                 source_neighbors = sum(
                     _distance(source, site) <= state.safe_span + _EPSILON for site in free_sites
@@ -316,8 +353,9 @@ def _find_relay_chain(
     left: int,
     right: int,
     free_sites: set[Position],
+    workspace: _RelayWorkspace,
 ) -> tuple[Position, ...] | None:
-    """Find a minimum-new-relay path through legal vacant unit sites."""
+    """Find a feasible low-relay path through the cached vacant-site workspace."""
 
     start = state.object_position(left)
     goal = state.object_position(right)
@@ -331,81 +369,89 @@ def _find_relay_chain(
     )
     fixed_positions.update((start, goal))
 
-    positions = sorted(fixed_positions)
-    new_relay_cost = [0] * len(positions)
-    position_to_index = {position: index for index, position in enumerate(positions)}
-    for position in sorted(free_sites):
-        if position in position_to_index:
-            continue
-        position_to_index[position] = len(positions)
-        positions.append(position)
-        new_relay_cost.append(1)
-
-    start_index = position_to_index[start]
-    goal_index = position_to_index[goal]
-    cell = state.safe_span
-    buckets: dict[Bucket, list[int]] = defaultdict(list)
-    for index, position in enumerate(positions):
-        buckets[(floor(position[0] / cell), floor(position[1] / cell))].append(index)
+    fixed_buckets: dict[Bucket, list[Position]] = defaultdict(list)
+    for position in sorted(fixed_positions):
+        fixed_buckets[
+            (floor(position[0] / state.safe_span), floor(position[1] / state.safe_span))
+        ].append(position)
 
     infinity = (10**18, float("inf"))
-    costs = [infinity for _ in positions]
-    previous: list[int | None] = [None for _ in positions]
-    costs[start_index] = (0, 0.0)
-    queue: list[tuple[int, float, float, float, int]] = []
-    heappush(queue, (0, 0.0, start[0], start[1], start_index))
+    costs: dict[Position, tuple[int, float]] = {start: (0, 0.0)}
+    previous: dict[Position, Position] = {}
+    queue: list[tuple[int, float, int, float, float, float, Position]] = []
 
+    def push(position: Position, cost: tuple[int, float]) -> None:
+        distance_to_goal = _distance(position, goal)
+        relay_hint = max(
+            0,
+            ceil(distance_to_goal / state.safe_span - 1e-12) - 1,
+        )
+        heappush(
+            queue,
+            (
+                cost[0] + relay_hint,
+                cost[1] + distance_to_goal,
+                cost[0],
+                cost[1],
+                position[0],
+                position[1],
+                position,
+            ),
+        )
+
+    push(start, (0, 0.0))
     while queue:
-        relay_cost, length, _x, _y, index = heappop(queue)
-        if (relay_cost, length) != costs[index]:
+        _estimated_relays, _estimated_length, relay_cost, length, _x, _y, position = heappop(
+            queue
+        )
+        if costs.get(position, infinity) != (relay_cost, length):
             continue
-        if index == goal_index:
+        if position == goal:
             break
-        position = positions[index]
-        bucket_x = floor(position[0] / cell)
-        bucket_y = floor(position[1] / cell)
+
+        bucket_x = floor(position[0] / state.safe_span)
+        bucket_y = floor(position[1] / state.safe_span)
+        neighbors: set[Position] = set()
+        for candidate in workspace.nearby_sites(position):
+            if candidate == position:
+                continue
+            if candidate not in free_sites and candidate not in fixed_positions:
+                continue
+            if _distance(position, candidate) <= state.safe_span + _EPSILON:
+                neighbors.add(candidate)
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
-                for neighbor in buckets.get((bucket_x + dx, bucket_y + dy), ()):
-                    if neighbor == index:
+                for candidate in fixed_buckets.get((bucket_x + dx, bucket_y + dy), ()):
+                    if candidate == position:
                         continue
-                    edge_length = _distance(position, positions[neighbor])
-                    if edge_length > state.safe_span + _EPSILON:
-                        continue
-                    candidate = (
-                        relay_cost + new_relay_cost[neighbor],
-                        length + edge_length,
-                    )
-                    if candidate < costs[neighbor]:
-                        costs[neighbor] = candidate
-                        previous[neighbor] = index
-                        neighbor_position = positions[neighbor]
-                        heappush(
-                            queue,
-                            (
-                                candidate[0],
-                                candidate[1],
-                                neighbor_position[0],
-                                neighbor_position[1],
-                                neighbor,
-                            ),
-                        )
+                    if _distance(position, candidate) <= state.safe_span + _EPSILON:
+                        neighbors.add(candidate)
 
-    if costs[goal_index] == infinity:
+        for neighbor in sorted(neighbors):
+            edge_length = _distance(position, neighbor)
+            candidate_cost = (
+                relay_cost + (0 if neighbor in fixed_positions else 1),
+                length + edge_length,
+            )
+            if candidate_cost >= costs.get(neighbor, infinity):
+                continue
+            costs[neighbor] = candidate_cost
+            previous[neighbor] = position
+            push(neighbor, candidate_cost)
+
+    if goal not in costs:
         return None
 
-    path: list[int] = []
-    cursor = goal_index
-    while cursor != start_index:
+    path: list[Position] = []
+    cursor = goal
+    while cursor != start:
         path.append(cursor)
-        parent = previous[cursor]
+        parent = previous.get(cursor)
         if parent is None:
             return None
         cursor = parent
     path.reverse()
-    return tuple(
-        positions[index] for index in path if index != goal_index and new_relay_cost[index] == 1
-    )
+    return tuple(position for position in path if position != goal and position in free_sites)
 
 
 def _prune_relays_to_terminal_paths(state: exact._JointState) -> None:
@@ -643,9 +689,7 @@ def _porous_bootstrap_positions(
     sparse_y = set(grid.y_positions[::2])
     sparse_unit_x = {value for center in sparse_x for value in (center - 0.5, center + 0.5)}
     wide_candidates = tuple(
-        position
-        for position in grid.slots
-        if position[0] in sparse_x and position[1] in sparse_y
+        position for position in grid.slots if position[0] in sparse_x and position[1] in sparse_y
     )
     unit_candidates = tuple(
         position
