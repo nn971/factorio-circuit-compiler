@@ -38,12 +38,12 @@ def test_joint_capacity_counts_relays_as_entities() -> None:
     options = PlacementOptions(target_fill=0.60, anchor_io=False)
 
     assert _joint_capacity_fill(circuit, options, 0) == 0.60
-    modest = _joint_capacity_fill(circuit, options, 50)
-    large = _joint_capacity_fill(circuit, options, 150)
+    fits_existing_vacancies = _joint_capacity_fill(circuit, options, 50)
+    needs_expansion = _joint_capacity_fill(circuit, options, 150)
 
-    assert 0 < large < modest < 0.60
-    assert modest <= 100 / 150
-    assert large <= 100 / 250
+    assert fits_existing_vacancies == 0.60
+    assert 0 < needs_expansion < 0.60
+    assert needs_expansion <= 100 / 250
 
 
 def test_row_layout_has_only_one_meaningful_attempt() -> None:
