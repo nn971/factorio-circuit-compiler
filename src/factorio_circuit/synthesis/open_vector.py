@@ -122,9 +122,7 @@ def _layout_candidate_score(
     for wire in routing.wires:
         source = final_positions[wire.source_entity]
         target = final_positions[wire.target_entity]
-        wire_length += (
-            (source[0] - target[0]) ** 2 + (source[1] - target[1]) ** 2
-        ) ** 0.5
+        wire_length += ((source[0] - target[0]) ** 2 + (source[1] - target[1]) ** 2) ** 0.5
 
     return (len(routing.relays), area, wire_length, restart)
 
