@@ -115,6 +115,7 @@ def test_incremental_joint_layout_is_reach_safe_before_first_proposal(
         state: incremental.exact._JointState,
         topology: incremental._FeasibleTopology,
         options: PlacementOptions,
+        grid: incremental.base_placement._GridGeometry,
     ) -> incremental._FeasibleTopology:
         all_positions = dict(state.positions)
         all_positions.update(state.relay_positions)
@@ -124,7 +125,7 @@ def test_incremental_joint_layout_is_reach_safe_before_first_proposal(
             maximum_span=state.safe_span,
         )
         observed_relay_counts.append(len(state.relay_positions))
-        return original_anneal(state, topology, options)
+        return original_anneal(state, topology, options, grid)
 
     monkeypatch.setattr(incremental, "_anneal_feasible", observe_seed)
     result = refine_incremental_joint_layout(
@@ -209,6 +210,24 @@ def test_local_feasible_simplifier_bypasses_redundant_degree_two_relay() -> None
     assert simplified.routing.relays == ()
     assert len(simplified.routing.wires) == 1
     validate_wire_spans(simplified.routing.wires, state.positions, maximum_span=5.0)
+
+
+def test_bootstrap_capacity_expands_common_grid_without_changing_corridor_policy() -> None:
+    options = PlacementOptions(
+        target_fill=0.6,
+        corridor_width=4.0,
+        reserve_corridors=True,
+        iterations=100,
+        restarts=3,
+    )
+
+    expanded = incremental._expanded_bootstrap_options(options)
+
+    assert expanded.target_fill == pytest.approx(0.3)
+    assert expanded.corridor_width == 4.0
+    assert expanded.reserve_corridors
+    assert expanded.iterations == 0
+    assert expanded.restarts == 1
 
 
 def test_incremental_bootstrap_does_not_require_legacy_point_to_point_router(
