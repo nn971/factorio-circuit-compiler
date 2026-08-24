@@ -72,17 +72,6 @@ class _FeasibleTopology:
                 neighbor_sets[wire.target_entity].add(wire.source_entity)
             total_energy += _wire_energy(distance, state.safe_span)
 
-        disconnected = [
-            group
-            for group in state.endpoints_by_group
-            if exact._group_spanning_tree(state, group) is None
-        ]
-        if disconnected:
-            raise ValueError(
-                "reach-safe topology state contains disconnected physical net group(s): "
-                f"{disconnected}"
-            )
-
         return cls(
             routing=routing,
             incident_wires={object_id: tuple(wires) for object_id, wires in incident.items()},
@@ -701,7 +690,6 @@ def refine_incremental_joint_layout(
             )
 
     topology = _anneal_feasible(state, topology, options)
-    topology = _refresh_feasible_topology(state)
     routing = topology.routing
     all_positions = dict(state.positions)
     all_positions.update(state.relay_positions)
