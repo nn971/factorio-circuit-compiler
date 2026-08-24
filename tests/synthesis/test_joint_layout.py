@@ -10,25 +10,20 @@ from factorio_circuit.synthesis.placement import PlacementOptions
 def test_joint_layout_shares_one_relay_across_three_terminal_net() -> None:
     abstract_circuit = abstract.AbstractPhysicalCircuit("shared_relay")
     abstract_circuit.entities.extend(
-        abstract.ConstantCombinator(entity_id, annotation_only=True)
-        for entity_id in (1, 2, 3)
+        abstract.ConstantCombinator(entity_id, annotation_only=True) for entity_id in (1, 2, 3)
     )
     abstract_circuit.nets.append(
         abstract.AbstractNet(
             1,
             (),
             tuple(
-                abstract.Endpoint(entity_id, abstract.Connector.SINGLE)
-                for entity_id in (1, 2, 3)
+                abstract.Endpoint(entity_id, abstract.Connector.SINGLE) for entity_id in (1, 2, 3)
             ),
         )
     )
     physical = PhysicalCircuit(
         "shared_relay",
-        entities=[
-            ConstantCombinator(entity_id, annotation_only=True)
-            for entity_id in (1, 2, 3)
-        ],
+        entities=[ConstantCombinator(entity_id, annotation_only=True) for entity_id in (1, 2, 3)],
     )
     positions = {
         1: (-4.0, 0.0),
@@ -53,7 +48,5 @@ def test_joint_layout_shares_one_relay_across_three_terminal_net() -> None:
     assert len(result.routing.relays) == 1
     assert len(result.routing.wires) == 3
     all_positions = dict(result.positions)
-    all_positions.update(
-        {relay.entity_id: relay.position for relay in result.routing.relays}
-    )
+    all_positions.update({relay.entity_id: relay.position for relay in result.routing.relays})
     validate_wire_spans(result.routing.wires, all_positions, maximum_span=7.0)
