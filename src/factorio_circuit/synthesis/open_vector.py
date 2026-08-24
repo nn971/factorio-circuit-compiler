@@ -85,7 +85,9 @@ def _joint_capacity_fill(
 
     ``target_fill`` is only an upper bound on density here. Relay entities are counted explicitly;
     the additional O(sqrt(n)) vacancies are a small working set for move proposals, not a fixed
-    dropout ratio. The result is deterministic and monotone in the estimated relay requirement.
+    dropout ratio. The porous bootstrap can expand the workspace independently, so this prepass may
+    eventually be redundant; remove or simplify it only after comparing heavyweight layout
+    benchmarks rather than as a behavior-preserving cleanup.
     """
 
     if relay_reserve <= 0:
@@ -107,15 +109,14 @@ def _joint_capacity_fill(
 
 
 def _retryable_layout_error(error: ValueError) -> bool:
+    """Classify the two retryable routing failures still emitted by current synthesis paths."""
+
     message = str(error)
     return any(
         marker in message
         for marker in (
             "parallel lanes and grid search were both exhausted",
-            "joint relay seed left physical net group",
             "outside conservative wire reach",
-            "could not recover annealed candidate grid",
-            "joint annealing could not repair the final placement",
         )
     )
 
@@ -324,8 +325,8 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                         self.progress,
                         "joint-layout",
                         detail=(
-                            "incrementally annealing implementation entities and relays; "
-                            "exact net trees rebuild at epoch boundaries"
+                            "reach-preserving joint annealing; "
+                            "local relay topology simplification at epoch boundaries"
                         ),
                     )
                     joint = refine_incremental_joint_layout(
