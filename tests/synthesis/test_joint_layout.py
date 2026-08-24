@@ -3,7 +3,7 @@ from math import sqrt
 import pytest
 
 from factorio_circuit.blueprint import routing as wire_routing
-from factorio_circuit.blueprint.routing import validate_wire_spans
+from factorio_circuit.blueprint.routing import RoutedWire, RoutingPlan, validate_wire_spans
 from factorio_circuit.ir import abstract_physical as abstract
 from factorio_circuit.ir.physical import ConstantCombinator, PhysicalCircuit, WireColor
 from factorio_circuit.synthesis import incremental_joint_layout as incremental
@@ -99,20 +99,29 @@ def test_incremental_joint_layout_runs_without_relay_bearing_nets() -> None:
     validate_wire_spans(result.routing.wires, result.positions, maximum_span=7.0)
 
 
-def test_incremental_joint_layout_seeds_relays_before_first_proposal(
+def test_incremental_joint_layout_is_reach_safe_before_first_proposal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     abstract_circuit, physical = _two_terminal_circuit("incremental_seed")
     observed_relay_counts: list[int] = []
-    original_anneal = incremental._anneal_incrementally
+    original_anneal = incremental._anneal_feasible
 
-    def observe_seed(*args: object, **kwargs: object) -> None:
-        state = args[0]
-        assert isinstance(state, incremental.exact._JointState)
+    def observe_seed(
+        state: incremental.exact._JointState,
+        topology: incremental._FeasibleTopology,
+        options: PlacementOptions,
+    ) -> incremental._FeasibleTopology:
+        all_positions = dict(state.positions)
+        all_positions.update(state.relay_positions)
+        validate_wire_spans(
+            topology.routing.wires,
+            all_positions,
+            maximum_span=state.safe_span,
+        )
         observed_relay_counts.append(len(state.relay_positions))
-        original_anneal(*args, **kwargs)
+        return original_anneal(state, topology, options)
 
-    monkeypatch.setattr(incremental, "_anneal_incrementally", observe_seed)
+    monkeypatch.setattr(incremental, "_anneal_feasible", observe_seed)
     result = refine_incremental_joint_layout(
         physical,
         abstract_circuit,
@@ -132,7 +141,36 @@ def test_incremental_joint_layout_seeds_relays_before_first_proposal(
     assert len(result.routing.relays) == 1
 
 
-def test_incremental_repair_does_not_require_legacy_point_to_point_router(
+def test_feasible_topology_rejects_move_that_breaks_reach() -> None:
+    abstract_circuit, physical = _two_terminal_circuit("hard_reach")
+    endpoints_by_group, colors_by_group = incremental.exact._physical_groups(
+        abstract_circuit,
+        {1: 1},
+        {1: WireColor.RED},
+    )
+    state = incremental.exact._JointState(
+        circuit=physical,
+        endpoints_by_group=endpoints_by_group,
+        colors_by_group=colors_by_group,
+        positions={1: (0.0, 0.0), 2: (2.0, 0.0)},
+        relay_positions={},
+        relay_groups={},
+        safe_span=3.0,
+        forbidden_areas=(),
+    )
+    topology = incremental._FeasibleTopology.build(
+        state,
+        RoutingPlan(
+            relays=(),
+            wires=(RoutedWire(1, 1, 2, 1, WireColor.RED),),
+        ),
+    )
+
+    assert topology.proposal_delta(state, {1: (-2.0, 0.0)}) is None
+    assert topology.proposal_delta(state, {1: (0.5, 0.0)}) is not None
+
+
+def test_incremental_bootstrap_does_not_require_legacy_point_to_point_router(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     abstract_circuit, physical = _two_terminal_circuit("incremental_repair")
