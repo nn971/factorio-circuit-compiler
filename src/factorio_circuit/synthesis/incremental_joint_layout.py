@@ -1,12 +1,14 @@
 """Incremental joint annealing for implementation entities and wire relays.
 
 Ordinary proposals use a cached coarse physical-net tree and update only edges incident to moved
-objects.  Coarse edges may temporarily exceed wire reach: over-reach is a soft energy penalty rather
-than a hard prerequisite.  At epoch boundaries the optimizer tries to repair the current geometry
+objects. Coarse edges may temporarily exceed wire reach: over-reach is a soft energy penalty rather
+than a hard prerequisite. At epoch boundaries the optimizer tries to repair the current geometry
 with relay entities placed on vacant legal one-tile sites, then evaluates an exact reach-safe tree.
 
-Relays and implementation combinators share one placement geometry.  The candidate grid itself
-omits reserved corridors, so there is no relay-specific forbidden-area model in this optimizer.
+Joint relays are blank constant combinators and therefore use the same tile-footprint collision
+semantics as implementation combinators. In particular, two entities whose nominal tile boxes only
+touch at an edge are legal neighbors. This is intentionally different from the historical free-space
+wire router, whose extra clearance margin is not part of the discrete joint placement model.
 """
 
 from __future__ import annotations
@@ -118,7 +120,7 @@ class _TopologyCache:
 
 @dataclass(slots=True)
 class _SpatialOccupancy:
-    """Small spatial hash for collision tests during joint annealing and relay repair."""
+    """Spatial hash using the discrete placer's nominal tile-footprint semantics."""
 
     state: exact._JointState
     buckets: dict[Bucket, set[int]]
@@ -132,6 +134,8 @@ class _SpatialOccupancy:
 
     @staticmethod
     def _box_keys(position: Position, half: tuple[float, float]) -> tuple[Bucket, ...]:
+        # Buckets represent the interior of nominal tile footprints. Edge-touching boxes are legal,
+        # matching placement._boxes_overlap(), so no neighboring-margin bucket expansion is needed.
         left = floor(position[0] - half[0] + _EPSILON)
         right = floor(position[0] + half[0] - _EPSILON)
         top = floor(position[1] - half[1] + _EPSILON)
@@ -186,7 +190,7 @@ class _SpatialOccupancy:
         return {
             other_id
             for other_id in candidates
-            if wire_routing._boxes_overlap(
+            if base_placement._boxes_overlap(
                 position,
                 half,
                 self.state.object_position(other_id),
@@ -196,11 +200,7 @@ class _SpatialOccupancy:
 
 
 def _edge_energy(distance: float, safe_span: float) -> float:
-    """Cheap surrogate for relay demand plus routed length.
-
-    It intentionally remains finite beyond wire reach so annealing can cross temporarily infeasible
-    geometries.  Exact repair decides feasibility only at checkpoints.
-    """
+    """Cheap finite surrogate for relay demand plus routed length."""
 
     relay_estimate = max(0, ceil(distance / safe_span - 1e-12) - 1)
     overreach = max(0.0, distance - safe_span) / safe_span
@@ -265,73 +265,6 @@ def _prune_relays_to_terminal_paths(state: exact._JointState) -> None:
             del state.relay_groups[relay_id]
 
 
-def _repair_to_reach_safe(
-    state: exact._JointState,
-    grid: base_placement._GridGeometry,
-    coarse: _TopologyCache,
-) -> bool:
-    """Try to realize every coarse tree edge with legal relay entities.
-
-    This is transactional: failure restores the pre-checkpoint relay set and leaves implementation
-    positions untouched, allowing annealing to continue toward an easier geometry.
-    """
-
-    original_positions = dict(state.relay_positions)
-    original_groups = dict(state.relay_groups)
-    occupancy = _SpatialOccupancy.build(state)
-    free_sites = {site for site in grid.unit_slots if occupancy.unit_site_is_free(site)}
-    next_relay_id = max(
-        [*(entity.id for entity in state.circuit.entities), *state.relay_positions],
-        default=0,
-    ) + 1
-
-    for group in sorted(state.endpoints_by_group):
-        if exact._group_spanning_tree(state, group) is not None:
-            continue
-        for left, right in coarse.edges_by_group[group]:
-            if _distance(state.object_position(left), state.object_position(right)) <= (
-                state.safe_span + _EPSILON
-            ):
-                continue
-            chain = _find_relay_chain(
-                state,
-                group,
-                left,
-                right,
-                free_sites,
-            )
-            if chain is None:
-                state.relay_positions.clear()
-                state.relay_positions.update(original_positions)
-                state.relay_groups.clear()
-                state.relay_groups.update(original_groups)
-                return False
-            for position in chain:
-                relay_id = next_relay_id
-                next_relay_id += 1
-                state.relay_positions[relay_id] = position
-                state.relay_groups[relay_id] = group
-                occupancy.add(relay_id, position)
-                free_sites.discard(position)
-
-        if exact._group_spanning_tree(state, group) is None:
-            state.relay_positions.clear()
-            state.relay_positions.update(original_positions)
-            state.relay_groups.clear()
-            state.relay_groups.update(original_groups)
-            return False
-
-    try:
-        _prune_relays_to_terminal_paths(state)
-    except ValueError:
-        state.relay_positions.clear()
-        state.relay_positions.update(original_positions)
-        state.relay_groups.clear()
-        state.relay_groups.update(original_groups)
-        return False
-    return True
-
-
 def _find_relay_chain(
     state: exact._JointState,
     group: int,
@@ -342,8 +275,7 @@ def _find_relay_chain(
     """Find a minimum-new-relay path through legal vacant unit sites.
 
     Existing terminals and same-net relays are zero-cost graph vertices, allowing different coarse
-    edges to share already-created branch relays.  Neighbor discovery is spatially bucketed by wire
-    reach, so the checkpoint search does not form a complete graph over all vacant sites.
+    edges to share already-created branch relays. Neighbor discovery is bucketed by wire reach.
     """
 
     start = state.object_position(left)
@@ -437,6 +369,103 @@ def _find_relay_chain(
     )
 
 
+def _repair_to_reach_safe(
+    state: exact._JointState,
+    grid: base_placement._GridGeometry,
+    coarse: _TopologyCache,
+) -> bool:
+    """Try to realize every coarse tree edge with legal relay entities transactionally."""
+
+    original_positions = dict(state.relay_positions)
+    original_groups = dict(state.relay_groups)
+    occupancy = _SpatialOccupancy.build(state)
+    free_sites = {site for site in grid.unit_slots if occupancy.unit_site_is_free(site)}
+    next_relay_id = max(
+        [*(entity.id for entity in state.circuit.entities), *state.relay_positions],
+        default=0,
+    ) + 1
+
+    # Repair the groups with the largest coarse over-reach first. That makes the sequential site
+    # allocator less likely to spend a geometrically critical vacant site on an easy local net.
+    group_order = sorted(
+        state.endpoints_by_group,
+        key=lambda group: (
+            -sum(
+                max(
+                    0.0,
+                    _distance(state.object_position(left), state.object_position(right))
+                    - state.safe_span,
+                )
+                for left, right in coarse.edges_by_group[group]
+            ),
+            group,
+        ),
+    )
+
+    for group in group_order:
+        if exact._group_spanning_tree(state, group) is not None:
+            continue
+        for left, right in coarse.edges_by_group[group]:
+            if _distance(state.object_position(left), state.object_position(right)) <= (
+                state.safe_span + _EPSILON
+            ):
+                continue
+            chain = _find_relay_chain(state, group, left, right, free_sites)
+            if chain is None:
+                state.relay_positions.clear()
+                state.relay_positions.update(original_positions)
+                state.relay_groups.clear()
+                state.relay_groups.update(original_groups)
+                return False
+            for position in chain:
+                relay_id = next_relay_id
+                next_relay_id += 1
+                state.relay_positions[relay_id] = position
+                state.relay_groups[relay_id] = group
+                occupancy.add(relay_id, position)
+                free_sites.discard(position)
+
+        if exact._group_spanning_tree(state, group) is None:
+            state.relay_positions.clear()
+            state.relay_positions.update(original_positions)
+            state.relay_groups.clear()
+            state.relay_groups.update(original_groups)
+            return False
+
+    try:
+        _prune_relays_to_terminal_paths(state)
+    except ValueError:
+        state.relay_positions.clear()
+        state.relay_positions.update(original_positions)
+        state.relay_groups.clear()
+        state.relay_groups.update(original_groups)
+        return False
+    return True
+
+
+def _validate_joint_clearance(
+    circuit: PhysicalCircuit,
+    positions: dict[int, Position],
+    routing: wire_routing.RoutingPlan,
+) -> None:
+    """Validate joint relays with the same nominal tile boxes used by placement."""
+
+    originals = [
+        (positions[entity.id], base_placement._entity_half_extent(entity), entity.id)
+        for entity in circuit.entities
+    ]
+    relays = [(relay.position, _RELAY_HALF_EXTENT, relay.entity_id) for relay in routing.relays]
+    for relay_pos, relay_half, relay_id in relays:
+        for position, half, entity_id in originals:
+            if base_placement._boxes_overlap(relay_pos, relay_half, position, half):
+                raise ValueError(f"joint wire relay {relay_id} overlaps entity {entity_id}")
+        for other_pos, other_half, other_id in relays:
+            if other_id <= relay_id:
+                continue
+            if base_placement._boxes_overlap(relay_pos, relay_half, other_pos, other_half):
+                raise ValueError(f"joint wire relay {relay_id} overlaps relay {other_id}")
+
+
 def refine_incremental_joint_layout(
     circuit: PhysicalCircuit,
     abstract_circuit: abstract.AbstractPhysicalCircuit,
@@ -486,12 +515,7 @@ def refine_incremental_joint_layout(
         all_positions,
         maximum_span=safe_wire_span,
     )
-    wire_routing.validate_entity_clearance(
-        circuit,
-        state.positions,
-        routing,
-        relay_forbidden_areas=(),
-    )
+    _validate_joint_clearance(circuit, state.positions, routing)
     return exact.JointLayoutResult(dict(state.positions), routing)
 
 
