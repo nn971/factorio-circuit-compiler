@@ -6,6 +6,7 @@ from factorio_circuit.blueprint import routing as wire_routing
 from factorio_circuit.blueprint.routing import validate_wire_spans
 from factorio_circuit.ir import abstract_physical as abstract
 from factorio_circuit.ir.physical import ConstantCombinator, PhysicalCircuit, WireColor
+from factorio_circuit.synthesis import incremental_joint_layout as incremental
 from factorio_circuit.synthesis.incremental_joint_layout import refine_incremental_joint_layout
 from factorio_circuit.synthesis.joint_layout import refine_joint_layout
 from factorio_circuit.synthesis.placement import PlacementOptions
@@ -96,6 +97,39 @@ def test_incremental_joint_layout_runs_without_relay_bearing_nets() -> None:
     assert result.routing.relays == ()
     assert len(result.routing.wires) == 1
     validate_wire_spans(result.routing.wires, result.positions, maximum_span=7.0)
+
+
+def test_incremental_joint_layout_seeds_relays_before_first_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    abstract_circuit, physical = _two_terminal_circuit("incremental_seed")
+    observed_relay_counts: list[int] = []
+    original_anneal = incremental._anneal_incrementally
+
+    def observe_seed(*args: object, **kwargs: object) -> None:
+        state = args[0]
+        assert isinstance(state, incremental.exact._JointState)
+        observed_relay_counts.append(len(state.relay_positions))
+        original_anneal(*args, **kwargs)
+
+    monkeypatch.setattr(incremental, "_anneal_incrementally", observe_seed)
+    result = refine_incremental_joint_layout(
+        physical,
+        abstract_circuit,
+        {1: 1},
+        {1: WireColor.RED},
+        {1: (-0.5, 0.0), 2: (4.5, 0.0)},
+        safe_wire_span=3.0,
+        options=PlacementOptions(
+            iterations=0,
+            reserve_corridors=False,
+            anchor_io=False,
+            target_fill=0.25,
+        ),
+    )
+
+    assert observed_relay_counts == [1]
+    assert len(result.routing.relays) == 1
 
 
 def test_incremental_repair_does_not_require_legacy_point_to_point_router(
