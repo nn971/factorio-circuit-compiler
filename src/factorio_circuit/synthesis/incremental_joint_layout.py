@@ -140,11 +140,7 @@ class _SpatialOccupancy:
         right = floor(position[0] + half[0] - _EPSILON)
         top = floor(position[1] - half[1] + _EPSILON)
         bottom = floor(position[1] + half[1] - _EPSILON)
-        return tuple(
-            (x, y)
-            for x in range(left, right + 1)
-            for y in range(top, bottom + 1)
-        )
+        return tuple((x, y) for x in range(left, right + 1) for y in range(top, bottom + 1))
 
     def _keys(self, object_id: int, position: Position) -> tuple[Bucket, ...]:
         return self._box_keys(position, self.state.object_half_extent(object_id))
@@ -363,9 +359,7 @@ def _find_relay_chain(
         cursor = parent
     path.reverse()
     return tuple(
-        positions[index]
-        for index in path
-        if index != goal_index and new_relay_cost[index] == 1
+        positions[index] for index in path if index != goal_index and new_relay_cost[index] == 1
     )
 
 
@@ -380,10 +374,13 @@ def _repair_to_reach_safe(
     original_groups = dict(state.relay_groups)
     occupancy = _SpatialOccupancy.build(state)
     free_sites = {site for site in grid.unit_slots if occupancy.unit_site_is_free(site)}
-    next_relay_id = max(
-        [*(entity.id for entity in state.circuit.entities), *state.relay_positions],
-        default=0,
-    ) + 1
+    next_relay_id = (
+        max(
+            [*(entity.id for entity in state.circuit.entities), *state.relay_positions],
+            default=0,
+        )
+        + 1
+    )
 
     # Repair the groups with the largest coarse over-reach first. That makes the sequential site
     # allocator less likely to spend a geometrically critical vacant site on an easy local net.
