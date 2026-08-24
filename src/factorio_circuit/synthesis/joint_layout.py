@@ -1,44 +1,24 @@
 """Joint annealed refinement of implementation combinators and layout-only relays.
 
-The ordinary placer supplies the implementation-entity seed.  This stage realizes each synthesized
-physical net as one reach-connected graph, introduces the relays needed by that graph, and then
-jointly refines only relay-bearing nets.  Relays belong to an electrical net group rather than to a
-single logical point-to-point edge, so one relay may be a branch point for several terminals.
+The ordinary placer supplies the implementation-entity seed. This stage realizes each synthesized
+physical net as one reach-connected graph, introduces the relays needed by that graph, and jointly
+refines only relay-bearing nets. Relays belong to an electrical net group rather than to one
+logical point-to-point edge, so one relay may be a branch point for several terminals.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from math import ceil, exp, hypot
 from random import Random
 
-from factorio_circuit.blueprint.routing import (
-    BlueprintRelay,
-    RoutedWire,
-    RoutingPlan,
-    _boxes_overlap as _routing_boxes_overlap,
-    _colorize_connector,
-    _endpoint_connector_id,
-    _entity_half_extent as _routing_entity_half_extent,
-    _find_relay_positions,
-    _relay_connector_id,
-    _relay_overlaps_forbidden,
-    validate_entity_clearance,
-    validate_wire_spans,
-)
+from factorio_circuit.blueprint import routing as wire_routing
 from factorio_circuit.ir import abstract_physical as abstract
 from factorio_circuit.ir.physical import Connector, PhysicalCircuit, WireColor, WireEndpoint
-from factorio_circuit.synthesis.placement import (
-    PlacementOptions,
-    Position,
-    RelayForbiddenArea,
-    _GridGeometry,
-    _boxes_overlap as _placement_boxes_overlap,
-    _candidate_grid,
-    _candidate_positions,
-    _entity_half_extent as _placement_entity_half_extent,
-)
+from factorio_circuit.synthesis import placement as base_placement
+from factorio_circuit.synthesis.placement import PlacementOptions, Position, RelayForbiddenArea
 
 _RELAY_HALF_EXTENT = (0.5, 0.5)
 _CONNECTOR_ORDER = {
@@ -54,7 +34,7 @@ class JointLayoutResult:
     """Implementation positions plus one shared relay tree per physical net."""
 
     positions: dict[int, Position]
-    routing: RoutingPlan
+    routing: wire_routing.RoutingPlan
 
 
 @dataclass(slots=True)
@@ -88,7 +68,7 @@ class _JointState:
     def object_half_extent(self, object_id: int) -> tuple[float, float]:
         if object_id in self.relay_positions:
             return _RELAY_HALF_EXTENT
-        return _placement_entity_half_extent(self.circuit.entity_by_id(object_id))
+        return base_placement._entity_half_extent(self.circuit.entity_by_id(object_id))
 
 
 def refine_joint_layout(
@@ -125,8 +105,12 @@ def refine_joint_layout(
     routing = _routing_plan(state)
     all_positions = dict(state.positions)
     all_positions.update(state.relay_positions)
-    validate_wire_spans(routing.wires, all_positions, maximum_span=safe_wire_span)
-    validate_entity_clearance(
+    wire_routing.validate_wire_spans(
+        routing.wires,
+        all_positions,
+        maximum_span=safe_wire_span,
+    )
+    wire_routing.validate_entity_clearance(
         circuit,
         state.positions,
         routing,
@@ -168,13 +152,10 @@ def _seed_state(
     relay_groups: dict[int, int] = {}
     next_relay_id = max((entity.id for entity in circuit.entities), default=0) + 1
     occupied = [
-        (positions[entity.id], _routing_entity_half_extent(entity), entity.id)
+        (positions[entity.id], wire_routing._entity_half_extent(entity), entity.id)
         for entity in circuit.entities
     ]
 
-    # High-fanout nets that are already reach-connected need no relay planning at all.  This is
-    # important for large broadcast networks: connectivity is O(k^2), whereas constructing and
-    # routing a full unconstrained terminal MST would do unnecessary work.
     groups_needing_relays = [
         group
         for group, endpoints in endpoints_by_group.items()
@@ -193,7 +174,7 @@ def _seed_state(
             target = positions[right.entity]
             if _distance(source, target) <= safe_wire_span + 1e-9:
                 continue
-            candidates = _find_relay_positions(
+            candidates = wire_routing._find_relay_positions(
                 source,
                 target,
                 safe_span=safe_wire_span,
@@ -219,9 +200,16 @@ def _seed_state(
         safe_span=safe_wire_span,
         forbidden_areas=forbidden_areas,
     )
-    disconnected = [group for group in endpoints_by_group if _group_spanning_tree(state, group) is None]
+    disconnected = [
+        group
+        for group in endpoints_by_group
+        if _group_spanning_tree(state, group) is None
+    ]
     if disconnected:
-        raise ValueError(f"joint relay seed left physical net group(s) disconnected: {disconnected}")
+        raise ValueError(
+            "joint relay seed left physical net group(s) disconnected: "
+            f"{disconnected}"
+        )
     return state
 
 
@@ -230,12 +218,10 @@ def _terminal_reach_tree(
     positions: dict[int, Position],
     safe_span: float,
 ) -> tuple[tuple[tuple[abstract.Endpoint, abstract.Endpoint], ...], float] | None:
-    vertices = tuple(endpoints)
-
     def position(item: abstract.Endpoint) -> Position:
         return positions[item.entity]
 
-    return _prim_tree(vertices, position, maximum_span=safe_span)
+    return _prim_tree(endpoints, position, maximum_span=safe_span)
 
 
 def _terminal_metric_mst(
@@ -252,7 +238,7 @@ def _terminal_metric_mst(
 
 def _prim_tree[T](
     vertices: tuple[T, ...],
-    position: object,
+    position: Callable[[T], Position],
     *,
     maximum_span: float | None,
 ) -> tuple[tuple[tuple[T, T], ...], float] | None:
@@ -261,16 +247,11 @@ def _prim_tree[T](
     if len(vertices) < 2:
         return ((), 0.0)
 
-    # `position` is intentionally a tiny local callable; spelling a Protocol here would add more
-    # machinery than value.  The cast-free helper below keeps mypy aware of the concrete calls.
-    def point(vertex: T) -> Position:
-        return position(vertex)  # type: ignore[operator, no-any-return]
-
     remaining = set(range(1, len(vertices)))
     best: dict[int, tuple[float, int]] = {}
 
     def consider(left_index: int, right_index: int) -> None:
-        distance = _distance(point(vertices[left_index]), point(vertices[right_index]))
+        distance = _distance(position(vertices[left_index]), position(vertices[right_index]))
         if maximum_span is not None and distance > maximum_span + 1e-9:
             return
         candidate = (distance, left_index)
@@ -318,6 +299,7 @@ def _joint_anneal(state: _JointState, options: PlacementOptions) -> None:
         if entity_id in active_entities
     ]
     movable_objects = [*movable_entities, *sorted(state.relay_positions)]
+    movable_set = set(movable_objects)
     if len(movable_objects) < 2:
         return
 
@@ -363,9 +345,16 @@ def _joint_anneal(state: _JointState, options: PlacementOptions) -> None:
             continue
 
         other = _exact_occupant(state, target, ignore_id=object_id)
-        if other is not None and state.object_half_extent(other) != state.object_half_extent(object_id):
+        # A relay may sit on any half-tile coordinate while an implementation constant must remain
+        # on a legal 1x1 grid subslot. Cross-class swaps would silently move the constant outside
+        # its legal candidate lattice, so keep relay/entity exchanges as two ordinary moves.
+        if other is not None and _is_relay(state, other) != _is_relay(state, object_id):
             continue
-        if other is not None and other not in movable_objects:
+        if other is not None and state.object_half_extent(other) != state.object_half_extent(
+            object_id
+        ):
+            continue
+        if other is not None and other not in movable_set:
             continue
         if not _move_is_collision_free(state, object_id, target, other):
             continue
@@ -418,7 +407,7 @@ def _matching_candidate_grid(
     circuit: PhysicalCircuit,
     positions: dict[int, Position],
     options: PlacementOptions,
-) -> _GridGeometry:
+) -> base_placement._GridGeometry:
     input_ids = {port.marker_entity for port in circuit.inputs}
     output_ids = {port.marker_entity for port in circuit.outputs}
     io_ids = input_ids | output_ids
@@ -427,19 +416,21 @@ def _matching_candidate_grid(
         for entity in circuit.entities
         if not options.anchor_io or entity.id not in io_ids
     ]
+    entities = {entity.id: entity for entity in circuit.entities}
     tile_demand = sum(
-        1 if _placement_entity_half_extent(circuit.entity_by_id(entity_id))[0] == 0.5 else 2
+        1 if base_placement._entity_half_extent(entities[entity_id])[0] == 0.5 else 2
         for entity_id in body_ids
     )
     body_count = max(1, ceil(tile_demand / 2))
     minimum_rows = max(len(circuit.inputs), len(circuit.outputs), 1) if options.anchor_io else 1
 
     while True:
-        grid = _candidate_grid(body_count, minimum_rows, options)
+        grid = base_placement._candidate_grid(body_count, minimum_rows, options)
         if all(
             entity_id in options.anchors
             or (options.anchor_io and entity_id in io_ids)
-            or positions[entity_id] in _candidate_positions(circuit.entity_by_id(entity_id), grid)
+            or positions[entity_id]
+            in base_placement._candidate_positions(entities[entity_id], grid)
             for entity_id in positions
         ):
             return grid
@@ -469,7 +460,7 @@ def _relay_move_bounds(state: _JointState) -> tuple[float, float, float, float]:
 def _proposed_position(
     state: _JointState,
     object_id: int,
-    grid: _GridGeometry,
+    grid: base_placement._GridGeometry,
     relay_bounds: tuple[float, float, float, float],
     incident_groups: dict[int, set[int]],
     center: Position,
@@ -477,7 +468,7 @@ def _proposed_position(
     normalized_temperature: float,
 ) -> Position:
     preferred = _preferred_object_position(state, object_id, incident_groups, center)
-    if object_id in state.relay_positions:
+    if _is_relay(state, object_id):
         if rng.random() < 0.15:
             raw = (
                 rng.uniform(relay_bounds[0], relay_bounds[1]),
@@ -491,7 +482,8 @@ def _proposed_position(
             )
         return (round(raw[0] * 2) / 2, round(raw[1] * 2) / 2)
 
-    candidates = _candidate_positions(state.circuit.entity_by_id(object_id), grid)
+    entity = state.circuit.entity_by_id(object_id)
+    candidates = base_placement._candidate_positions(entity, grid)
     if rng.random() < 0.12:
         return candidates[rng.randrange(len(candidates))]
     noise = state.safe_span * (1.2 * normalized_temperature + 0.05)
@@ -499,7 +491,7 @@ def _proposed_position(
         preferred[0] + rng.uniform(-noise, noise),
         preferred[1] + rng.uniform(-noise, noise),
     )
-    return min(candidates, key=lambda item: (_distance_sq(item, target), item))
+    return base_placement._nearest_candidate(entity, target, grid)
 
 
 def _preferred_object_position(
@@ -537,6 +529,10 @@ def _incident_groups(
     return dict(result)
 
 
+def _is_relay(state: _JointState, object_id: int) -> bool:
+    return object_id in state.relay_positions
+
+
 def _exact_occupant(state: _JointState, position: Position, *, ignore_id: int) -> int | None:
     for entity_id, candidate in state.positions.items():
         if entity_id != ignore_id and candidate == position:
@@ -553,7 +549,10 @@ def _move_is_collision_free(
     target: Position,
     other: int | None,
 ) -> bool:
-    if object_id in state.relay_positions and _relay_overlaps_forbidden(target, state.forbidden_areas):
+    if _is_relay(state, object_id) and wire_routing._relay_overlaps_forbidden(
+        target,
+        state.forbidden_areas,
+    ):
         return False
     ignored = {object_id} if other is None else {object_id, other}
     if not _position_clear_of_objects(state, object_id, target, ignored):
@@ -562,7 +561,7 @@ def _move_is_collision_free(
         return True
 
     other_target = state.object_position(object_id)
-    if other in state.relay_positions and _relay_overlaps_forbidden(
+    if _is_relay(state, other) and wire_routing._relay_overlaps_forbidden(
         other_target,
         state.forbidden_areas,
     ):
@@ -577,22 +576,22 @@ def _position_clear_of_objects(
     ignored: set[int],
 ) -> bool:
     half = state.object_half_extent(object_id)
-    object_is_relay = object_id in state.relay_positions
+    object_is_relay = _is_relay(state, object_id)
     for other_id, other_position in state.positions.items():
         if other_id in ignored:
             continue
         other_half = state.object_half_extent(other_id)
         overlap = (
-            _routing_boxes_overlap(position, half, other_position, other_half)
+            wire_routing._boxes_overlap(position, half, other_position, other_half)
             if object_is_relay
-            else _placement_boxes_overlap(position, half, other_position, other_half)
+            else base_placement._boxes_overlap(position, half, other_position, other_half)
         )
         if overlap:
             return False
     for relay_id, relay_position in state.relay_positions.items():
         if relay_id in ignored:
             continue
-        if _routing_boxes_overlap(position, half, relay_position, _RELAY_HALF_EXTENT):
+        if wire_routing._boxes_overlap(position, half, relay_position, _RELAY_HALF_EXTENT):
             return False
     return True
 
@@ -622,14 +621,14 @@ def _undo_move(
 
 
 def _set_object_position(state: _JointState, object_id: int, position: Position) -> None:
-    if object_id in state.relay_positions:
+    if _is_relay(state, object_id):
         state.relay_positions[object_id] = position
     else:
         state.positions[object_id] = position
 
 
 def _prune_relays(state: _JointState) -> None:
-    # One pass is sufficient.  If a relay is essential while all remaining relays are present,
+    # One pass is sufficient. If a relay is essential while all remaining relays are present,
     # deleting some of those other relays later cannot make this relay become removable.
     for relay_id in sorted(tuple(state.relay_positions)):
         group = state.relay_groups[relay_id]
@@ -659,9 +658,9 @@ def _group_spanning_tree(
     return _prim_tree(vertices, position, maximum_span=state.safe_span)
 
 
-def _routing_plan(state: _JointState) -> RoutingPlan:
+def _routing_plan(state: _JointState) -> wire_routing.RoutingPlan:
     relays = tuple(
-        BlueprintRelay(
+        wire_routing.BlueprintRelay(
             entity_id=relay_id,
             position=state.relay_positions[relay_id],
             description=(
@@ -673,14 +672,14 @@ def _routing_plan(state: _JointState) -> RoutingPlan:
         for relay_id in sorted(state.relay_positions)
     )
 
-    wires: list[RoutedWire] = []
+    wires: list[wire_routing.RoutedWire] = []
     for group in sorted(state.endpoints_by_group):
         tree = _group_spanning_tree(state, group)
         if tree is None:
             raise ValueError(f"physical net group {group} became disconnected during refinement")
         color = state.colors_by_group[group]
         wires.extend(_routed_edge(state, left, right, color) for left, right in tree[0])
-    return RoutingPlan(relays=relays, wires=tuple(wires))
+    return wire_routing.RoutingPlan(relays=relays, wires=tuple(wires))
 
 
 def _routed_edge(
@@ -688,10 +687,10 @@ def _routed_edge(
     left: Vertex,
     right: Vertex,
     color: WireColor,
-) -> RoutedWire:
+) -> wire_routing.RoutedWire:
     left_entity, left_connector = _vertex_connector(state, left, color)
     right_entity, right_connector = _vertex_connector(state, right, color)
-    return RoutedWire(
+    return wire_routing.RoutedWire(
         source_entity=left_entity,
         source_connector_id=left_connector,
         target_entity=right_entity,
@@ -706,15 +705,13 @@ def _vertex_connector(
     color: WireColor,
 ) -> tuple[int, int]:
     if vertex[0] == 1:
-        return (vertex[1], _colorize_connector(_relay_connector_id(color), color))
+        connector = wire_routing._relay_connector_id(color)
+        return (vertex[1], wire_routing._colorize_connector(connector, color))
 
     endpoint = _vertex_endpoint(state, vertex)
     physical_endpoint = WireEndpoint(endpoint.entity, Connector(endpoint.connector.value))
-    connector = _colorize_connector(
-        _endpoint_connector_id(state.circuit, physical_endpoint),
-        color,
-    )
-    return (endpoint.entity, connector)
+    connector = wire_routing._endpoint_connector_id(state.circuit, physical_endpoint)
+    return (endpoint.entity, wire_routing._colorize_connector(connector, color))
 
 
 def _vertex_endpoint(state: _JointState, vertex: Vertex) -> abstract.Endpoint:
