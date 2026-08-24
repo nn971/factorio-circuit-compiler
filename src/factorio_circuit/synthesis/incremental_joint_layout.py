@@ -350,12 +350,10 @@ def _construct_feasible_bootstrap(
                 )
                 if chain is None:
                     source_neighbors = sum(
-                        _distance(source, site) <= state.safe_span + _EPSILON
-                        for site in free_sites
+                        _distance(source, site) <= state.safe_span + _EPSILON for site in free_sites
                     )
                     target_neighbors = sum(
-                        _distance(target, site) <= state.safe_span + _EPSILON
-                        for site in free_sites
+                        _distance(target, site) <= state.safe_span + _EPSILON for site in free_sites
                     )
                     last_failure = (
                         f"group={group}; edge={left}->{right}; source={source}; target={target}; "
