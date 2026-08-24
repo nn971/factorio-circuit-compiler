@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from math import exp, hypot
+from math import exp, floor, hypot
 from random import Random
 
 from factorio_circuit.blueprint import routing as wire_routing
@@ -28,6 +28,7 @@ from factorio_circuit.synthesis.placement import PlacementOptions, Position, Rel
 
 _EPOCH_PROPOSALS = 256
 _EPSILON = 1e-9
+Bucket = tuple[int, int]
 
 
 @dataclass(slots=True)
@@ -106,6 +107,68 @@ class _TopologyCache:
         return delta
 
 
+@dataclass(slots=True)
+class _SpatialOccupancy:
+    """Small spatial hash for collision tests during joint annealing."""
+
+    state: exact._JointState
+    buckets: dict[Bucket, set[int]]
+
+    @classmethod
+    def build(cls, state: exact._JointState) -> _SpatialOccupancy:
+        result = cls(state, defaultdict(set))
+        for object_id in [*state.positions, *state.relay_positions]:
+            result.add(object_id, state.object_position(object_id))
+        return result
+
+    def _keys(self, object_id: int, position: Position) -> tuple[Bucket, ...]:
+        half_x, half_y = self.state.object_half_extent(object_id)
+        left = floor(position[0] - half_x + _EPSILON)
+        right = floor(position[0] + half_x - _EPSILON)
+        top = floor(position[1] - half_y + _EPSILON)
+        bottom = floor(position[1] + half_y - _EPSILON)
+        return tuple(
+            (x, y)
+            for x in range(left, right + 1)
+            for y in range(top, bottom + 1)
+        )
+
+    def add(self, object_id: int, position: Position) -> None:
+        for key in self._keys(object_id, position):
+            self.buckets[key].add(object_id)
+
+    def remove(self, object_id: int, position: Position) -> None:
+        for key in self._keys(object_id, position):
+            owners = self.buckets[key]
+            owners.remove(object_id)
+            if not owners:
+                del self.buckets[key]
+
+    def overlaps(
+        self,
+        object_id: int,
+        position: Position,
+        *,
+        ignored: set[int],
+    ) -> set[int]:
+        candidates: set[int] = set()
+        for key in self._keys(object_id, position):
+            candidates.update(self.buckets.get(key, ()))
+        candidates.difference_update(ignored)
+
+        half = self.state.object_half_extent(object_id)
+        return {
+            other_id
+            for other_id in candidates
+            if wire_routing._boxes_overlap(
+                position,
+                half,
+                self.state.object_position(other_id),
+                self.state.object_half_extent(other_id),
+            )
+        }
+
+
 def refine_incremental_joint_layout(
     circuit: PhysicalCircuit,
     abstract_circuit: abstract.AbstractPhysicalCircuit,
@@ -120,7 +183,8 @@ def refine_incremental_joint_layout(
 
     Exact reach-safe topology is rebuilt only once per epoch. Within an epoch, connectivity is
     guaranteed by requiring every edge of the cached reach-safe tree to remain within wire reach.
-    Relay pruning at epoch boundaries is therefore safe and can dynamically reduce relay count.
+    Relay pruning is deliberately outside the epoch hot path: an exact relay-by-relay removability
+    check is much more expensive than rebuilding one tree and is paid only before and after annealing.
     """
 
     endpoints_by_group, colors_by_group = exact._physical_groups(
@@ -179,6 +243,7 @@ def _anneal_incrementally(
     rng = Random(options.random_seed ^ 0x61A7E5ED)
 
     topology = _TopologyCache.build(state)
+    occupancy = _SpatialOccupancy.build(state)
     movable_set = set(movable_entities) | set(state.relay_positions)
     best_score = _exact_score(state, topology, movable_set, center)
     best_positions = dict(state.positions)
@@ -210,13 +275,20 @@ def _anneal_incrementally(
             if target == current:
                 continue
 
-            other = exact._exact_occupant(state, target, ignore_id=object_id)
-            if other is not None and other not in movable_set:
-                continue
-            if other is not None and state.object_half_extent(other) != state.object_half_extent(
-                object_id
-            ):
-                continue
+            owners = occupancy.overlaps(object_id, target, ignored={object_id})
+            other: int | None = None
+            if owners:
+                if len(owners) != 1:
+                    continue
+                candidate = next(iter(owners))
+                if state.object_position(candidate) != target:
+                    continue
+                if candidate not in movable_set:
+                    continue
+                if state.object_half_extent(candidate) != state.object_half_extent(object_id):
+                    continue
+                other = candidate
+
             if not _position_is_legal(state, object_id, target, unit_sites, wide_sites):
                 continue
             if other is not None and not _position_is_legal(
@@ -227,7 +299,11 @@ def _anneal_incrementally(
                 wide_sites,
             ):
                 continue
-            if not exact._move_is_collision_free(state, object_id, target, other):
+
+            ignored = {object_id} if other is None else {object_id, other}
+            if occupancy.overlaps(object_id, target, ignored=ignored):
+                continue
+            if other is not None and occupancy.overlaps(other, current, ignored=ignored):
                 continue
 
             targets = {object_id: target}
@@ -246,14 +322,18 @@ def _anneal_incrementally(
             if delta > 0 and rng.random() >= exp(-delta / temperature):
                 continue
 
+            occupancy.remove(object_id, current)
+            if other is not None:
+                occupancy.remove(other, target)
             exact._apply_move(state, object_id, target, other)
+            occupancy.add(object_id, target)
+            if other is not None:
+                occupancy.add(other, current)
             topology.total_length += wire_delta
 
-        # Accurate work belongs here, not in the proposal loop. Pruning can change relay
-        # cardinality, then a fresh exact reach-safe tree becomes the cache for the next epoch.
-        exact._prune_relays(state)
+        # One exact O(k^2) reach-safe rebuild refreshes the surrogate topology for the next epoch.
+        # Relay-by-relay exact pruning is intentionally not performed here.
         topology = _TopologyCache.build(state)
-        movable_set = set(movable_entities) | set(state.relay_positions)
         score = _exact_score(state, topology, movable_set, center)
         if score < best_score:
             best_score = score
