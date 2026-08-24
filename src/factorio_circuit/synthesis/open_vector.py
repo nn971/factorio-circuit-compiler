@@ -2,18 +2,21 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from math import hypot
 from typing import Any
 
 from factorio_circuit.blueprint.routing import route_wires, routed_positions
 from factorio_circuit.ir import abstract_physical as abstract
 from factorio_circuit.ir.physical import (
     DeciderCombinator,
+    PhysicalCircuit,
     SelectorCombinator,
     SignalId,
     WireColor,
 )
 from factorio_circuit.lowering.vector_unary import VECTOR_EACH_PLACEHOLDER
 from factorio_circuit.progress import ProgressCallback, report_progress
+from factorio_circuit.synthesis.joint_layout import refine_joint_layout
 from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
 from factorio_circuit.synthesis.physical import PhysicalSynthesizer
 from factorio_circuit.synthesis.placement import PlacementOptions, Position, plan_physical_circuit
@@ -26,7 +29,7 @@ from factorio_circuit.synthesis.signal_coloring import allocate_abstract_signals
 def _placement_attempt_count(options: PlacementOptions) -> int:
     """Return deterministic synthesis attempts for the requested placement policy."""
 
-    # Row placement is invariant under target-fill/corridor retry parameters. Greedy net-aware
+    # Row placement is invariant under target-fill/corridor retry parameters. Greedy annealed
     # placement (iterations=0), however, changes when the candidate grid is made sparser, so it
     # should retain deterministic retries instead of being forced to a single attempt.
     return 1 if options.strategy == "row" else options.restarts
@@ -46,6 +49,22 @@ def _placement_attempt_options(options: PlacementOptions, restart: int) -> Place
         corridor_width=corridor_width,
         restarts=1,
     )
+
+
+def _connections_need_relays(
+    circuit: PhysicalCircuit,
+    positions: dict[int, Position],
+    *,
+    safe_wire_span: float,
+) -> bool:
+    """Return whether the chosen physical-net trees contain any over-reach edge."""
+
+    for connection in circuit.connections:
+        left = positions[connection.source.entity]
+        right = positions[connection.target.entity]
+        if hypot(left[0] - right[0], left[1] - right[1]) > safe_wire_span + 1e-9:
+            return True
+    return False
 
 
 @dataclass(slots=True)
@@ -92,7 +111,7 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
             if selected.anchors:
                 raise ValueError(
                     f"{strategy} does not yet support fixed placement anchors; "
-                    "use the net-aware layout for anchored synthesis"
+                    "use the annealed layout for anchored synthesis"
                 )
             if strategy == "safe-crossbar":
                 report_progress(
@@ -159,15 +178,54 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                 detail=f"placed {len(positions)} entities",
             )
 
+            # Materialize the relay-minimizing tree first. Most compiled circuits are already
+            # directly reach-safe after placement; keep those on the cheap historical routing
+            # path and invoke the joint combinator/relay refinement only when a relay is actually
+            # required.
             self._materialize_connections(physical, net_colors, net_groups, positions)
+            needs_joint = strategy in {"annealed", "net-aware"} and _connections_need_relays(
+                physical,
+                positions,
+                safe_wire_span=self.safe_wire_span,
+            )
+
             try:
-                routing = route_wires(
-                    physical,
-                    positions,
-                    safe_span=self.safe_wire_span,
-                    relay_forbidden_areas=placement.relay_forbidden_areas,
-                    progress=self.progress,
-                )
+                if needs_joint:
+                    report_progress(
+                        self.progress,
+                        "joint-layout",
+                        detail="jointly refining relay-bearing physical nets",
+                    )
+                    joint = refine_joint_layout(
+                        physical,
+                        self.circuit,
+                        net_groups,
+                        net_colors,
+                        positions,
+                        safe_wire_span=self.safe_wire_span,
+                        options=attempt_options,
+                        relay_forbidden_areas=placement.relay_forbidden_areas,
+                    )
+                    positions = joint.positions
+                    routing = joint.routing
+                    # The concrete circuit keeps a conventional terminal spanning tree for
+                    # simulation/inspection. Blueprint routing itself uses the shared relay tree.
+                    self._materialize_connections(physical, net_colors, net_groups, positions)
+                    report_progress(
+                        self.progress,
+                        "routing",
+                        completed=len(routing.wires),
+                        total=len(routing.wires),
+                        detail=f"shared-net routing complete; relays={len(routing.relays)}",
+                    )
+                else:
+                    routing = route_wires(
+                        physical,
+                        positions,
+                        safe_span=self.safe_wire_span,
+                        relay_forbidden_areas=placement.relay_forbidden_areas,
+                        progress=self.progress,
+                    )
             except ValueError as exc:
                 if "parallel lanes and grid search were both exhausted" not in str(exc):
                     raise

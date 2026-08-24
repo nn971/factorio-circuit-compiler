@@ -41,7 +41,13 @@ def _single_net_fixture(
     return abstract_circuit, physical, {1: 1}
 
 
-def test_net_aware_placement_makes_large_shared_net_reach_connected() -> None:
+def test_default_strategy_is_named_annealed() -> None:
+    assert PlacementOptions().strategy == "annealed"
+    PlacementOptions(strategy="annealed").validate()
+    PlacementOptions(strategy="net-aware").validate()
+
+
+def test_annealed_placement_makes_large_shared_net_reach_connected() -> None:
     abstract_circuit, physical, groups = _single_net_fixture(32)
 
     positions = place_physical_circuit(
@@ -60,6 +66,28 @@ def test_net_aware_placement_makes_large_shared_net_reach_connected() -> None:
 
     assert metrics.disconnected_net_components == 0
     assert metrics.estimated_relays == 0
+
+
+def test_constant_combinators_use_one_by_one_subslots() -> None:
+    abstract_circuit, physical, groups = _single_net_fixture(4)
+
+    positions = place_physical_circuit(
+        physical,
+        abstract_circuit,
+        groups,
+        safe_wire_span=7.0,
+        options=PlacementOptions(
+            iterations=0,
+            reserve_corridors=False,
+            target_fill=1.0,
+            anchor_io=False,
+        ),
+    )
+
+    xs = {x for x, _ in positions.values()}
+    ys = {y for _, y in positions.values()}
+    assert xs == {-0.5, 0.5}
+    assert ys == {0.0, 1.0}
 
 
 def test_entity_anchor_is_preserved_exactly() -> None:
@@ -187,6 +215,7 @@ def test_default_corridor_geometry_reserves_only_substation_crossing() -> None:
     assert options.block_width_tiles == 16
     assert options.block_height_tiles == 16
     assert options.corridor_width == 2.0
+    assert len(grid.unit_slots) == 2 * len(grid.slots)
 
     # The only relay-forbidden area is the local 2x2 substation footprint at the crossing.
     assert grid.relay_forbidden_areas == ((15.0, 17.0, 15.5, 17.5),)
