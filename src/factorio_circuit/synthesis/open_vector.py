@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from math import ceil, sqrt
 from typing import Any
 
 from factorio_circuit.blueprint.routing import RoutingPlan, route_wires, routed_positions
@@ -19,7 +20,12 @@ from factorio_circuit.progress import ProgressCallback, report_progress
 from factorio_circuit.synthesis.incremental_joint_layout import refine_incremental_joint_layout
 from factorio_circuit.synthesis.layout import Layout, LayoutRelay, LayoutWire
 from factorio_circuit.synthesis.physical import PhysicalSynthesizer
-from factorio_circuit.synthesis.placement import PlacementOptions, Position, plan_physical_circuit
+from factorio_circuit.synthesis.placement import (
+    PlacementOptions,
+    Position,
+    placement_metrics,
+    plan_physical_circuit,
+)
 from factorio_circuit.synthesis.placement_constraints import resolve_placement_constraints
 from factorio_circuit.synthesis.safe_crossbar import build_safe_crossbar_layout
 from factorio_circuit.synthesis.safe_folded_crossbar import build_safe_folded_crossbar_layout
@@ -68,6 +74,36 @@ def _placement_attempt_options(options: PlacementOptions, restart: int) -> Place
         corridor_width=corridor_width,
         restarts=1,
     )
+
+
+def _joint_capacity_fill(
+    circuit: PhysicalCircuit,
+    options: PlacementOptions,
+    relay_reserve: int,
+) -> float:
+    """Derive a common entity-envelope fill from implementation plus relay demand.
+
+    ``target_fill`` is only an upper bound on density here. Relay entities are counted explicitly;
+    the additional O(sqrt(n)) vacancies are a small working set for move proposals, not a fixed
+    dropout ratio. The result is deterministic and monotone in the estimated relay requirement.
+    """
+
+    if relay_reserve <= 0:
+        return options.target_fill
+
+    input_ids = {port.marker_entity for port in circuit.inputs}
+    output_ids = {port.marker_entity for port in circuit.outputs}
+    io_ids = input_ids | output_ids
+    body_entities = [
+        entity for entity in circuit.entities if not options.anchor_io or entity.id not in io_ids
+    ]
+    implementation_units = sum(
+        1 if isinstance(entity, ConstantCombinator) else 2 for entity in body_entities
+    )
+    implementation_units = max(1, implementation_units)
+    working_vacancies = max(8, ceil(sqrt(implementation_units + relay_reserve)))
+    combined_units = implementation_units + relay_reserve + working_vacancies
+    return min(options.target_fill, implementation_units / combined_units)
 
 
 def _retryable_layout_error(error: ValueError) -> bool:
@@ -225,10 +261,10 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                 ),
             )
 
-            # Annealed synthesis now has one hot loop: first build a deterministic legal seed,
-            # then jointly anneal implementation entities and relays. Running the historical
-            # exact-net annealer here would duplicate work and restore the O(k^2)-per-proposal
-            # bottleneck that large Snake nets exposed.
+            # Build a deterministic implementation seed first. For annealed synthesis, measure its
+            # coarse relay demand and enlarge the common entity envelope if needed, then reseed.
+            # This makes relays part of placement capacity instead of assuming implementation-only
+            # vacancies happen to be sufficient.
             seed_options = replace(attempt_options, iterations=0) if annealed else attempt_options
             placement = plan_physical_circuit(
                 physical,
@@ -238,12 +274,41 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                 options=seed_options,
             )
             positions = placement.positions
+            relay_reserve = 0
+            if annealed:
+                for _capacity_pass in range(3):
+                    metrics = placement_metrics(
+                        self.circuit,
+                        net_groups,
+                        positions,
+                        safe_wire_span=self.safe_wire_span,
+                    )
+                    relay_reserve = max(relay_reserve, metrics.estimated_relays)
+                    capacity_fill = _joint_capacity_fill(physical, seed_options, relay_reserve)
+                    if capacity_fill >= seed_options.target_fill - 1e-9:
+                        break
+                    seed_options = replace(seed_options, target_fill=capacity_fill)
+                    placement = plan_physical_circuit(
+                        physical,
+                        self.circuit,
+                        net_groups,
+                        safe_wire_span=self.safe_wire_span,
+                        options=seed_options,
+                    )
+                    positions = placement.positions
+                attempt_options = replace(attempt_options, target_fill=seed_options.target_fill)
+
             report_progress(
                 self.progress,
                 "placement",
                 completed=restart + 1,
                 total=attempts,
-                detail=f"seeded {len(positions)} entities",
+                detail=(
+                    f"seeded {len(positions)} entities; "
+                    f"relay_reserve={relay_reserve}; fill={seed_options.target_fill:.3f}"
+                    if annealed
+                    else f"seeded {len(positions)} entities"
+                ),
             )
 
             try:
