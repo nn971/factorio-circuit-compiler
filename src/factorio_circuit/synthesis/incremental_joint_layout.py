@@ -1,15 +1,14 @@
-"""Incremental joint annealing for implementation entities and wire relays.
+"""Reach-safe joint annealing for implementation entities and wire relays.
 
-Ordinary proposals use a cached coarse physical-net tree and update only edges incident to moved
-objects. Coarse edges may temporarily exceed wire reach: over-reach is a soft energy penalty rather
-than a hard prerequisite. Approximate relays are seeded on vacant legal unit sites before the first
-proposal, so implementation entities and relays really are optimized jointly from the beginning.
-At epoch boundaries the optimizer tries to repair the current geometry into a reach-safe tree.
+The annealer starts from an explicitly reach-safe routed topology. Ordinary proposals are allowed to
+move implementation combinators and relay combinators, but a proposal is rejected immediately if it
+would make any cached incident wire exceed the configured safe span. This keeps the hot loop local:
+proposal work scales with the moved objects' topology degree, not with the size of their physical
+nets.
 
-Joint relays are blank constant combinators and therefore use the same tile-footprint collision
-semantics as implementation combinators. In particular, two entities whose nominal tile boxes only
-touch at an edge are legal neighbors. This is intentionally different from the historical free-space
-wire router, whose extra clearance margin is not part of the discrete joint placement model.
+At epoch boundaries the implementation may spend O(k^2) work on a physical net: optional relays are
+pruned and a fresh exact reach-safe spanning tree is built. The optimizer therefore compacts a
+feasible layout instead of hoping an infeasible Euclidean surrogate can later be repaired.
 """
 
 from __future__ import annotations
@@ -22,65 +21,75 @@ from random import Random
 
 from factorio_circuit.blueprint import routing as wire_routing
 from factorio_circuit.ir import abstract_physical as abstract
-from factorio_circuit.ir.physical import ConstantCombinator, PhysicalCircuit, WireColor
+from factorio_circuit.ir.physical import PhysicalCircuit, WireColor
 from factorio_circuit.synthesis import joint_layout as exact
 from factorio_circuit.synthesis import placement as base_placement
+from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.placement import PlacementOptions, Position
+from factorio_circuit.synthesis.safe_folded_crossbar import build_safe_folded_crossbar_layout
 
 _EPOCH_PROPOSALS = 256
 _EPSILON = 1e-9
 _RELAY_HALF_EXTENT = (0.5, 0.5)
+_SLACK_START = 0.85
 Bucket = tuple[int, int]
+Node = tuple[int, int]
 
 
 @dataclass(slots=True)
-class _TopologyCache:
-    """Local coarse topology used by the annealing hot loop."""
+class _FeasibleTopology:
+    """Explicit reach-safe wiring topology cached by the hot loop."""
 
-    edges_by_group: dict[int, tuple[tuple[int, int], ...]]
-    incident_edges: dict[int, tuple[tuple[int, int, int], ...]]
+    routing: wire_routing.RoutingPlan
+    incident_wires: dict[int, tuple[wire_routing.RoutedWire, ...]]
+    neighbors: dict[int, tuple[int, ...]]
     total_energy: float
 
     @classmethod
     def build(
         cls,
         state: exact._JointState,
-        *,
-        require_reach: bool,
-    ) -> _TopologyCache:
-        edges_by_group: dict[int, tuple[tuple[int, int], ...]] = {}
-        incident: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
+        routing: wire_routing.RoutingPlan,
+    ) -> _FeasibleTopology:
+        incident: dict[int, list[wire_routing.RoutedWire]] = defaultdict(list)
+        neighbor_sets: dict[int, set[int]] = defaultdict(set)
         total_energy = 0.0
 
-        for group in sorted(state.endpoints_by_group):
-            vertices = state.group_vertices(group)
-            maximum_span = state.safe_span if require_reach else None
-            tree = exact._prim_tree(vertices, state.vertex_position, maximum_span=maximum_span)
-            if tree is None:
-                raise ValueError(f"physical net group {group} is outside conservative wire reach")
-
-            object_edges: set[tuple[int, int]] = set()
-            for left_vertex, right_vertex in tree[0]:
-                left = left_vertex[1]
-                right = right_vertex[1]
-                if left == right:
-                    continue
-                edge = (left, right) if left < right else (right, left)
-                object_edges.add(edge)
-
-            ordered = tuple(sorted(object_edges))
-            edges_by_group[group] = ordered
-            for left, right in ordered:
-                incident[left].append((group, left, right))
-                incident[right].append((group, left, right))
-                total_energy += _edge_energy(
-                    _distance(state.object_position(left), state.object_position(right)),
-                    state.safe_span,
+        for wire in routing.wires:
+            source = state.object_position(wire.source_entity)
+            target = state.object_position(wire.target_entity)
+            distance = _distance(source, target)
+            if distance > state.safe_span + _EPSILON:
+                raise ValueError(
+                    "reach-safe topology contains an over-span wire: "
+                    f"{wire.source_entity}->{wire.target_entity} = {distance:.3f} "
+                    f"> {state.safe_span:.3f}"
                 )
+            incident[wire.source_entity].append(wire)
+            incident[wire.target_entity].append(wire)
+            if wire.source_entity != wire.target_entity:
+                neighbor_sets[wire.source_entity].add(wire.target_entity)
+                neighbor_sets[wire.target_entity].add(wire.source_entity)
+            total_energy += _wire_energy(distance, state.safe_span)
+
+        disconnected = [
+            group
+            for group in state.endpoints_by_group
+            if exact._group_spanning_tree(state, group) is None
+        ]
+        if disconnected:
+            raise ValueError(
+                "reach-safe topology state contains disconnected physical net group(s): "
+                f"{disconnected}"
+            )
 
         return cls(
-            edges_by_group=edges_by_group,
-            incident_edges={item: tuple(edges) for item, edges in incident.items()},
+            routing=routing,
+            incident_wires={object_id: tuple(wires) for object_id, wires in incident.items()},
+            neighbors={
+                object_id: tuple(sorted(neighbors))
+                for object_id, neighbors in neighbor_sets.items()
+            },
             total_energy=total_energy,
         )
 
@@ -90,32 +99,33 @@ class _TopologyCache:
         object_id: int,
         fallback: Position,
     ) -> Position:
-        peers: set[int] = set()
-        for _group, left, right in self.incident_edges.get(object_id, ()):
-            peers.add(right if left == object_id else left)
+        peers = self.neighbors.get(object_id, ())
         if not peers:
             return fallback
-        return _centroid([state.object_position(peer) for peer in sorted(peers)])
+        return _centroid([state.object_position(peer) for peer in peers])
 
     def proposal_delta(
         self,
         state: exact._JointState,
         targets: dict[int, Position],
-    ) -> float:
-        """Return the soft local wiring-energy change for one move or swap."""
+    ) -> float | None:
+        """Return local energy delta, or ``None`` when the proposal breaks wire reach."""
 
-        affected: set[tuple[int, int, int]] = set()
+        affected: set[wire_routing.RoutedWire] = set()
         for object_id in targets:
-            affected.update(self.incident_edges.get(object_id, ()))
+            affected.update(self.incident_wires.get(object_id, ()))
 
         delta = 0.0
-        for _group, left, right in affected:
-            left_before = state.object_position(left)
-            right_before = state.object_position(right)
-            left_after = targets.get(left, left_before)
-            right_after = targets.get(right, right_before)
-            delta += _edge_energy(_distance(left_after, right_after), state.safe_span)
-            delta -= _edge_energy(_distance(left_before, right_before), state.safe_span)
+        for wire in affected:
+            source_before = state.object_position(wire.source_entity)
+            target_before = state.object_position(wire.target_entity)
+            source_after = targets.get(wire.source_entity, source_before)
+            target_after = targets.get(wire.target_entity, target_before)
+            after_distance = _distance(source_after, target_after)
+            if after_distance > state.safe_span + _EPSILON:
+                return None
+            delta += _wire_energy(after_distance, state.safe_span)
+            delta -= _wire_energy(_distance(source_before, target_before), state.safe_span)
         return delta
 
 
@@ -162,22 +172,7 @@ class _SpatialOccupancy:
         *,
         ignored: set[int],
     ) -> set[int]:
-        return self._overlaps_box(
-            position,
-            self.state.object_half_extent(object_id),
-            ignored=ignored,
-        )
-
-    def unit_site_is_free(self, position: Position) -> bool:
-        return not self._overlaps_box(position, _RELAY_HALF_EXTENT, ignored=set())
-
-    def _overlaps_box(
-        self,
-        position: Position,
-        half: tuple[float, float],
-        *,
-        ignored: set[int],
-    ) -> set[int]:
+        half = self.state.object_half_extent(object_id)
         candidates: set[int] = set()
         for key in self._box_keys(position, half):
             candidates.update(self.buckets.get(key, ()))
@@ -194,133 +189,265 @@ class _SpatialOccupancy:
         }
 
 
-def _edge_energy(distance: float, safe_span: float) -> float:
-    """Cheap finite surrogate for relay demand plus routed length."""
+@dataclass(frozen=True, slots=True)
+class _MoveGeometry:
+    """Finite lattice envelope used for reach-preserving compaction moves."""
 
-    relay_estimate = max(0, ceil(distance / safe_span - 1e-12) - 1)
-    overreach = max(0.0, distance - safe_span) / safe_span
-    return 20.0 * relay_estimate + 6.0 * overreach**2 + 0.12 * distance / safe_span
+    left: float
+    right: float
+    top: float
+    bottom: float
+    phases: dict[int, tuple[float, float]]
+
+    @classmethod
+    def from_state(cls, state: exact._JointState) -> _MoveGeometry:
+        object_ids = [*state.positions, *state.relay_positions]
+        points = [state.object_position(object_id) for object_id in object_ids]
+        if not points:
+            return cls(0.0, 0.0, 0.0, 0.0, {})
+        margin = state.safe_span
+        return cls(
+            min(x for x, _ in points) - margin,
+            max(x for x, _ in points) + margin,
+            min(y for _, y in points) - margin,
+            max(y for _, y in points) + margin,
+            {
+                object_id: (
+                    _fractional_phase(state.object_position(object_id)[0]),
+                    _fractional_phase(state.object_position(object_id)[1]),
+                )
+                for object_id in object_ids
+            },
+        )
+
+    def nearest(self, object_id: int, point: Position) -> Position:
+        phase_x, phase_y = self.phases[object_id]
+        min_x = ceil(self.left - phase_x - _EPSILON)
+        max_x = floor(self.right - phase_x + _EPSILON)
+        min_y = ceil(self.top - phase_y - _EPSILON)
+        max_y = floor(self.bottom - phase_y + _EPSILON)
+        x_index = min(max_x, max(min_x, round(point[0] - phase_x)))
+        y_index = min(max_y, max(min_y, round(point[1] - phase_y)))
+        return (float(x_index) + phase_x, float(y_index) + phase_y)
+
+    def random(self, object_id: int, rng: Random) -> Position:
+        phase_x, phase_y = self.phases[object_id]
+        min_x = ceil(self.left - phase_x - _EPSILON)
+        max_x = floor(self.right - phase_x + _EPSILON)
+        min_y = ceil(self.top - phase_y - _EPSILON)
+        max_y = floor(self.bottom - phase_y + _EPSILON)
+        return (
+            float(rng.randint(min_x, max_x)) + phase_x,
+            float(rng.randint(min_y, max_y)) + phase_y,
+        )
+
+    def position_is_legal(self, object_id: int, position: Position) -> bool:
+        phase_x, phase_y = self.phases[object_id]
+        return (
+            self.left - _EPSILON <= position[0] <= self.right + _EPSILON
+            and self.top - _EPSILON <= position[1] <= self.bottom + _EPSILON
+            and abs(_fractional_phase(position[0]) - phase_x) <= _EPSILON
+            and abs(_fractional_phase(position[1]) - phase_y) <= _EPSILON
+        )
 
 
-def _seed_approximate_relays(
+def _wire_energy(distance: float, safe_span: float) -> float:
+    """Prefer short wires and preserve slack well before the hard reach boundary."""
+
+    normalized = distance / safe_span
+    slack_pressure = max(0.0, normalized - _SLACK_START)
+    return 0.12 * normalized + 4.0 * slack_pressure**2
+
+
+def _routing_from_layout(layout: Layout) -> wire_routing.RoutingPlan:
+    return wire_routing.RoutingPlan(
+        relays=tuple(
+            wire_routing.BlueprintRelay(relay.entity_id, relay.position, relay.description)
+            for relay in layout.relays
+        ),
+        wires=tuple(
+            wire_routing.RoutedWire(
+                wire.source_entity,
+                wire.source_connector_id,
+                wire.target_entity,
+                wire.target_connector_id,
+                wire.color,
+            )
+            for wire in layout.wires
+        ),
+    )
+
+
+def _infer_relay_groups(
+    state: exact._JointState,
+    routing: wire_routing.RoutingPlan,
+) -> None:
+    """Infer each bootstrap relay's physical net from connector-level wire components."""
+
+    parent: dict[Node, Node] = {}
+
+    def find(node: Node) -> Node:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    def union(left: Node, right: Node) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for wire in routing.wires:
+        union(
+            (wire.source_entity, wire.source_connector_id),
+            (wire.target_entity, wire.target_connector_id),
+        )
+
+    root_groups: dict[Node, int] = {}
+    for group, endpoints in state.endpoints_by_group.items():
+        color = state.colors_by_group[group]
+        for endpoint in endpoints:
+            entity_id, connector_id = exact._vertex_connector(
+                state,
+                exact._terminal_vertex(endpoint),
+                color,
+            )
+            root = find((entity_id, connector_id))
+            previous = root_groups.setdefault(root, group)
+            if previous != group:
+                raise ValueError(
+                    "bootstrap routing joins distinct physical net groups "
+                    f"{previous} and {group}"
+                )
+
+    relay_nodes: dict[int, set[Node]] = defaultdict(set)
+    for wire in routing.wires:
+        if wire.source_entity in state.relay_positions:
+            relay_nodes[wire.source_entity].add(
+                find((wire.source_entity, wire.source_connector_id))
+            )
+        if wire.target_entity in state.relay_positions:
+            relay_nodes[wire.target_entity].add(
+                find((wire.target_entity, wire.target_connector_id))
+            )
+
+    for relay_id in sorted(state.relay_positions):
+        groups = {
+            root_groups[root]
+            for root in relay_nodes.get(relay_id, ())
+            if root in root_groups
+        }
+        if len(groups) != 1:
+            raise ValueError(
+                f"could not infer exactly one physical net for bootstrap relay {relay_id}"
+            )
+        state.relay_groups[relay_id] = next(iter(groups))
+
+
+def _state_from_bootstrap_layout(
+    circuit: PhysicalCircuit,
+    endpoints_by_group: dict[int, tuple[abstract.Endpoint, ...]],
+    colors_by_group: dict[int, WireColor],
+    layout: Layout,
+    *,
+    safe_wire_span: float,
+) -> tuple[exact._JointState, _FeasibleTopology]:
+    implementation_ids = {entity.id for entity in circuit.entities}
+    missing = implementation_ids - set(layout.positions)
+    if missing:
+        raise ValueError(f"reach-safe bootstrap is missing implementation entities {sorted(missing)}")
+
+    state = exact._JointState(
+        circuit=circuit,
+        endpoints_by_group=endpoints_by_group,
+        colors_by_group=colors_by_group,
+        positions={entity_id: layout.positions[entity_id] for entity_id in implementation_ids},
+        relay_positions={relay.entity_id: relay.position for relay in layout.relays},
+        relay_groups={},
+        safe_span=safe_wire_span,
+        forbidden_areas=(),
+    )
+    routing = _routing_from_layout(layout)
+    _infer_relay_groups(state, routing)
+    _validate_joint_clearance(circuit, state.positions, routing)
+    return state, _FeasibleTopology.build(state, routing)
+
+
+def _construct_feasible_bootstrap(
     state: exact._JointState,
     grid: base_placement._GridGeometry,
-) -> int:
-    """Seed movable relay entities without requiring initial reach feasibility.
+) -> _FeasibleTopology:
+    """Construct a reach-safe bootstrap on the candidate grid for anchored/small callers.
 
-    Each over-reach edge of the terminal-only metric MST contributes the minimum straight-line relay
-    count suggested by its length. Relay sites are snapped to the nearest currently vacant legal
-    unit sites around evenly spaced interpolation targets. The result is only a coarse starting
-    population: relays may be far enough apart to be infeasible and are expected to move/swap during
-    annealing before checkpoint repair makes the net exact.
+    Production unanchored annealing may fall back to the proven folded-safe layout instead. This
+    constructor is a one-time bootstrap operation; the annealing loop never repairs an infeasible
+    state.
     """
 
-    if state.relay_positions:
-        raise ValueError("approximate relay seeding expects an empty relay population")
+    if all(exact._group_spanning_tree(state, group) is not None for group in state.endpoints_by_group):
+        routing = exact._routing_plan(state)
+        return _FeasibleTopology.build(state, routing)
 
-    occupancy = _SpatialOccupancy.build(state)
-    free_sites = {site for site in grid.unit_slots if occupancy.unit_site_is_free(site)}
-    if not free_sites:
-        return 0
-
+    free_sites = {
+        site
+        for site in grid.unit_slots
+        if not any(
+            base_placement._boxes_overlap(
+                site,
+                _RELAY_HALF_EXTENT,
+                state.object_position(object_id),
+                state.object_half_extent(object_id),
+            )
+            for object_id in [*state.positions, *state.relay_positions]
+        )
+    }
     next_relay_id = max((entity.id for entity in state.circuit.entities), default=0) + 1
-    requests: list[tuple[float, int, Position]] = []
-    for group in sorted(state.endpoints_by_group):
+
+    group_order: list[tuple[float, int, tuple[tuple[exact.Vertex, exact.Vertex], ...]]] = []
+    for group in state.endpoints_by_group:
         terminals = tuple(exact._terminal_vertex(item) for item in state.endpoints_by_group[group])
         tree = exact._prim_tree(terminals, state.vertex_position, maximum_span=None)
         assert tree is not None
-        for left, right in tree[0]:
+        overreach = sum(
+            max(
+                0.0,
+                _distance(state.vertex_position(left), state.vertex_position(right))
+                - state.safe_span,
+            )
+            for left, right in tree[0]
+        )
+        group_order.append((-overreach, group, tree[0]))
+
+    for _negative_overreach, group, edges in sorted(group_order):
+        if exact._group_spanning_tree(state, group) is not None:
+            continue
+        for left, right in edges:
             source = state.vertex_position(left)
             target = state.vertex_position(right)
-            distance = _distance(source, target)
-            relay_count = max(0, ceil(distance / state.safe_span - 1e-12) - 1)
-            for index in range(1, relay_count + 1):
-                fraction = index / (relay_count + 1)
-                ideal = (
-                    source[0] + fraction * (target[0] - source[0]),
-                    source[1] + fraction * (target[1] - source[1]),
-                )
-                requests.append((-distance, group, ideal))
-
-    # Long over-reach edges get first choice of scarce local vacancies.
-    requests.sort(key=lambda item: (item[0], item[1], item[2]))
-    for _negative_distance, group, ideal in requests:
-        if not free_sites:
-            break
-        position = min(
-            free_sites,
-            key=lambda site: (
-                _distance_sq(site, ideal),
-                site[0],
-                site[1],
-            ),
-        )
-        relay_id = next_relay_id
-        next_relay_id += 1
-        state.relay_positions[relay_id] = position
-        state.relay_groups[relay_id] = group
-        occupancy.add(relay_id, position)
-        free_sites.remove(position)
-
-    return len(state.relay_positions)
-
-
-def _prune_relays_to_terminal_paths(state: exact._JointState) -> None:
-    """Drop relays unused by deterministic minimum-relay root-to-terminal paths."""
-
-    keep_relays: set[int] = set()
-    for group in sorted(state.endpoints_by_group):
-        vertices = state.group_vertices(group)
-        terminal_indexes = [index for index, vertex in enumerate(vertices) if vertex[0] == 0]
-        if len(terminal_indexes) <= 1:
-            continue
-
-        adjacency: list[list[tuple[int, float]]] = [[] for _ in vertices]
-        for left in range(len(vertices)):
-            left_position = state.vertex_position(vertices[left])
-            for right in range(left + 1, len(vertices)):
-                distance = _distance(left_position, state.vertex_position(vertices[right]))
-                if distance <= state.safe_span + _EPSILON:
-                    adjacency[left].append((right, distance))
-                    adjacency[right].append((left, distance))
-
-        root = terminal_indexes[0]
-        infinity = (10**18, float("inf"))
-        costs = [infinity for _ in vertices]
-        previous: list[int | None] = [None for _ in vertices]
-        costs[root] = (0, 0.0)
-        queue: list[tuple[int, float, tuple[int, int, int], int]] = []
-        heappush(queue, (0, 0.0, vertices[root], root))
-
-        while queue:
-            relay_cost, length, _vertex_key, index = heappop(queue)
-            if (relay_cost, length) != costs[index]:
+            if _distance(source, target) <= state.safe_span + _EPSILON:
                 continue
-            for neighbor, edge_length in adjacency[index]:
-                enters_relay = 1 if vertices[neighbor][0] == 1 else 0
-                candidate = (relay_cost + enters_relay, length + edge_length)
-                if candidate < costs[neighbor]:
-                    costs[neighbor] = candidate
-                    previous[neighbor] = index
-                    heappush(queue, (*candidate, vertices[neighbor], neighbor))
+            chain = _find_relay_chain(state, group, left[1], right[1], free_sites)
+            if chain is None:
+                raise ValueError(
+                    "could not construct an initial reach-safe joint topology on the candidate grid"
+                )
+            for position in chain:
+                relay_id = next_relay_id
+                next_relay_id += 1
+                state.relay_positions[relay_id] = position
+                state.relay_groups[relay_id] = group
+                free_sites.discard(position)
 
-        for terminal in terminal_indexes[1:]:
-            if costs[terminal] == infinity:
-                raise ValueError(f"physical net group {group} is outside conservative wire reach")
-            cursor = terminal
-            while cursor != root:
-                vertex = vertices[cursor]
-                if vertex[0] == 1:
-                    keep_relays.add(vertex[1])
-                parent = previous[cursor]
-                if parent is None:
-                    raise AssertionError("reachable terminal path has no predecessor")
-                cursor = parent
+        if exact._group_spanning_tree(state, group) is None:
+            raise ValueError(
+                f"could not construct an initial reach-safe topology for physical net {group}"
+            )
 
-    for relay_id in tuple(state.relay_positions):
-        if relay_id not in keep_relays:
-            del state.relay_positions[relay_id]
-            del state.relay_groups[relay_id]
+    _prune_relays_to_terminal_paths(state)
+    routing = exact._routing_plan(state)
+    return _FeasibleTopology.build(state, routing)
 
 
 def _find_relay_chain(
@@ -421,81 +548,72 @@ def _find_relay_chain(
     )
 
 
-def _restore_relays(
-    state: exact._JointState,
-    positions: dict[int, Position],
-    groups: dict[int, int],
-) -> None:
-    state.relay_positions.clear()
-    state.relay_positions.update(positions)
-    state.relay_groups.clear()
-    state.relay_groups.update(groups)
+def _prune_relays_to_terminal_paths(state: exact._JointState) -> None:
+    """Drop relays unused by deterministic minimum-relay root-to-terminal paths."""
 
-
-def _repair_to_reach_safe(
-    state: exact._JointState,
-    grid: base_placement._GridGeometry,
-    coarse: _TopologyCache,
-) -> bool:
-    """Try to realize every coarse tree edge with legal relay entities transactionally."""
-
-    original_positions = dict(state.relay_positions)
-    original_groups = dict(state.relay_groups)
-    occupancy = _SpatialOccupancy.build(state)
-    free_sites = {site for site in grid.unit_slots if occupancy.unit_site_is_free(site)}
-    next_relay_id = (
-        max(
-            [*(entity.id for entity in state.circuit.entities), *state.relay_positions],
-            default=0,
-        )
-        + 1
-    )
-
-    group_order = sorted(
-        state.endpoints_by_group,
-        key=lambda group: (
-            -sum(
-                max(
-                    0.0,
-                    _distance(state.object_position(left), state.object_position(right))
-                    - state.safe_span,
-                )
-                for left, right in coarse.edges_by_group[group]
-            ),
-            group,
-        ),
-    )
-
-    for group in group_order:
-        if exact._group_spanning_tree(state, group) is not None:
+    keep_relays: set[int] = set()
+    for group in sorted(state.endpoints_by_group):
+        vertices = state.group_vertices(group)
+        terminal_indexes = [index for index, vertex in enumerate(vertices) if vertex[0] == 0]
+        if len(terminal_indexes) <= 1:
             continue
-        for left, right in coarse.edges_by_group[group]:
-            if _distance(state.object_position(left), state.object_position(right)) <= (
-                state.safe_span + _EPSILON
-            ):
+
+        adjacency: list[list[tuple[int, float]]] = [[] for _ in vertices]
+        for left in range(len(vertices)):
+            left_position = state.vertex_position(vertices[left])
+            for right in range(left + 1, len(vertices)):
+                distance = _distance(left_position, state.vertex_position(vertices[right]))
+                if distance <= state.safe_span + _EPSILON:
+                    adjacency[left].append((right, distance))
+                    adjacency[right].append((left, distance))
+
+        root = terminal_indexes[0]
+        infinity = (10**18, float("inf"))
+        costs = [infinity for _ in vertices]
+        previous: list[int | None] = [None for _ in vertices]
+        costs[root] = (0, 0.0)
+        queue: list[tuple[int, float, tuple[int, int, int], int]] = []
+        heappush(queue, (0, 0.0, vertices[root], root))
+
+        while queue:
+            relay_cost, length, _vertex_key, index = heappop(queue)
+            if (relay_cost, length) != costs[index]:
                 continue
-            chain = _find_relay_chain(state, group, left, right, free_sites)
-            if chain is None:
-                _restore_relays(state, original_positions, original_groups)
-                return False
-            for position in chain:
-                relay_id = next_relay_id
-                next_relay_id += 1
-                state.relay_positions[relay_id] = position
-                state.relay_groups[relay_id] = group
-                occupancy.add(relay_id, position)
-                free_sites.discard(position)
+            for neighbor, edge_length in adjacency[index]:
+                enters_relay = 1 if vertices[neighbor][0] == 1 else 0
+                candidate = (relay_cost + enters_relay, length + edge_length)
+                if candidate < costs[neighbor]:
+                    costs[neighbor] = candidate
+                    previous[neighbor] = index
+                    heappush(queue, (*candidate, vertices[neighbor], neighbor))
 
-        if exact._group_spanning_tree(state, group) is None:
-            _restore_relays(state, original_positions, original_groups)
-            return False
+        for terminal in terminal_indexes[1:]:
+            if costs[terminal] == infinity:
+                raise AssertionError(
+                    f"reach-preserving annealing disconnected physical net group {group}"
+                )
+            cursor = terminal
+            while cursor != root:
+                vertex = vertices[cursor]
+                if vertex[0] == 1:
+                    keep_relays.add(vertex[1])
+                parent = previous[cursor]
+                if parent is None:
+                    raise AssertionError("reachable terminal path has no predecessor")
+                cursor = parent
 
-    try:
-        _prune_relays_to_terminal_paths(state)
-    except ValueError:
-        _restore_relays(state, original_positions, original_groups)
-        return False
-    return True
+    for relay_id in tuple(state.relay_positions):
+        if relay_id not in keep_relays:
+            del state.relay_positions[relay_id]
+            del state.relay_groups[relay_id]
+
+
+def _refresh_feasible_topology(state: exact._JointState) -> _FeasibleTopology:
+    """Prune optional relays and rebuild an exact reach-safe tree for every net."""
+
+    _prune_relays_to_terminal_paths(state)
+    routing = exact._routing_plan(state)
+    return _FeasibleTopology.build(state, routing)
 
 
 def _validate_joint_clearance(
@@ -530,40 +648,61 @@ def refine_incremental_joint_layout(
     *,
     safe_wire_span: float,
     options: PlacementOptions,
+    bootstrap_layout: Layout | None = None,
 ) -> exact.JointLayoutResult:
-    """Jointly anneal all movable implementation entities and layout-only relays."""
+    """Compact a reach-safe joint layout while preserving wire reach on every accepted move."""
 
     endpoints_by_group, colors_by_group = exact._physical_groups(
         abstract_circuit,
         net_groups,
         net_colors,
     )
-    grid = exact._matching_candidate_grid(circuit, positions, options)
-    state = exact._JointState(
-        circuit=circuit,
-        endpoints_by_group=endpoints_by_group,
-        colors_by_group=colors_by_group,
-        positions=dict(positions),
-        relay_positions={},
-        relay_groups={},
-        safe_span=safe_wire_span,
-        forbidden_areas=(),
-    )
 
-    _seed_approximate_relays(state, grid)
-    _anneal_incrementally(state, grid, options)
+    if bootstrap_layout is not None:
+        state, topology = _state_from_bootstrap_layout(
+            circuit,
+            endpoints_by_group,
+            colors_by_group,
+            bootstrap_layout,
+            safe_wire_span=safe_wire_span,
+        )
+    else:
+        grid = exact._matching_candidate_grid(circuit, positions, options)
+        state = exact._JointState(
+            circuit=circuit,
+            endpoints_by_group=endpoints_by_group,
+            colors_by_group=colors_by_group,
+            positions=dict(positions),
+            relay_positions={},
+            relay_groups={},
+            safe_span=safe_wire_span,
+            forbidden_areas=(),
+        )
+        try:
+            topology = _construct_feasible_bootstrap(state, grid)
+        except ValueError:
+            if options.anchors:
+                raise
+            bootstrap_layout = build_safe_folded_crossbar_layout(
+                abstract_circuit,
+                circuit,
+                net_colors=net_colors,
+                net_groups=net_groups,
+                signal_allocation={},
+                safe_wire_span=safe_wire_span,
+                progress=None,
+            )
+            state, topology = _state_from_bootstrap_layout(
+                circuit,
+                endpoints_by_group,
+                colors_by_group,
+                bootstrap_layout,
+                safe_wire_span=safe_wire_span,
+            )
 
-    try:
-        _TopologyCache.build(state, require_reach=True)
-    except ValueError:
-        coarse = _TopologyCache.build(state, require_reach=False)
-        if not _repair_to_reach_safe(state, grid, coarse):
-            raise ValueError(
-                "joint annealing could not repair the final placement into a reach-safe relay tree"
-            ) from None
-
-    _prune_relays_to_terminal_paths(state)
-    routing = exact._routing_plan(state)
+    topology = _anneal_feasible(state, topology, options)
+    topology = _refresh_feasible_topology(state)
+    routing = topology.routing
     all_positions = dict(state.positions)
     all_positions.update(state.relay_positions)
     wire_routing.validate_wire_spans(
@@ -575,41 +714,28 @@ def refine_incremental_joint_layout(
     return exact.JointLayoutResult(dict(state.positions), routing)
 
 
-def _anneal_incrementally(
+def _anneal_feasible(
     state: exact._JointState,
-    grid: base_placement._GridGeometry,
+    topology: _FeasibleTopology,
     options: PlacementOptions,
-) -> None:
+) -> _FeasibleTopology:
     movable_entities = exact._movable_entity_ids(state.circuit, options)
     initial_movable_count = len(movable_entities) + len(state.relay_positions)
     iterations = options.iterations
     if iterations is None:
         iterations = 0 if initial_movable_count < 6 else min(20_000, 30 * initial_movable_count)
     if iterations <= 0 or initial_movable_count == 0:
-        return
+        return topology
 
-    unit_sites = set(grid.unit_slots)
-    wide_sites = set(grid.slots)
     center = _centroid([*state.positions.values(), *state.relay_positions.values()])
+    geometry = _MoveGeometry.from_state(state)
+    occupancy = _SpatialOccupancy.build(state)
     rng = Random(options.random_seed ^ 0x61A7E5ED)
 
-    topology = _TopologyCache.build(state, require_reach=False)
-    occupancy = _SpatialOccupancy.build(state)
-    best_score: tuple[int, float] | None = None
-    best_positions: dict[int, Position] | None = None
-    best_relays: dict[int, Position] | None = None
-    best_relay_groups: dict[int, int] | None = None
-
-    try:
-        exact_topology = _TopologyCache.build(state, require_reach=True)
-    except ValueError:
-        pass
-    else:
-        movable_set = set(movable_entities) | set(state.relay_positions)
-        best_score = _exact_score(state, exact_topology, movable_set, center)
-        best_positions = dict(state.positions)
-        best_relays = dict(state.relay_positions)
-        best_relay_groups = dict(state.relay_groups)
+    best_score = _exact_score(state, topology, center)
+    best_positions = dict(state.positions)
+    best_relays = dict(state.relay_positions)
+    best_relay_groups = dict(state.relay_groups)
 
     for epoch_start in range(0, iterations, _EPOCH_PROPOSALS):
         epoch_end = min(iterations, epoch_start + _EPOCH_PROPOSALS)
@@ -628,8 +754,9 @@ def _anneal_incrementally(
             target = _proposed_position(
                 state,
                 object_id,
-                grid,
+                geometry,
                 preferred,
+                current,
                 rng,
                 normalized_temperature,
             )
@@ -648,19 +775,12 @@ def _anneal_incrementally(
                     continue
                 if state.object_half_extent(candidate) != state.object_half_extent(object_id):
                     continue
+                if not geometry.position_is_legal(candidate, current):
+                    continue
                 other = candidate
 
-            if not _position_is_legal(state, object_id, target, unit_sites, wide_sites):
+            if not geometry.position_is_legal(object_id, target):
                 continue
-            if other is not None and not _position_is_legal(
-                state,
-                other,
-                current,
-                unit_sites,
-                wide_sites,
-            ):
-                continue
-
             ignored = {object_id} if other is None else {object_id, other}
             if occupancy.overlaps(object_id, target, ignored=ignored):
                 continue
@@ -671,6 +791,9 @@ def _anneal_incrementally(
             if other is not None:
                 targets[other] = current
             wire_delta = topology.proposal_delta(state, targets)
+            if wire_delta is None:
+                continue
+
             compact_delta = sum(
                 exact._compactness(position, center)
                 - exact._compactness(state.object_position(item), center)
@@ -689,33 +812,30 @@ def _anneal_incrementally(
                 occupancy.add(other, current)
             topology.total_energy += wire_delta
 
-        coarse = _TopologyCache.build(state, require_reach=False)
-        if _repair_to_reach_safe(state, grid, coarse):
-            topology = _TopologyCache.build(state, require_reach=True)
-            occupancy = _SpatialOccupancy.build(state)
-            movable_set = set(movable_entities) | set(state.relay_positions)
-            score = _exact_score(state, topology, movable_set, center)
-            if best_score is None or score < best_score:
-                best_score = score
-                best_positions = dict(state.positions)
-                best_relays = dict(state.relay_positions)
-                best_relay_groups = dict(state.relay_groups)
-        else:
-            topology = coarse
-            occupancy = _SpatialOccupancy.build(state)
+        topology = _refresh_feasible_topology(state)
+        occupancy = _SpatialOccupancy.build(state)
+        score = _exact_score(state, topology, center)
+        if score < best_score:
+            best_score = score
+            best_positions = dict(state.positions)
+            best_relays = dict(state.relay_positions)
+            best_relay_groups = dict(state.relay_groups)
 
-    if best_positions is not None and best_relays is not None and best_relay_groups is not None:
-        state.positions.clear()
-        state.positions.update(best_positions)
-        _restore_relays(state, best_relays, best_relay_groups)
+    state.positions.clear()
+    state.positions.update(best_positions)
+    state.relay_positions.clear()
+    state.relay_positions.update(best_relays)
+    state.relay_groups.clear()
+    state.relay_groups.update(best_relay_groups)
+    return _refresh_feasible_topology(state)
 
 
 def _exact_score(
     state: exact._JointState,
-    topology: _TopologyCache,
-    movable_objects: set[int],
+    topology: _FeasibleTopology,
     center: Position,
 ) -> tuple[int, float]:
+    movable_objects = [*state.positions, *state.relay_positions]
     compactness = sum(
         exact._compactness(state.object_position(object_id), center)
         for object_id in movable_objects
@@ -726,46 +846,34 @@ def _exact_score(
 def _proposed_position(
     state: exact._JointState,
     object_id: int,
-    grid: base_placement._GridGeometry,
+    geometry: _MoveGeometry,
     preferred: Position,
+    current: Position,
     rng: Random,
     normalized_temperature: float,
 ) -> Position:
-    if object_id in state.relay_positions:
-        if rng.random() < 0.12:
-            return grid.unit_slots[rng.randrange(len(grid.unit_slots))]
-        noise = state.safe_span * (1.2 * normalized_temperature + 0.05)
-        target = (
-            preferred[0] + rng.uniform(-noise, noise),
-            preferred[1] + rng.uniform(-noise, noise),
-        )
-        x = min(grid.unit_x_positions, key=lambda value: (abs(value - target[0]), value))
-        y = min(grid.y_positions, key=lambda value: (abs(value - target[1]), value))
-        return (x, y)
+    if rng.random() < 0.08:
+        return geometry.random(object_id, rng)
 
-    entity = state.circuit.entity_by_id(object_id)
-    candidates = base_placement._candidate_positions(entity, grid)
-    if rng.random() < 0.12:
-        return candidates[rng.randrange(len(candidates))]
-    noise = state.safe_span * (1.2 * normalized_temperature + 0.05)
+    if rng.random() < 0.35:
+        noise = max(1.0, state.safe_span * (0.8 * normalized_temperature + 0.05))
+        target = (
+            current[0] + rng.uniform(-noise, noise),
+            current[1] + rng.uniform(-noise, noise),
+        )
+        return geometry.nearest(object_id, target)
+
+    noise = state.safe_span * (1.0 * normalized_temperature + 0.03)
     target = (
         preferred[0] + rng.uniform(-noise, noise),
         preferred[1] + rng.uniform(-noise, noise),
     )
-    return base_placement._nearest_candidate(entity, target, grid)
+    return geometry.nearest(object_id, target)
 
 
-def _position_is_legal(
-    state: exact._JointState,
-    object_id: int,
-    position: Position,
-    unit_sites: set[Position],
-    wide_sites: set[Position],
-) -> bool:
-    if object_id in state.relay_positions:
-        return position in unit_sites
-    entity = state.circuit.entity_by_id(object_id)
-    return position in (unit_sites if isinstance(entity, ConstantCombinator) else wide_sites)
+def _fractional_phase(value: float) -> float:
+    phase = value - floor(value)
+    return 0.0 if abs(phase) <= _EPSILON or abs(phase - 1.0) <= _EPSILON else phase
 
 
 def _centroid(points: list[Position]) -> Position:
@@ -779,7 +887,3 @@ def _centroid(points: list[Position]) -> Position:
 
 def _distance(left: Position, right: Position) -> float:
     return hypot(left[0] - right[0], left[1] - right[1])
-
-
-def _distance_sq(left: Position, right: Position) -> float:
-    return (left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2
