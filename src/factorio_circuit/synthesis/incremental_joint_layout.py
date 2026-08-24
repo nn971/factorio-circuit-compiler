@@ -2,8 +2,9 @@
 
 Ordinary proposals use a cached coarse physical-net tree and update only edges incident to moved
 objects. Coarse edges may temporarily exceed wire reach: over-reach is a soft energy penalty rather
-than a hard prerequisite. At epoch boundaries the optimizer tries to repair the current geometry
-with relay entities placed on vacant legal one-tile sites, then evaluates an exact reach-safe tree.
+than a hard prerequisite. Approximate relays are seeded on vacant legal unit sites before the first
+proposal, so implementation entities and relays really are optimized jointly from the beginning.
+At epoch boundaries the optimizer tries to repair the current geometry into a reach-safe tree.
 
 Joint relays are blank constant combinators and therefore use the same tile-footprint collision
 semantics as implementation combinators. In particular, two entities whose nominal tile boxes only
@@ -134,8 +135,6 @@ class _SpatialOccupancy:
 
     @staticmethod
     def _box_keys(position: Position, half: tuple[float, float]) -> tuple[Bucket, ...]:
-        # Buckets represent the interior of nominal tile footprints. Edge-touching boxes are legal,
-        # matching placement._boxes_overlap(), so no neighboring-margin bucket expansion is needed.
         left = floor(position[0] - half[0] + _EPSILON)
         right = floor(position[0] + half[0] - _EPSILON)
         top = floor(position[1] - half[1] + _EPSILON)
@@ -203,6 +202,69 @@ def _edge_energy(distance: float, safe_span: float) -> float:
     return 20.0 * relay_estimate + 6.0 * overreach**2 + 0.12 * distance / safe_span
 
 
+def _seed_approximate_relays(
+    state: exact._JointState,
+    grid: base_placement._GridGeometry,
+) -> int:
+    """Seed movable relay entities without requiring initial reach feasibility.
+
+    Each over-reach edge of the terminal-only metric MST contributes the minimum straight-line relay
+    count suggested by its length. Relay sites are snapped to the nearest currently vacant legal
+    unit sites around evenly spaced interpolation targets. The result is only a coarse starting
+    population: relays may be far enough apart to be infeasible and are expected to move/swap during
+    annealing before checkpoint repair makes the net exact.
+    """
+
+    if state.relay_positions:
+        raise ValueError("approximate relay seeding expects an empty relay population")
+
+    occupancy = _SpatialOccupancy.build(state)
+    free_sites = {site for site in grid.unit_slots if occupancy.unit_site_is_free(site)}
+    if not free_sites:
+        return 0
+
+    next_relay_id = max((entity.id for entity in state.circuit.entities), default=0) + 1
+    requests: list[tuple[float, int, Position]] = []
+    for group in sorted(state.endpoints_by_group):
+        terminals = tuple(exact._terminal_vertex(item) for item in state.endpoints_by_group[group])
+        tree = exact._prim_tree(terminals, state.vertex_position, maximum_span=None)
+        assert tree is not None
+        for left, right in tree[0]:
+            source = state.vertex_position(left)
+            target = state.vertex_position(right)
+            distance = _distance(source, target)
+            relay_count = max(0, ceil(distance / state.safe_span - 1e-12) - 1)
+            for index in range(1, relay_count + 1):
+                fraction = index / (relay_count + 1)
+                ideal = (
+                    source[0] + fraction * (target[0] - source[0]),
+                    source[1] + fraction * (target[1] - source[1]),
+                )
+                requests.append((-distance, group, ideal))
+
+    # Long over-reach edges get first choice of scarce local vacancies.
+    requests.sort(key=lambda item: (item[0], item[1], item[2]))
+    for _negative_distance, group, ideal in requests:
+        if not free_sites:
+            break
+        position = min(
+            free_sites,
+            key=lambda site: (
+                _distance_sq(site, ideal),
+                site[0],
+                site[1],
+            ),
+        )
+        relay_id = next_relay_id
+        next_relay_id += 1
+        state.relay_positions[relay_id] = position
+        state.relay_groups[relay_id] = group
+        occupancy.add(relay_id, position)
+        free_sites.remove(position)
+
+    return len(state.relay_positions)
+
+
 def _prune_relays_to_terminal_paths(state: exact._JointState) -> None:
     """Drop relays unused by deterministic minimum-relay root-to-terminal paths."""
 
@@ -268,11 +330,7 @@ def _find_relay_chain(
     right: int,
     free_sites: set[Position],
 ) -> tuple[Position, ...] | None:
-    """Find a minimum-new-relay path through legal vacant unit sites.
-
-    Existing terminals and same-net relays are zero-cost graph vertices, allowing different coarse
-    edges to share already-created branch relays. Neighbor discovery is bucketed by wire reach.
-    """
+    """Find a minimum-new-relay path through legal vacant unit sites."""
 
     start = state.object_position(left)
     goal = state.object_position(right)
@@ -363,6 +421,17 @@ def _find_relay_chain(
     )
 
 
+def _restore_relays(
+    state: exact._JointState,
+    positions: dict[int, Position],
+    groups: dict[int, int],
+) -> None:
+    state.relay_positions.clear()
+    state.relay_positions.update(positions)
+    state.relay_groups.clear()
+    state.relay_groups.update(groups)
+
+
 def _repair_to_reach_safe(
     state: exact._JointState,
     grid: base_placement._GridGeometry,
@@ -382,8 +451,6 @@ def _repair_to_reach_safe(
         + 1
     )
 
-    # Repair the groups with the largest coarse over-reach first. That makes the sequential site
-    # allocator less likely to spend a geometrically critical vacant site on an easy local net.
     group_order = sorted(
         state.endpoints_by_group,
         key=lambda group: (
@@ -409,10 +476,7 @@ def _repair_to_reach_safe(
                 continue
             chain = _find_relay_chain(state, group, left, right, free_sites)
             if chain is None:
-                state.relay_positions.clear()
-                state.relay_positions.update(original_positions)
-                state.relay_groups.clear()
-                state.relay_groups.update(original_groups)
+                _restore_relays(state, original_positions, original_groups)
                 return False
             for position in chain:
                 relay_id = next_relay_id
@@ -423,19 +487,13 @@ def _repair_to_reach_safe(
                 free_sites.discard(position)
 
         if exact._group_spanning_tree(state, group) is None:
-            state.relay_positions.clear()
-            state.relay_positions.update(original_positions)
-            state.relay_groups.clear()
-            state.relay_groups.update(original_groups)
+            _restore_relays(state, original_positions, original_groups)
             return False
 
     try:
         _prune_relays_to_terminal_paths(state)
     except ValueError:
-        state.relay_positions.clear()
-        state.relay_positions.update(original_positions)
-        state.relay_groups.clear()
-        state.relay_groups.update(original_groups)
+        _restore_relays(state, original_positions, original_groups)
         return False
     return True
 
@@ -492,6 +550,7 @@ def refine_incremental_joint_layout(
         forbidden_areas=(),
     )
 
+    _seed_approximate_relays(state, grid)
     _anneal_incrementally(state, grid, options)
 
     try:
@@ -522,7 +581,7 @@ def _anneal_incrementally(
     options: PlacementOptions,
 ) -> None:
     movable_entities = exact._movable_entity_ids(state.circuit, options)
-    initial_movable_count = len(movable_entities)
+    initial_movable_count = len(movable_entities) + len(state.relay_positions)
     iterations = options.iterations
     if iterations is None:
         iterations = 0 if initial_movable_count < 6 else min(20_000, 30 * initial_movable_count)
@@ -531,7 +590,7 @@ def _anneal_incrementally(
 
     unit_sites = set(grid.unit_slots)
     wide_sites = set(grid.slots)
-    center = _centroid(list(state.positions.values()))
+    center = _centroid([*state.positions.values(), *state.relay_positions.values()])
     rng = Random(options.random_seed ^ 0x61A7E5ED)
 
     topology = _TopologyCache.build(state, require_reach=False)
@@ -546,7 +605,7 @@ def _anneal_incrementally(
     except ValueError:
         pass
     else:
-        movable_set = set(movable_entities)
+        movable_set = set(movable_entities) | set(state.relay_positions)
         best_score = _exact_score(state, exact_topology, movable_set, center)
         best_positions = dict(state.positions)
         best_relays = dict(state.relay_positions)
@@ -648,10 +707,7 @@ def _anneal_incrementally(
     if best_positions is not None and best_relays is not None and best_relay_groups is not None:
         state.positions.clear()
         state.positions.update(best_positions)
-        state.relay_positions.clear()
-        state.relay_positions.update(best_relays)
-        state.relay_groups.clear()
-        state.relay_groups.update(best_relay_groups)
+        _restore_relays(state, best_relays, best_relay_groups)
 
 
 def _exact_score(
@@ -723,3 +779,7 @@ def _centroid(points: list[Position]) -> Position:
 
 def _distance(left: Position, right: Position) -> float:
     return hypot(left[0] - right[0], left[1] - right[1])
+
+
+def _distance_sq(left: Position, right: Position) -> float:
+    return (left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2
