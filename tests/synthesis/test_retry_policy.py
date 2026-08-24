@@ -1,6 +1,7 @@
 from factorio_circuit.blueprint.routing import BlueprintRelay, RoutedWire, RoutingPlan
 from factorio_circuit.ir.physical import ConstantCombinator, PhysicalCircuit, WireColor
 from factorio_circuit.synthesis.open_vector import (
+    _joint_capacity_fill,
     _layout_candidate_score,
     _placement_attempt_count,
     _placement_attempt_options,
@@ -27,6 +28,22 @@ def test_annealed_retries_keep_one_geometry_and_vary_seed_only() -> None:
     assert [item.random_seed for item in attempts] == [10, 11, 12, 13]
     assert all(item.iterations == 250 for item in attempts)
     assert all(item.restarts == 1 for item in attempts)
+
+
+def test_joint_capacity_counts_relays_as_entities() -> None:
+    circuit = PhysicalCircuit(
+        "joint_capacity",
+        entities=[ConstantCombinator(entity_id) for entity_id in range(1, 101)],
+    )
+    options = PlacementOptions(target_fill=0.60, anchor_io=False)
+
+    assert _joint_capacity_fill(circuit, options, 0) == 0.60
+    modest = _joint_capacity_fill(circuit, options, 50)
+    large = _joint_capacity_fill(circuit, options, 150)
+
+    assert 0 < large < modest < 0.60
+    assert modest <= 100 / 150
+    assert large <= 100 / 250
 
 
 def test_row_layout_has_only_one_meaningful_attempt() -> None:
