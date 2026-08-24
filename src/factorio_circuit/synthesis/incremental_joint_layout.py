@@ -39,6 +39,7 @@ _EPSILON = 1e-9
 _RELAY_HALF_EXTENT = (0.5, 0.5)
 _SLACK_START = 0.85
 _BOOTSTRAP_EXPANSIONS = 4
+_BOOTSTRAP_ORDER_ATTEMPTS = 3
 Bucket = tuple[int, int]
 WireKey = tuple[int, int, int, int, WireColor]
 
@@ -58,6 +59,7 @@ class _FeasibleTopology:
         state: exact._JointState,
         routing: wire_routing.RoutingPlan,
     ) -> _FeasibleTopology:
+        routing = _synchronize_relay_snapshot(state, routing)
         incident: dict[int, list[wire_routing.RoutedWire]] = defaultdict(list)
         neighbor_sets: dict[int, set[int]] = defaultdict(set)
         total_energy = 0.0
@@ -214,6 +216,27 @@ def _wire_energy(distance: float, safe_span: float) -> float:
     return 0.12 * normalized + 4.0 * slack_pressure**2
 
 
+def _synchronize_relay_snapshot(
+    state: exact._JointState,
+    routing: wire_routing.RoutingPlan,
+) -> wire_routing.RoutingPlan:
+    """Materialize relay coordinates from the mutable joint state without rebuilding net trees."""
+
+    by_id = {relay.entity_id: relay for relay in routing.relays}
+    relay_ids = set(state.relay_positions)
+    if set(by_id) != relay_ids:
+        raise ValueError("reach-safe routing relay set disagrees with joint placement state")
+    relays = tuple(
+        wire_routing.BlueprintRelay(
+            relay_id,
+            state.relay_positions[relay_id],
+            by_id[relay_id].description,
+        )
+        for relay_id in sorted(relay_ids)
+    )
+    return wire_routing.RoutingPlan(relays=relays, wires=routing.wires)
+
+
 def _new_joint_state(
     circuit: PhysicalCircuit,
     endpoints_by_group: dict[int, tuple[abstract.Endpoint, ...]],
@@ -234,6 +257,30 @@ def _new_joint_state(
     )
 
 
+def _bootstrap_group_orders(
+    group_order: list[tuple[float, int, tuple[tuple[exact.Vertex, exact.Vertex], ...]]],
+) -> tuple[tuple[tuple[float, int, tuple[tuple[exact.Vertex, exact.Vertex], ...]], ...], ...]:
+    """Return a few deterministic global rip-up orders for contested relay workspaces."""
+
+    hardest_first = tuple(sorted(group_order))
+    candidates = (
+        hardest_first,
+        tuple(sorted(group_order, key=lambda item: item[1])),
+        tuple(reversed(hardest_first)),
+    )
+    result: list[tuple[tuple[float, int, tuple[tuple[exact.Vertex, exact.Vertex], ...]], ...]] = []
+    seen: set[tuple[int, ...]] = set()
+    for candidate in candidates:
+        key = tuple(item[1] for item in candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(candidate)
+        if len(result) >= _BOOTSTRAP_ORDER_ATTEMPTS:
+            break
+    return tuple(result)
+
+
 def _construct_feasible_bootstrap(
     state: exact._JointState,
     grid: base_placement._GridGeometry,
@@ -247,19 +294,19 @@ def _construct_feasible_bootstrap(
         routing = exact._routing_plan(state)
         return _FeasibleTopology.build(state, routing)
 
-    occupancy = _SpatialOccupancy.build(state)
-    free_sites = {
+    implementation_occupancy = _SpatialOccupancy.build(state)
+    base_free_sites = {
         site
         for site in grid.unit_slots
         if not _box_overlaps_occupancy(
-            occupancy,
+            implementation_occupancy,
             site,
             _RELAY_HALF_EXTENT,
             ignored=set(),
         )
     }
-    workspace = _RelayWorkspace.build(free_sites, state.safe_span)
-    next_relay_id = max((entity.id for entity in state.circuit.entities), default=0) + 1
+    workspace = _RelayWorkspace.build(base_free_sites, state.safe_span)
+    first_relay_id = max((entity.id for entity in state.circuit.entities), default=0) + 1
 
     group_order: list[tuple[float, int, tuple[tuple[exact.Vertex, exact.Vertex], ...]]] = []
     for group in state.endpoints_by_group:
@@ -276,52 +323,76 @@ def _construct_feasible_bootstrap(
         )
         group_order.append((-overreach, group, tree[0]))
 
-    for _negative_overreach, group, edges in sorted(group_order):
-        if exact._group_spanning_tree(state, group) is not None:
-            continue
-        for left, right in edges:
-            source = state.vertex_position(left)
-            target = state.vertex_position(right)
-            if _distance(source, target) <= state.safe_span + _EPSILON:
+    last_failure = "unknown routing failure"
+    for ordered_groups in _bootstrap_group_orders(group_order):
+        state.relay_positions.clear()
+        state.relay_groups.clear()
+        occupancy = _SpatialOccupancy.build(state)
+        free_sites = set(base_free_sites)
+        next_relay_id = first_relay_id
+        failed = False
+
+        for _negative_overreach, group, edges in ordered_groups:
+            if exact._group_spanning_tree(state, group) is not None:
                 continue
-            chain = _find_relay_chain(
-                state,
-                group,
-                left[1],
-                right[1],
-                free_sites,
-                workspace,
-            )
-            if chain is None:
-                source_neighbors = sum(
-                    _distance(source, site) <= state.safe_span + _EPSILON for site in free_sites
+            for left, right in edges:
+                source = state.vertex_position(left)
+                target = state.vertex_position(right)
+                if _distance(source, target) <= state.safe_span + _EPSILON:
+                    continue
+                chain = _find_relay_chain(
+                    state,
+                    group,
+                    left[1],
+                    right[1],
+                    free_sites,
+                    workspace,
                 )
-                target_neighbors = sum(
-                    _distance(target, site) <= state.safe_span + _EPSILON for site in free_sites
-                )
-                raise ValueError(
-                    "could not construct an initial reach-safe joint topology on the candidate "
-                    f"grid: group={group}; edge={left}->{right}; source={source}; target={target}; "
-                    f"free_sites={len(free_sites)}; source_free_neighbors={source_neighbors}; "
-                    f"target_free_neighbors={target_neighbors}; "
-                    f"claimed_relays={len(state.relay_positions)}"
-                )
-            for position in chain:
-                relay_id = next_relay_id
-                next_relay_id += 1
-                state.relay_positions[relay_id] = position
-                state.relay_groups[relay_id] = group
-                occupancy.add(relay_id, position)
-                free_sites.discard(position)
+                if chain is None:
+                    source_neighbors = sum(
+                        _distance(source, site) <= state.safe_span + _EPSILON
+                        for site in free_sites
+                    )
+                    target_neighbors = sum(
+                        _distance(target, site) <= state.safe_span + _EPSILON
+                        for site in free_sites
+                    )
+                    last_failure = (
+                        f"group={group}; edge={left}->{right}; source={source}; target={target}; "
+                        f"free_sites={len(free_sites)}; "
+                        f"source_free_neighbors={source_neighbors}; "
+                        f"target_free_neighbors={target_neighbors}; "
+                        f"claimed_relays={len(state.relay_positions)}"
+                    )
+                    failed = True
+                    break
+                for position in chain:
+                    relay_id = next_relay_id
+                    next_relay_id += 1
+                    state.relay_positions[relay_id] = position
+                    state.relay_groups[relay_id] = group
+                    occupancy.add(relay_id, position)
+                    free_sites.discard(position)
+            if failed:
+                break
+            if exact._group_spanning_tree(state, group) is None:
+                last_failure = f"physical net {group} remained disconnected after relay routing"
+                failed = True
+                break
 
-        if exact._group_spanning_tree(state, group) is None:
-            raise ValueError(
-                f"could not construct an initial reach-safe topology for physical net {group}"
-            )
+        if failed:
+            continue
 
-    _prune_relays_to_terminal_paths(state)
-    routing = exact._routing_plan(state)
-    return _FeasibleTopology.build(state, routing)
+        _prune_relays_to_terminal_paths(state)
+        routing = exact._routing_plan(state)
+        return _FeasibleTopology.build(state, routing)
+
+    state.relay_positions.clear()
+    state.relay_groups.clear()
+    raise ValueError(
+        "could not construct an initial reach-safe joint topology after deterministic global "
+        f"rip-up/reorder attempts: {last_failure}"
+    )
 
 
 def _box_overlaps_occupancy(
@@ -636,9 +707,11 @@ def _validate_joint_clearance(
 ) -> None:
     """Validate relay clearance with the same spatial hash used by annealing."""
 
-    routed_relays = {relay.entity_id for relay in routing.relays}
-    if routed_relays != set(state.relay_positions):
+    routed_positions = {relay.entity_id: relay.position for relay in routing.relays}
+    if set(routed_positions) != set(state.relay_positions):
         raise ValueError("reach-safe routing relay set disagrees with joint placement state")
+    if routed_positions != state.relay_positions:
+        raise ValueError("reach-safe routing relay positions disagree with joint placement state")
     occupancy = _SpatialOccupancy.build(state)
     for relay_id, position in state.relay_positions.items():
         overlaps = occupancy.overlaps(relay_id, position, ignored={relay_id})
@@ -676,8 +749,13 @@ def _porous_bootstrap_positions(
 
     entities = {entity.id: entity for entity in circuit.entities}
     movable = set(exact._movable_entity_ids(circuit, options))
+    automatic_io = (
+        base_placement._automatic_io_anchors(circuit, grid.bounds) if options.anchor_io else {}
+    )
+    effective_anchors = {**automatic_io, **options.anchors}
+    base_placement._validate_anchors(circuit, effective_anchors)
     fixed = {
-        entity_id: preferred_positions[entity_id]
+        entity_id: effective_anchors.get(entity_id, preferred_positions[entity_id])
         for entity_id in entities
         if entity_id not in movable
     }
@@ -791,14 +869,14 @@ def refine_incremental_joint_layout(
     if state is None or topology is None:
         detail = str(last_error) if last_error is not None else "unknown bootstrap failure"
         raise ValueError(
+            "joint bootstrap is outside conservative wire reach or exhausted relay-site capacity; "
             "could not construct a reach-safe joint bootstrap from either the dense or porous "
             f"corridor-aware placement: {detail}"
         ) from last_error
 
     topology = _anneal_feasible(state, topology, options, grid)
-    routing = topology.routing
-    all_positions = dict(state.positions)
-    all_positions.update(state.relay_positions)
+    routing = _synchronize_relay_snapshot(state, topology.routing)
+    all_positions = wire_routing.routed_positions(circuit, state.positions, routing)
     wire_routing.validate_wire_spans(
         routing.wires,
         all_positions,
