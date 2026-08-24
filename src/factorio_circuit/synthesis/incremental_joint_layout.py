@@ -632,7 +632,11 @@ def _porous_bootstrap_positions(
 
     entities = {entity.id: entity for entity in circuit.entities}
     movable = set(exact._movable_entity_ids(circuit, options))
-    fixed = {entity_id: preferred_positions[entity_id] for entity_id in entities if entity_id not in movable}
+    fixed = {
+        entity_id: preferred_positions[entity_id]
+        for entity_id in entities
+        if entity_id not in movable
+    }
     occupancy = base_placement._DiscreteOccupancy(entities, fixed)
 
     sparse_x = set(grid.x_positions[::2])
