@@ -13,7 +13,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from factorio_circuit import Circuit, RandomSignalOracleProvider
+from factorio_circuit import Circuit, CompilationResult, RandomSignalOracleProvider
 from factorio_circuit.ir.physical import SelectorCombinator, WireColor
 from factorio_circuit.synthesis.placement import PlacementOptions
 
@@ -21,7 +21,7 @@ _ORACLE = "choice"
 _PROVIDER_INPUT = "candidates"
 
 
-def _marker_wire_color(result, marker_entity: int) -> WireColor:
+def _marker_wire_color(result: CompilationResult, marker_entity: int) -> WireColor:
     colors = {
         wire.color
         for wire in result.layout.wires
@@ -35,7 +35,7 @@ def _marker_wire_color(result, marker_entity: int) -> WireColor:
     return next(iter(colors))
 
 
-def build_probe(*, update_interval: int = 1):
+def build_probe(*, update_interval: int = 1) -> CompilationResult:
     circuit = Circuit("random_input_selector_probe")
     candidates = circuit.signals(_PROVIDER_INPUT)
     choice = circuit.oracle_signals(_ORACLE)
@@ -95,7 +95,7 @@ def main() -> None:
         file=sys.stderr,
     )
     print(
-        f"wire a constant-combinator candidate vector -> INPUT candidates with "
+        "wire a constant-combinator candidate vector -> INPUT candidates with "
         f"{candidates_color.value.upper()}; observe OUTPUT choice with {choice_color.value.upper()}",
         file=sys.stderr,
     )
