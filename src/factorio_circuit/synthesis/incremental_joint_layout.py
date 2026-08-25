@@ -912,16 +912,22 @@ def _anneal_feasible(
 
     for epoch_start in range(0, iterations, _EPOCH_PROPOSALS):
         epoch_end = min(iterations, epoch_start + _EPOCH_PROPOSALS)
-        movable_objects = sorted(set(movable_entities) | set(state.relay_positions))
+        movable_relays = sorted(state.relay_positions)
+        movable_objects = sorted(set(movable_entities) | set(movable_relays))
         movable_set = set(movable_objects)
         if not movable_objects:
             break
+        # Moving implementation combinators changes terminal geometry and can make
+        # whole relay-chain segments redundant at the next epoch simplification.
+        # Relays remain movable through legal swaps; relay-only layouts fall back
+        # to proposing relays directly.
+        proposal_pool = movable_entities if movable_entities else movable_relays
 
         for step in range(epoch_start, epoch_end):
             progress = step / max(1, iterations - 1)
             normalized_temperature = 0.03**progress
             temperature = max(0.02, state.safe_span * (0.8 * normalized_temperature + 0.01))
-            object_id = movable_objects[rng.randrange(len(movable_objects))]
+            object_id = proposal_pool[rng.randrange(len(proposal_pool))]
             current = state.object_position(object_id)
             preferred = topology.preferred_position(state, object_id, center)
             target = _proposed_position(
