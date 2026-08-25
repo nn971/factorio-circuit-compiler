@@ -2,8 +2,10 @@
 
 The ordinary placer supplies the implementation-entity seed. This stage realizes each synthesized
 physical net as one reach-connected graph, introduces the relays needed by that graph, and jointly
-refines only relay-bearing nets. Relays belong to an electrical net group rather than to one
-logical point-to-point edge, so one relay may be a branch point for several terminals.
+refines only relay-bearing nets. A relay belongs to an electrical net group rather than to one
+logical point-to-point edge, so it may be a branch point for several terminals. Because an empty
+constant combinator keeps its red and green circuit networks electrically separate, one physical
+relay may also serve one group of each color.
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ class _JointState:
     colors_by_group: dict[int, WireColor]
     positions: dict[int, Position]
     relay_positions: dict[int, Position]
-    relay_groups: dict[int, int]
+    relay_groups: dict[int, frozenset[int]]
     safe_span: float
     forbidden_areas: tuple[RelayForbiddenArea, ...]
 
@@ -53,7 +55,7 @@ class _JointState:
         relays = tuple(
             _relay_vertex(relay_id)
             for relay_id in sorted(self.relay_positions)
-            if self.relay_groups[relay_id] == group
+            if group in self.relay_groups[relay_id]
         )
         return (*terminals, *relays)
 
@@ -149,7 +151,7 @@ def _seed_state(
     forbidden_areas: tuple[RelayForbiddenArea, ...],
 ) -> _JointState:
     relay_positions: dict[int, Position] = {}
-    relay_groups: dict[int, int] = {}
+    relay_groups: dict[int, frozenset[int]] = {}
     next_relay_id = max((entity.id for entity in circuit.entities), default=0) + 1
     occupied = [
         (positions[entity.id], wire_routing._entity_half_extent(entity), entity.id)
@@ -185,7 +187,7 @@ def _seed_state(
                 relay_id = next_relay_id
                 next_relay_id += 1
                 relay_positions[relay_id] = candidate
-                relay_groups[relay_id] = group
+                relay_groups[relay_id] = frozenset({group})
                 occupied.append((candidate, _RELAY_HALF_EXTENT, relay_id))
 
     state = _JointState(
@@ -282,7 +284,7 @@ def _joint_anneal(state: _JointState, options: PlacementOptions) -> None:
     if not state.relay_positions or options.iterations == 0:
         return
 
-    relay_groups = set(state.relay_groups.values())
+    relay_groups = {group for groups in state.relay_groups.values() for group in groups}
     active_entities = {
         endpoint.entity for group in relay_groups for endpoint in state.endpoints_by_group[group]
     }
@@ -504,7 +506,7 @@ def _object_groups(
     incident_groups: dict[int, set[int]],
 ) -> set[int]:
     if object_id in state.relay_groups:
-        return {state.relay_groups[object_id]}
+        return set(state.relay_groups[object_id])
     return set(incident_groups.get(object_id, set()))
 
 
@@ -617,15 +619,22 @@ def _set_object_position(state: _JointState, object_id: int, position: Position)
 
 
 def _prune_relays(state: _JointState) -> None:
-    # One pass is sufficient. If a relay is essential while all remaining relays are present,
-    # deleting some of those other relays later cannot make this relay become removable.
+    # One pass is sufficient. If one relay membership is essential while all remaining memberships
+    # are present, deleting some of those other memberships later cannot make it removable.
     for relay_id in sorted(tuple(state.relay_positions)):
-        group = state.relay_groups[relay_id]
-        position = state.relay_positions.pop(relay_id)
-        if _group_spanning_tree(state, group) is not None:
-            del state.relay_groups[relay_id]
-            continue
-        state.relay_positions[relay_id] = position
+        for group in sorted(state.relay_groups[relay_id]):
+            previous = state.relay_groups[relay_id]
+            remaining = previous - {group}
+            if remaining:
+                state.relay_groups[relay_id] = remaining
+            else:
+                del state.relay_groups[relay_id]
+                position = state.relay_positions.pop(relay_id)
+            if _group_spanning_tree(state, group) is not None:
+                continue
+            state.relay_groups[relay_id] = previous
+            if not remaining:
+                state.relay_positions[relay_id] = position
 
 
 def _required_group_length(state: _JointState, group: int) -> float:
@@ -653,9 +662,12 @@ def _routing_plan(state: _JointState) -> wire_routing.RoutingPlan:
             entity_id=relay_id,
             position=state.relay_positions[relay_id],
             description=(
-                "WIRE RELAY — layout-only "
-                f"({state.colors_by_group[state.relay_groups[relay_id]].value}; "
-                f"net {state.relay_groups[relay_id]})"
+                "WIRE RELAY — layout-only ("
+                + "; ".join(
+                    f"{state.colors_by_group[group].value} net {group}"
+                    for group in sorted(state.relay_groups[relay_id])
+                )
+                + ")"
             ),
         )
         for relay_id in sorted(state.relay_positions)

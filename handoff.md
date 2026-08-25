@@ -19,6 +19,7 @@ git pull --ff-only
 uv run python -m benchmarks.snake.generate \
   --annealing-layout \
   --annealing-iterations 1000 \
+  --corridor-width 4 \
   --layout-retries 1 \
   --census \
   --output snake-annealed-fixed.txt

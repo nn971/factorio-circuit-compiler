@@ -32,7 +32,7 @@ def _constant_state_with_relay() -> exact._JointState:
         colors_by_group={1: WireColor.RED},
         positions={1: (0.0, 0.0), 2: (3.0, 0.0)},
         relay_positions={3: (1.5, 0.0)},
-        relay_groups={3: 1},
+        relay_groups={3: frozenset({1})},
         safe_span=2.0,
         forbidden_areas=(),
     )
@@ -132,6 +132,171 @@ def test_porous_bootstrap_preserves_explicit_io_anchor_after_expansion() -> None
     assert positions[2] == explicit_output
 
 
+def test_porous_bootstrap_reserves_periodic_connected_routing_channels() -> None:
+    physical = PhysicalCircuit(
+        "channelized_bootstrap",
+        entities=[ConstantCombinator(entity_id) for entity_id in range(1, 41)],
+    )
+    options = PlacementOptions(
+        anchor_io=False,
+        iterations=0,
+        reserve_corridors=False,
+        target_fill=0.6,
+    )
+    grid = incremental.base_placement._candidate_grid(48, 1, options)
+    preferred = {
+        entity.id: grid.unit_slots[index] for index, entity in enumerate(physical.entities)
+    }
+
+    positions = incremental._porous_bootstrap_positions(
+        physical,
+        preferred,
+        options,
+        grid,
+    )
+
+    assert positions is not None
+    channel_x = set(
+        grid.x_positions[
+            incremental._ROUTING_CHANNEL_COLUMN_STRIDE
+            - 1 :: incremental._ROUTING_CHANNEL_COLUMN_STRIDE
+        ]
+    )
+    channel_unit_x = {value for center in channel_x for value in (center - 0.5, center + 0.5)}
+    channel_y = set(
+        grid.y_positions[
+            incremental._ROUTING_CHANNEL_ROW_STRIDE - 1 :: incremental._ROUTING_CHANNEL_ROW_STRIDE
+        ]
+    )
+    assert channel_unit_x
+    assert channel_y
+    assert all(x not in channel_unit_x and y not in channel_y for x, y in positions.values())
+
+
+def _automatic_interface_state() -> tuple[exact._JointState, incremental._FeasibleTopology]:
+    physical = PhysicalCircuit(
+        "automatic_interface",
+        entities=[ConstantCombinator(entity_id, annotation_only=True) for entity_id in (1, 2, 3)],
+        inputs=[InputPort("in", 1, None)],
+        outputs=[OutputPort("out", 2, None, 0)],
+    )
+    state = exact._JointState(
+        circuit=physical,
+        endpoints_by_group={
+            1: (
+                abstract.Endpoint(1, abstract.Connector.SINGLE),
+                abstract.Endpoint(3, abstract.Connector.SINGLE),
+            ),
+            2: (
+                abstract.Endpoint(2, abstract.Connector.SINGLE),
+                abstract.Endpoint(3, abstract.Connector.SINGLE),
+            ),
+        },
+        colors_by_group={1: WireColor.RED, 2: WireColor.GREEN},
+        positions={1: (-2.0, 0.0), 2: (8.0, 0.0), 3: (3.0, 0.0)},
+        relay_positions={},
+        relay_groups={},
+        safe_span=7.0,
+        forbidden_areas=(),
+    )
+    topology = incremental._FeasibleTopology.build(
+        state,
+        RoutingPlan(
+            relays=(),
+            wires=(
+                RoutedWire(1, 1, 3, 1, WireColor.RED),
+                RoutedWire(2, 1, 3, 1, WireColor.GREEN),
+            ),
+        ),
+    )
+    return state, topology
+
+
+def test_topology_rebuild_places_automatic_io_on_exact_body_perimeter() -> None:
+    state, topology = _automatic_interface_state()
+    options = PlacementOptions(
+        iterations=0,
+        reserve_corridors=False,
+        target_fill=0.6,
+    )
+    grid = incremental.base_placement._candidate_grid(4, 1, options)
+
+    rebuilt = incremental._rebuild_automatic_interface_topology(
+        state,
+        topology,
+        options,
+        grid,
+    )
+
+    assert state.positions == {1: (1.5, 0.0), 2: (4.5, 0.0), 3: (3.0, 0.0)}
+    incremental.wire_routing.validate_wire_spans(
+        rebuilt.routing.wires,
+        state.positions,
+        maximum_span=state.safe_span,
+    )
+
+
+def test_topology_rebuild_preserves_explicit_io_anchor() -> None:
+    state, topology = _automatic_interface_state()
+    explicit_output = (8.0, 2.0)
+    state.positions[2] = explicit_output
+    topology = incremental._FeasibleTopology.build(state, topology.routing)
+    options = PlacementOptions(
+        anchors={2: explicit_output},
+        iterations=0,
+        reserve_corridors=False,
+        target_fill=0.6,
+    )
+    grid = incremental.base_placement._candidate_grid(4, 1, options)
+
+    incremental._rebuild_automatic_interface_topology(
+        state,
+        topology,
+        options,
+        grid,
+    )
+
+    assert state.positions[2] == explicit_output
+    assert state.positions[1] == (1.5, 1.0)
+
+
+def test_failed_coarse_retopology_restores_prior_feasible_relays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _constant_state_with_relay()
+    topology = incremental._FeasibleTopology.build(
+        state,
+        RoutingPlan(
+            relays=(BlueprintRelay(3, (1.5, 0.0), "relay"),),
+            wires=(
+                RoutedWire(1, 1, 3, 1, WireColor.RED),
+                RoutedWire(3, 1, 2, 1, WireColor.RED),
+            ),
+        ),
+    )
+    options = PlacementOptions(
+        anchor_io=False,
+        iterations=0,
+        reserve_corridors=False,
+        target_fill=0.6,
+    )
+    grid = incremental.base_placement._candidate_grid(4, 1, options)
+
+    def fail_rebuild(
+        _state: exact._JointState,
+        _grid: incremental.base_placement._GridGeometry,
+    ) -> incremental._FeasibleTopology:
+        raise ValueError("synthetic coarse rebuild failure")
+
+    monkeypatch.setattr(incremental, "_construct_feasible_bootstrap", fail_rebuild)
+
+    result = incremental._try_rebuild_annealed_topology(state, topology, grid)
+
+    assert result is topology
+    assert state.relay_positions == {3: (1.5, 0.0)}
+    assert state.relay_groups == {3: frozenset({1})}
+
+
 def test_bootstrap_rips_up_and_reorders_after_an_early_net_blocks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -202,23 +367,24 @@ def test_new_joint_bootstrap_failure_is_retryable() -> None:
     assert _retryable_layout_error(error)
 
 
-def test_vertical_overflow_tracks_distance_beyond_initial_envelope() -> None:
+def test_rectangle_overflow_tracks_footprint_distance_beyond_envelope() -> None:
     state = _constant_state_with_relay()
-    envelope = incremental._vertical_envelope(state)
+    envelope = incremental._occupied_envelope(state)
 
-    assert envelope == (-0.5, 0.5)
-    assert incremental._vertical_overflow(state, 1, (0.0, 0.0), envelope) == 0.0
-    assert incremental._vertical_overflow(state, 1, (0.0, 1.0), envelope) == pytest.approx(1.0)
-    assert incremental._vertical_overflow(state, 3, (1.5, -1.0), envelope) == pytest.approx(1.0)
+    assert envelope == (-0.5, 3.5, -0.5, 0.5)
+    assert incremental._rectangle_overflow(state, 1, (0.0, 0.0), envelope) == 0.0
+    assert incremental._rectangle_overflow(state, 1, (-1.0, 0.0), envelope) == pytest.approx(1.0)
+    assert incremental._rectangle_overflow(state, 2, (4.0, 0.0), envelope) == pytest.approx(1.0)
+    assert incremental._rectangle_overflow(state, 3, (1.5, -1.0), envelope) == pytest.approx(1.0)
 
 
-def test_vertical_overflow_penalty_is_local_to_reference_envelope() -> None:
+def test_rectangle_overflow_penalty_is_quadratic_and_local() -> None:
     state = _constant_state_with_relay()
-    envelope = incremental._vertical_envelope(state)
+    envelope = incremental._occupied_envelope(state)
 
-    inside = incremental._vertical_overflow(state, 2, (3.0, 0.0), envelope)
-    one_row_below = incremental._vertical_overflow(state, 2, (3.0, 1.0), envelope)
-    two_rows_below = incremental._vertical_overflow(state, 2, (3.0, 2.0), envelope)
+    inside = incremental._rectangle_overflow(state, 2, (3.0, 0.0), envelope)
+    one_row_below = incremental._rectangle_overflow(state, 2, (3.0, 1.0), envelope)
+    two_rows_below = incremental._rectangle_overflow(state, 2, (3.0, 2.0), envelope)
 
     assert inside == 0.0
     assert one_row_below == pytest.approx(1.0)

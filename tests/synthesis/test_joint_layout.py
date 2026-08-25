@@ -81,6 +81,42 @@ def test_joint_layout_shares_one_relay_across_three_terminal_net() -> None:
     validate_wire_spans(result.routing.wires, all_positions, maximum_span=7.0)
 
 
+def test_one_relay_can_carry_independent_red_and_green_net_groups() -> None:
+    physical = PhysicalCircuit(
+        "dual_color_relay",
+        entities=[ConstantCombinator(entity_id) for entity_id in (1, 2, 3, 4)],
+    )
+    state = incremental.exact._JointState(
+        circuit=physical,
+        endpoints_by_group={
+            1: (
+                abstract.Endpoint(1, abstract.Connector.SINGLE),
+                abstract.Endpoint(2, abstract.Connector.SINGLE),
+            ),
+            2: (
+                abstract.Endpoint(3, abstract.Connector.SINGLE),
+                abstract.Endpoint(4, abstract.Connector.SINGLE),
+            ),
+        },
+        colors_by_group={1: WireColor.RED, 2: WireColor.GREEN},
+        positions={1: (-6.0, 0.0), 2: (6.0, 0.0), 3: (0.0, -6.0), 4: (0.0, 6.0)},
+        relay_positions={5: (0.0, 0.0)},
+        relay_groups={5: frozenset({1, 2})},
+        safe_span=7.0,
+        forbidden_areas=(),
+    )
+
+    incremental.exact._prune_relays(state)
+    routing = incremental.exact._routing_plan(state)
+    topology = incremental._FeasibleTopology.build(state, routing)
+
+    assert state.relay_groups == {5: frozenset({1, 2})}
+    assert len(topology.routing.relays) == 1
+    assert [wire.color for wire in topology.routing.wires].count(WireColor.RED) == 2
+    assert [wire.color for wire in topology.routing.wires].count(WireColor.GREEN) == 2
+    assert "red net 1; green net 2" in topology.routing.relays[0].description
+
+
 def test_incremental_joint_layout_runs_without_relay_bearing_nets() -> None:
     abstract_circuit, physical = _two_terminal_circuit("incremental_direct")
 
@@ -189,7 +225,7 @@ def test_local_feasible_simplifier_bypasses_redundant_degree_two_relay() -> None
         colors_by_group=colors_by_group,
         positions={1: (0.0, 0.0), 2: (4.0, 0.0)},
         relay_positions={3: (2.0, 0.0)},
-        relay_groups={3: 1},
+        relay_groups={3: frozenset({1})},
         safe_span=5.0,
         forbidden_areas=(),
     )

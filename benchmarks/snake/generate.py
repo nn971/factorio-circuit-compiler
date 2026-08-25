@@ -183,8 +183,8 @@ def main() -> None:
     parser.add_argument(
         "--corridor-width",
         type=float,
-        default=4.0,
-        help="initial routing-corridor width for greedy/annealed layouts (default: 4.0)",
+        default=2.0,
+        help="initial routing-corridor width for greedy/annealed layouts (default: 2.0)",
     )
     parser.add_argument(
         "--target-fill",
