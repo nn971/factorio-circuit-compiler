@@ -38,6 +38,7 @@ _EPOCH_PROPOSALS = 256
 _EPSILON = 1e-9
 _RELAY_HALF_EXTENT = (0.5, 0.5)
 _SLACK_START = 0.85
+_VERTICAL_OVERFLOW_WEIGHT = 0.25
 _BOOTSTRAP_EXPANSIONS = 4
 _BOOTSTRAP_ORDER_ATTEMPTS = 3
 Bucket = tuple[int, int]
@@ -657,7 +658,6 @@ def _simplify_feasible_topology(
             del state.relay_groups[relay_id]
             enqueue(remote)
             continue
-
         first = wires[relay_edges[0]]
         second = wires[relay_edges[1]]
         if first.color is not second.color:
@@ -903,6 +903,7 @@ def _anneal_feasible(
     wide_sites = set(grid.slots)
     occupancy = _SpatialOccupancy.build(state)
     rng = Random(options.random_seed ^ 0x61A7E5ED)
+    vertical_envelope = _vertical_envelope(state)
 
     best_score = _exact_score(state, topology, center)
     best_positions = dict(state.positions)
@@ -978,7 +979,17 @@ def _anneal_feasible(
                 - exact._compactness(state.object_position(item), center)
                 for item, position in targets.items()
             )
-            delta = wire_delta + compact_delta
+            overflow_delta = sum(
+                _vertical_overflow(state, item, position, vertical_envelope)
+                - _vertical_overflow(
+                    state,
+                    item,
+                    state.object_position(item),
+                    vertical_envelope,
+                )
+                for item, position in targets.items()
+            )
+            delta = wire_delta + compact_delta + _VERTICAL_OVERFLOW_WEIGHT * overflow_delta
             if delta > 0 and rng.random() >= exp(-delta / temperature):
                 continue
 
@@ -1008,6 +1019,39 @@ def _anneal_feasible(
     state.relay_groups.clear()
     state.relay_groups.update(best_relay_groups)
     return _FeasibleTopology.build(state, best_routing)
+
+
+def _vertical_envelope(state: exact._JointState) -> tuple[float, float]:
+    """Return the occupied vertical extent as ``(top, bottom)``."""
+
+    object_ids = [*state.positions, *state.relay_positions]
+    if not object_ids:
+        return (0.0, 0.0)
+    return (
+        min(
+            state.object_position(item)[1] - state.object_half_extent(item)[1]
+            for item in object_ids
+        ),
+        max(
+            state.object_position(item)[1] + state.object_half_extent(item)[1]
+            for item in object_ids
+        ),
+    )
+
+
+def _vertical_overflow(
+    state: exact._JointState,
+    object_id: int,
+    position: Position,
+    envelope: tuple[float, float],
+) -> float:
+    """Return quadratic overflow beyond a reference vertical envelope."""
+
+    top, bottom = envelope
+    half_y = state.object_half_extent(object_id)[1]
+    above = max(0.0, top - (position[1] - half_y))
+    below = max(0.0, (position[1] + half_y) - bottom)
+    return above * above + below * below
 
 
 def _exact_score(
