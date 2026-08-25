@@ -10,8 +10,8 @@ network value is observed at the latest consumer phase instead of transported fr
 ``--sampling-policy beginning-of-step`` restores the historical snapshot baseline.
 
 Progress is printed to stderr. The final importable blueprint string is printed to stdout unless
-``--output`` names a file. Greedy, full net-aware/annealing, row, and linear-safe layouts remain
-explicit diagnostic/reference modes.
+``--output`` names a file. Greedy, bounded annealing, row, and linear-safe layouts remain explicit
+diagnostic/reference modes.
 """
 
 from __future__ import annotations
@@ -98,14 +98,14 @@ def _placement_from_args(args: argparse.Namespace) -> PlacementOptions:
         return PlacementOptions(strategy="row", restarts=1)
 
     common = dict(
-        strategy="net-aware",
+        strategy="annealed",
         corridor_width=args.corridor_width,
         target_fill=args.target_fill,
         restarts=args.layout_retries,
         retry_fill_scale=0.8,
     )
     if args.net_aware_layout:
-        return PlacementOptions(**common)
+        return PlacementOptions(**common, iterations=args.annealing_iterations)
     if args.greedy_layout:
         return PlacementOptions(
             **common,
@@ -163,7 +163,7 @@ def main() -> None:
     placement_group.add_argument(
         "--greedy-layout",
         action="store_true",
-        help="use deterministic greedy net-aware placement plus collision-aware routing",
+        help="use deterministic greedy annealed-grid placement plus shared-net relay routing",
     )
     placement_group.add_argument(
         "--net-aware-layout",
@@ -171,8 +171,8 @@ def main() -> None:
         dest="net_aware_layout",
         action="store_true",
         help=(
-            "run the previous simulated-annealing net-aware placer, followed by deterministic "
-            "relaxation and the heuristic router"
+            "run bounded simulated annealing plus deterministic relaxation and shared-net relay "
+            "routing"
         ),
     )
     placement_group.add_argument(
@@ -184,19 +184,28 @@ def main() -> None:
         "--corridor-width",
         type=float,
         default=4.0,
-        help="initial routing-corridor width for greedy/net-aware layouts (default: 4.0)",
+        help="initial routing-corridor width for greedy/annealed layouts (default: 4.0)",
     )
     parser.add_argument(
         "--target-fill",
         type=float,
         default=0.60,
-        help="initial candidate-slot fill for greedy/net-aware layouts (default: 0.60)",
+        help="initial candidate-slot fill for greedy/annealed layouts (default: 0.60)",
     )
     parser.add_argument(
         "--layout-retries",
         type=int,
         default=4,
-        help="greedy/net-aware placement/routing attempts before giving up (default: 4)",
+        help="greedy/annealed placement/routing attempts before giving up (default: 4)",
+    )
+    parser.add_argument(
+        "--annealing-iterations",
+        type=int,
+        default=1000,
+        help=(
+            "annealing proposals per placement attempt when --annealing-layout is selected "
+            "(default: 1000; the library auto-budget is intentionally not used by Snake)"
+        ),
     )
     parser.add_argument(
         "--no-progress",
