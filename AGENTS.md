@@ -6,10 +6,11 @@ Before semantic/compiler work, read:
 
 1. `docs/data-contract.md`
 2. `docs/compiler-pipeline.md`
+3. `docs/factorio-2-circuit-mechanics.md`
 
-Those two files are the source of truth for the supported data contract and compilation boundaries. Historical milestone notes and completed physical probes are intentionally not kept in the repository.
+These are the source of truth for logical semantics, compilation boundaries, and target-game mechanics that materially constrain the compiler. `docs/README.md` indexes the remaining current subsystem and experimental documentation.
 
-For continuation of the active annealed-layout work on PR #34, also read `handoff.md`. It is a branch handoff, not a replacement for the stable architecture documents above.
+Historical milestone notes, branch handoffs, benchmark experiment diaries, and completed physical probes belong in Git/PR history rather than permanent documentation.
 
 ## Architectural rules
 
@@ -21,17 +22,19 @@ For continuation of the active annealed-layout work on PR #34, also read `handof
 - Event presence is distinct from payload value. Physical Events use aligned payload and valid channels.
 - State is logical whole-vector state. Preserve atomic reaction semantics and elaboration order.
 - Sparse flows acquire `HOLD`, `ZERO`, or `VALID` behavior only at output/device boundaries.
-- Both Level and Event lanes must converge on `AbstractPhysicalCircuit`; physical synthesis owns concrete signal allocation, red/green wiring, placement, wire reach, and final `Layout`.
+- Both Level and Event lanes converge on `AbstractPhysicalCircuit`; physical synthesis owns concrete signal allocation, red/green wiring, placement, wire reach, and final `Layout`.
 - Blueprint serialization consumes a finished `Layout`; it does not repair geometry or semantic timing.
-- Constant combinators are 1x1 entities and can emit a whole signal vector. Do not reintroduce stale 20-value or 50-value capacity assumptions.
+- Factorio 2.x constant combinators are 1x1 whole-vector sources. One entity can emit a configured value for every signal lane in the vector. Never estimate entity count by dividing configured lanes by 20 or 50; consult `docs/factorio-2-circuit-mechanics.md` before ROM/storage sizing.
 
-### Annealed physical-layout invariants
+## Physical-layout invariants
 
-- The joint annealer starts from an explicitly reach-safe topology and must remain in the feasible region. Ordinary proposals may inspect only local incident wires; expensive topology work belongs outside the hot loop.
-- Implementation combinators and relay constant combinators share the same corridor-aware legal workspace. Reserved corridors are unavailable to both classes of entity.
-- `_JointState.relay_positions` is the geometric source of truth while optimizing. Any `RoutingPlan` returned outside the optimizer must materialize relay coordinates from that state, and final validation must check the exact coordinates that will be serialized.
-- If a bootstrap grid expands, automatic public I/O anchors must be recomputed from the expanded bounds before routing. Explicit user anchors always override automatic anchors.
-- A failed sequential relay allocation may be a cross-net congestion problem even when both endpoints have many free neighbors. Do not infer global infeasibility from one greedy net order.
+See `docs/physical-layout.md` for the current layout contract. In particular:
+
+- Feasibility comes first: optimization starts from an explicitly reach-safe routed topology and must return a validated topology.
+- Implementation combinators and relay constant combinators share the same legal/corridor-aware workspace.
+- Optimizer geometry is authoritative; serialized relay coordinates and wires must be validated exactly.
+- Explicit user anchors remain fixed. Automatic public I/O anchors may be recomputed when the occupied envelope changes.
+- Failed sequential relay routing can be a cross-net congestion artifact; one greedy net order does not prove global infeasibility.
 
 ## Change discipline
 
@@ -44,8 +47,6 @@ Routine pytest must stay routine. Do not put the full 16x16 Snake framebuffer/st
 ## Validation
 
 Use Python >= 3.12 and `uv`.
-
-Routine validation:
 
 ```bash
 uv sync --extra dev
@@ -65,20 +66,13 @@ uv run pytest tests/integration/test_layout_benchmark_examples.py
 uv run pytest tests/integration/test_snake.py
 ```
 
-Opt-in heavyweight Snake validation, only when the affected work justifies it:
+Opt-in heavyweight Snake validation:
 
 ```bash
-# Full semantic framebuffer/reset acceptance; intentionally outside pytest/CI.
 uv run python -m benchmarks.snake.semantic_acceptance
-
-# Full lowering census without placement/routing.
 uv run python -m benchmarks.snake.census --deep-delays
-
-# Full physical synthesis/layout/blueprint generation; multi-minute benchmark.
 uv run python -m benchmarks.snake.generate --output snake-blueprint.txt
 ```
-
-For PR #34 annealed-layout acceptance, use the exact benchmark command recorded in `handoff.md` and test the resulting blueprint in Factorio; green CI alone does not validate the heavyweight physical layout.
 
 If routine pytest unexpectedly becomes slow, diagnose before adding exclusions:
 
