@@ -9,65 +9,23 @@ permissions:
   contents: read
 
 jobs:
-  snake-sampling:
-    strategy:
-      fail-fast: false
-      matrix:
-        seed:
-          - 0
-          - 1
-          - 2
-          - 3
-          - 4
+  snake-production-head:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: agent/annealed-joint-layout
+          ref: agent/annealed-joint-layout-implementation-priority
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Patch clean implementation-only sampler and annealing seed
-        env:
-          SEED: ${{ matrix.seed }}
-        run: |
-          python - <<'PY'
-          import os
-          from pathlib import Path
-
-          seed = int(os.environ["SEED"])
-
-          generate_path = Path("benchmarks/snake/generate.py")
-          generate = generate_path.read_text()
-          old_seed = "        retry_fill_scale=0.8,\n"
-          new_seed = old_seed + f"        random_seed={seed},\n"
-          if old_seed not in generate:
-              raise SystemExit("Snake placement option site not found")
-          generate_path.write_text(generate.replace(old_seed, new_seed, 1))
-
-          path = Path("src/factorio_circuit/synthesis/incremental_joint_layout.py")
-          source = path.read_text()
-          source = source.replace(
-              "        movable_set = set(movable_objects)\n        if not movable_objects:\n",
-              "        movable_set = set(movable_objects)\n"
-              "        movable_relays = sorted(state.relay_positions)\n"
-              "        if not movable_objects:\n",
-              1,
-          )
-          old = "            object_id = movable_objects[rng.randrange(len(movable_objects))]\n"
-          new = '''            proposal_pool = movable_entities if movable_entities else movable_relays\n            object_id = proposal_pool[rng.randrange(len(proposal_pool))]\n'''
-          if old not in source:
-              raise SystemExit("proposal selection site not found")
-          path.write_text(source.replace(old, new, 1))
-          PY
       - name: Install uv
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
       - name: Run 1000-proposal Snake layout
         run: |
-          echo "BENCHMARK_VARIANT=clean-implementation-only"
-          echo "BENCHMARK_SEED=${{ matrix.seed }}"
+          echo "BENCHMARK_VARIANT=committed-implementation-priority"
+          echo "BENCHMARK_SEED=0"
           /usr/bin/time -f 'BENCHMARK_WALL_SECONDS=%e' \
             uv run python -m benchmarks.snake.generate \
               --annealing-layout \
