@@ -13,10 +13,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant:
-          - uniform
-          - impl90
-          - impl100
         seed:
           - 0
           - 1
@@ -31,16 +27,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Patch proposal sampler and annealing seed
+      - name: Patch clean implementation-only sampler and annealing seed
         env:
-          VARIANT: ${{ matrix.variant }}
           SEED: ${{ matrix.seed }}
         run: |
           python - <<'PY'
           import os
           from pathlib import Path
 
-          variant = os.environ["VARIANT"]
           seed = int(os.environ["SEED"])
 
           generate_path = Path("benchmarks/snake/generate.py")
@@ -51,10 +45,6 @@ jobs:
               raise SystemExit("Snake placement option site not found")
           generate_path.write_text(generate.replace(old_seed, new_seed, 1))
 
-          if variant == "uniform":
-              raise SystemExit(0)
-
-          share = {"impl90": 0.90, "impl100": 1.00}[variant]
           path = Path("src/factorio_circuit/synthesis/incremental_joint_layout.py")
           source = path.read_text()
           source = source.replace(
@@ -65,7 +55,7 @@ jobs:
               1,
           )
           old = "            object_id = movable_objects[rng.randrange(len(movable_objects))]\n"
-          new = f'''            if movable_entities and movable_relays and rng.random() < {share!r}:\n                object_id = movable_entities[rng.randrange(len(movable_entities))]\n            elif movable_relays:\n                object_id = movable_relays[rng.randrange(len(movable_relays))]\n            else:\n                object_id = movable_entities[rng.randrange(len(movable_entities))]\n'''
+          new = '''            proposal_pool = movable_entities if movable_entities else movable_relays\n            object_id = proposal_pool[rng.randrange(len(proposal_pool))]\n'''
           if old not in source:
               raise SystemExit("proposal selection site not found")
           path.write_text(source.replace(old, new, 1))
@@ -76,7 +66,7 @@ jobs:
         run: uv sync --extra dev
       - name: Run 1000-proposal Snake layout
         run: |
-          echo "BENCHMARK_VARIANT=${{ matrix.variant }}"
+          echo "BENCHMARK_VARIANT=clean-implementation-only"
           echo "BENCHMARK_SEED=${{ matrix.seed }}"
           /usr/bin/time -f 'BENCHMARK_WALL_SECONDS=%e' \
             uv run python -m benchmarks.snake.generate \
