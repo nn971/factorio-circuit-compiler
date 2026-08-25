@@ -9,7 +9,19 @@ permissions:
   contents: read
 
 jobs:
-  snake-production-head:
+  snake-area-score:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - current
+          - area-tiebreak
+        seed:
+          - 0
+          - 1
+          - 2
+          - 3
+          - 4
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -18,14 +30,87 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Patch annealing seed and optional area tie-break
+        env:
+          VARIANT: ${{ matrix.variant }}
+          SEED: ${{ matrix.seed }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          seed = int(os.environ["SEED"])
+          variant = os.environ["VARIANT"]
+
+          generate_path = Path("benchmarks/snake/generate.py")
+          generate = generate_path.read_text()
+          old_seed = "        retry_fill_scale=0.8,\n"
+          new_seed = old_seed + f"        random_seed={seed},\n"
+          if old_seed not in generate:
+              raise SystemExit("Snake placement option site not found")
+          generate_path.write_text(generate.replace(old_seed, new_seed, 1))
+
+          if variant == "current":
+              raise SystemExit(0)
+
+          path = Path("src/factorio_circuit/synthesis/incremental_joint_layout.py")
+          source = path.read_text()
+          old = '''def _exact_score(
+              state: exact._JointState,
+              topology: _FeasibleTopology,
+              center: Position,
+          ) -> tuple[int, float]:
+              movable_objects = [*state.positions, *state.relay_positions]
+              compactness = sum(
+                  exact._compactness(state.object_position(object_id), center)
+                  for object_id in movable_objects
+              )
+              return (len(state.relay_positions), topology.total_energy + compactness)
+          '''
+          new = '''def _exact_score(
+              state: exact._JointState,
+              topology: _FeasibleTopology,
+              center: Position,
+          ) -> tuple[int, float, float]:
+              movable_objects = [*state.positions, *state.relay_positions]
+              compactness = sum(
+                  exact._compactness(state.object_position(object_id), center)
+                  for object_id in movable_objects
+              )
+              if not movable_objects:
+                  area = 0.0
+              else:
+                  left = min(
+                      state.object_position(object_id)[0] - state.object_half_extent(object_id)[0]
+                      for object_id in movable_objects
+                  )
+                  right = max(
+                      state.object_position(object_id)[0] + state.object_half_extent(object_id)[0]
+                      for object_id in movable_objects
+                  )
+                  top = min(
+                      state.object_position(object_id)[1] - state.object_half_extent(object_id)[1]
+                      for object_id in movable_objects
+                  )
+                  bottom = max(
+                      state.object_position(object_id)[1] + state.object_half_extent(object_id)[1]
+                      for object_id in movable_objects
+                  )
+                  area = (right - left) * (bottom - top)
+              return (len(state.relay_positions), area, topology.total_energy + compactness)
+          '''
+          if old not in source:
+              raise SystemExit("exact score site not found")
+          path.write_text(source.replace(old, new, 1))
+          PY
       - name: Install uv
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
       - name: Run 1000-proposal Snake layout
         run: |
-          echo "BENCHMARK_VARIANT=committed-implementation-priority"
-          echo "BENCHMARK_SEED=0"
+          echo "BENCHMARK_VARIANT=${{ matrix.variant }}"
+          echo "BENCHMARK_SEED=${{ matrix.seed }}"
           /usr/bin/time -f 'BENCHMARK_WALL_SECONDS=%e' \
             uv run python -m benchmarks.snake.generate \
               --annealing-layout \
