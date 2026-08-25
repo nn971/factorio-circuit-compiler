@@ -1,8 +1,8 @@
 """Probe exact-overlap anchors around AssemblerDevice without any hand-wired component join.
 
-The command component publishes an iron-gear recipe and a two-iron-plate requester setpoint.  The
+The command component publishes an iron-gear recipe and a two-iron-plate requester setpoint. The
 observer component consumes the device's ``ingredients`` output and lights a lamp when iron plates
-are present.  Both are attached to AssemblerDevice by merging named anchor terminals; the composer
+are present. Both are attached to AssemblerDevice by merging named anchor terminals; the composer
 adds no circuit wire between independently generated components.
 """
 
@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from factorio_circuit.devices import (
     AnchorBinding,
-    AnchorSpec,
     AnchoredBlueprint,
+    AnchorSpec,
     AssemblerDevice,
     BoundAnchor,
     compose_anchored_blueprints,

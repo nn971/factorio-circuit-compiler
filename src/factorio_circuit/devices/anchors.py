@@ -1,8 +1,8 @@
 """Exact-overlap anchoring for composing independently generated device blueprints.
 
-An anchor is a typed constant-combinator terminal owned by one component. Components are composed by
-translating them until compatible anchors occupy exactly the same position and then merging the anchor
-entities. The composer never invents a circuit wire between component internals.
+An anchor is a typed constant-combinator terminal owned by one component. Components are composed
+by translating them until compatible anchors occupy exactly the same position and then merging the
+anchor entities. The composer never invents a circuit wire between component internals.
 """
 
 from __future__ import annotations
@@ -12,7 +12,10 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from factorio_circuit.devices._blueprint import Blueprint
-from factorio_circuit.devices.protocol import DevicePortDirection
+from factorio_circuit.devices.protocol import (
+    DevicePortDirection,
+    ExternalDeviceBlueprint,
+)
 from factorio_circuit.ir.physical import SignalId, WireColor
 from factorio_circuit.ir.semantic import PayloadShape, TemporalModality
 
@@ -219,14 +222,15 @@ def compose_anchored_blueprints(
     return ComposedAnchoredBlueprint(left_bp, tuple(surviving))
 
 
-def device_as_anchored_blueprint(device: object, *, label: str | None = None) -> AnchoredBlueprint:
-    """Adapt an ``ExternalDeviceBlueprint``-like object to the generic anchoring API."""
+def device_as_anchored_blueprint(
+    device: ExternalDeviceBlueprint,
+    *,
+    label: str | None = None,
+) -> AnchoredBlueprint:
+    """Adapt an external device to the generic anchoring API."""
 
-    protocol = getattr(device, "protocol")
-    blueprint = getattr(device, "blueprint")
-    ports = getattr(device, "ports")
     anchors: list[BoundAnchor] = []
-    for bound in ports:
+    for bound in device.ports:
         spec = bound.spec
         endpoint = bound.endpoint
         anchors.append(
@@ -244,8 +248,8 @@ def device_as_anchored_blueprint(device: object, *, label: str | None = None) ->
                 endpoint.position,
             )
         )
-    component_label = label or getattr(protocol, "name", "external-device")
-    return AnchoredBlueprint(blueprint, tuple(anchors), component_label)
+    component_label = label or device.protocol.name
+    return AnchoredBlueprint(device.blueprint, tuple(anchors), component_label)
 
 
 def require_all_anchors_bound(
@@ -256,7 +260,9 @@ def require_all_anchors_bound(
 
     bound = set(bound_names)
     missing = [
-        anchor.name for anchor in component.anchors if anchor.spec.required and anchor.name not in bound
+        anchor.name
+        for anchor in component.anchors
+        if anchor.spec.required and anchor.name not in bound
     ]
     if missing:
         raise ValueError(f"required anchors remain unbound: {sorted(missing)!r}")
@@ -338,17 +344,18 @@ def _validate_bound_junctions(
             if (wire[0] == shared_id and wire[1] == connector)
             or (wire[2] == shared_id and wire[3] == connector)
         ]
-        # If one side is a constant source it can legitimately contribute no incident wire; otherwise
-        # two component-local incident paths should survive the merge. The local checks above already
-        # prove each side independently, so at least one incident path is mandatory in the result.
+        # A constant source can legitimately contribute no incident wire. Otherwise two
+        # component-local incident paths should survive the merge. The local checks above prove
+        # each side independently, so at least one incident path is mandatory in the result.
         if not incident:
             left_entity = _entity_by_id(_entities(left.blueprint), left_anchor.entity_number)
             right_entity = _entity_by_id(_entities(right.blueprint), right_anchor.entity_number)
             if not (_constant_emits_signals(left_entity) or _constant_emits_signals(right_entity)):
                 raise ValueError(
-                    f"merged anchor {binding.left!r}/{binding.right!r} has no surviving circuit path"
+                    f"merged anchor {binding.left!r}/{binding.right!r} has no surviving "
+                    "circuit path"
                 )
-        # Defensive check that a non-anchor right-side neighbor was actually remapped into the result.
+        # Ensure a non-anchor right-side neighbor was actually remapped into the result.
         if right_anchor.entity_number not in right_id_map:
             raise ValueError("internal anchor remap was lost")
 
@@ -358,8 +365,14 @@ def _merge_anchor_entity_metadata(target: dict[str, object], source: dict[str, o
 
     target_behavior = target.get("control_behavior")
     source_behavior = source.get("control_behavior")
-    if target_behavior is not None and source_behavior is not None and target_behavior != source_behavior:
-        raise ValueError("overlapping anchors both define incompatible constant-combinator behavior")
+    if (
+        target_behavior is not None
+        and source_behavior is not None
+        and target_behavior != source_behavior
+    ):
+        raise ValueError(
+            "overlapping anchors both define incompatible constant-combinator behavior"
+        )
     if target_behavior is None and source_behavior is not None:
         target["control_behavior"] = deepcopy(source_behavior)
     target_desc = str(target.get("player_description", ""))

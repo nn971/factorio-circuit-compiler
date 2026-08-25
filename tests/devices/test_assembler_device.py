@@ -2,6 +2,7 @@ from math import hypot
 
 import pytest
 
+from factorio_circuit.devices._blueprint import decode_blueprint
 from factorio_circuit.devices.assembler import (
     ASSEMBLER_DEVICE_PROTOCOL,
     ASSEMBLER_ENABLE_SIGNAL,
@@ -9,7 +10,6 @@ from factorio_circuit.devices.assembler import (
     ASSEMBLER_WORKING_SIGNAL,
     AssemblerDevice,
 )
-from factorio_circuit.devices._blueprint import decode_blueprint
 from factorio_circuit.devices.protocol import DevicePortDirection
 from factorio_circuit.ir.physical import WireColor
 from factorio_circuit.ir.semantic import PayloadShape, TemporalModality

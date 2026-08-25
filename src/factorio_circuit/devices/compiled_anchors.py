@@ -1,20 +1,19 @@
 """Adapt compiler-generated module ports to the exact-overlap external-device anchor ABI.
 
 This module is the only sanctioned post-compilation electrical adaptation between a compiled module
-and an independently generated external device.  It operates exclusively on named compiler I/O
-ports:
+and an independently generated external device. It operates exclusively on named compiler I/O ports:
 it never searches descriptions or reaches into component internals.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from math import ceil, hypot
-from typing import Sequence
 
 from factorio_circuit.compiler import CompilationResult
-from factorio_circuit.devices.anchors import AnchorSpec, AnchoredBlueprint, BoundAnchor
+from factorio_circuit.devices.anchors import AnchoredBlueprint, AnchorSpec, BoundAnchor
 from factorio_circuit.devices.protocol import DevicePortDirection
 from factorio_circuit.ir.physical import InputPort, OutputPort, SignalId, WireColor
 from factorio_circuit.ir.semantic import PayloadShape, TemporalModality
@@ -53,12 +52,12 @@ def compiled_module_as_anchored_blueprint(
 ) -> AnchoredBlueprint:
     """Materialize stable colored/fixed-signal anchors around a compiled module.
 
-    Compiler-owned marker entities keep their synthesized signal/color.  For each public binding we
+    Compiler-owned marker entities keep their synthesized signal/color. For each public binding we
     insert one arithmetic isolation/renaming adapter, then route only the *external* side through
-    constant-combinator relays to the requested anchor.  Therefore arbitrary compiler allocation
+    constant-combinator relays to the requested anchor. Therefore arbitrary compiler allocation
     choices end at this boundary while all cross-component composition remains exact-overlap only.
 
-    The adapter is legalized against already placed compiler entities before it is inserted.  This
+    The adapter is legalized against already placed compiler entities before it is inserted. This
     matters because layout-only wire relays are synthesized before the stable component boundary is
     materialized; a relay may otherwise occupy the preferred adapter footprint and silently prevent
     Factorio from placing that interface combinator.
@@ -254,7 +253,7 @@ def _legal_adapter_position(
     """Find a nearby legal arithmetic-combinator center for a stable interface adapter.
 
     Search uses integer-tile offsets from the preferred position so Factorio placement parity is
-    preserved.  Tangential moves are preferred over moves along the marker-to-anchor direction.
+    preserved. Tangential moves are preferred over moves along the marker-to-anchor direction.
     """
 
     preferred = _adapter_position(internal, external)

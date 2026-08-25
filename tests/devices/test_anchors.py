@@ -2,8 +2,8 @@ import pytest
 
 from factorio_circuit.devices import (
     AnchorBinding,
-    AnchorSpec,
     AnchoredBlueprint,
+    AnchorSpec,
     AssemblerDevice,
     BoundAnchor,
     compose_anchored_blueprints,
@@ -58,7 +58,14 @@ def _constant_source(name: str, position: tuple[float, float]) -> AnchoredBluepr
             ],
             "wires": [],
         },
-        (BoundAnchor(_vector_spec(name, DevicePortDirection.OUTPUT, WireColor.GREEN), 1, 2, position),),
+        (
+            BoundAnchor(
+                _vector_spec(name, DevicePortDirection.OUTPUT, WireColor.GREEN),
+                1,
+                2,
+                position,
+            ),
+        ),
         "source",
     )
 
