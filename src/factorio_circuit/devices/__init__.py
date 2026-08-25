@@ -19,6 +19,19 @@ from factorio_circuit.devices.assembler import (
     build_assembler_device_blueprint,
     generate_assembler_device_blueprint_string,
 )
+from factorio_circuit.devices.compiled_anchors import (
+    CompiledAnchorBinding,
+    compiled_module_as_anchored_blueprint,
+)
+from factorio_circuit.devices.component_seams import (
+    BoundarySlot,
+    ComponentFootprint,
+    ComponentSeam,
+    ComponentSide,
+    ConstrainedComponent,
+    boundary_anchor,
+    compose_component_seams,
+)
 from factorio_circuit.devices.lamp_screen import (
     DISPLAY_VIRTUAL_SIGNAL_POOL,
     PIXEL_SIGNALS,
@@ -57,7 +70,13 @@ __all__ = [
     "AssemblerDevice",
     "BoundAnchor",
     "BoundDevicePort",
+    "BoundarySlot",
+    "CompiledAnchorBinding",
+    "ComponentFootprint",
+    "ComponentSeam",
+    "ComponentSide",
     "ComposedAnchoredBlueprint",
+    "ConstrainedComponent",
     "DIRECTION_ORDER",
     "DIRECTION_SIGNALS",
     "DISPLAY_VIRTUAL_SIGNAL_POOL",
@@ -71,10 +90,13 @@ __all__ = [
     "PIXEL_SIGNALS",
     "SCREEN_HEIGHT",
     "SCREEN_WIDTH",
+    "boundary_anchor",
     "build_assembler_device_blueprint",
     "build_lamp_screen_blueprint",
     "build_player_movement_detector_blueprint",
+    "compiled_module_as_anchored_blueprint",
     "compose_anchored_blueprints",
+    "compose_component_seams",
     "device_as_anchored_blueprint",
     "generate_assembler_device_blueprint_string",
     "generate_lamp_screen_blueprint_string",
