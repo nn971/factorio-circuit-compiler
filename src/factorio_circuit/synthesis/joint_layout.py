@@ -49,6 +49,7 @@ class _JointState:
     relay_groups: dict[int, frozenset[int]]
     safe_span: float
     forbidden_areas: tuple[RelayForbiddenArea, ...]
+    fixed_objects: frozenset[int] = frozenset()
 
     def group_vertices(self, group: int) -> tuple[Vertex, ...]:
         terminals = tuple(_terminal_vertex(item) for item in self.endpoints_by_group[group])

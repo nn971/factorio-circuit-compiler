@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
+from math import ceil, floor
 from pathlib import Path
 from time import monotonic
 
@@ -33,7 +35,19 @@ from factorio_circuit import (
     SamplingPolicy,
 )
 from factorio_circuit.analysis import census_abstract_physical, format_abstract_physical_census
-from factorio_circuit.ir.physical import WireColor
+from factorio_circuit.blueprint.layout_encode import (
+    encode_layout_blueprint_string,
+    layout_to_blueprint_json,
+)
+from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
+from factorio_circuit.devices._blueprint import decode_blueprint
+from factorio_circuit.ir.physical import ConstantCombinator, WireColor
+from factorio_circuit.synthesis.layout import Layout
+from factorio_circuit.synthesis.layout_optimizer import (
+    LayoutOptimizationProblem,
+    LegalPlacementLattice,
+    optimize_physical_layout,
+)
 from factorio_circuit.synthesis.placement import PlacementOptions
 from factorio_circuit.synthesis.safe_crossbar import safe_crossbar_options
 from factorio_circuit.synthesis.safe_folded_crossbar import safe_folded_crossbar_options
@@ -93,6 +107,34 @@ def _marker_wire_color(result: CompilationResult, marker_entity: int) -> WireCol
     return next(iter(colors))
 
 
+def _validate_serialized_artifact(result: CompilationResult) -> None:
+    """Check exact validated coordinates and connector wires after blueprint encoding."""
+
+    decoded = decode_blueprint(result.blueprint_string)
+    expected_blueprint = result.blueprint_json.get("blueprint")
+    if decoded != expected_blueprint:
+        raise ValueError("encoded Snake blueprint differs from its source blueprint JSON")
+    entities = decoded.get("entities")
+    if not isinstance(entities, list):
+        raise ValueError("encoded Snake blueprint contains no entity list")
+    serialized_positions = {
+        int(entity["entity_number"]): (
+            float(entity["position"]["x"]),
+            float(entity["position"]["y"]),
+        )
+        for entity in entities
+        if isinstance(entity, dict)
+        and isinstance(entity.get("position"), dict)
+        and "entity_number" in entity
+    }
+    if serialized_positions != result.layout.positions:
+        raise ValueError("encoded Snake coordinates differ from the validated Layout")
+    serialized_wires = {tuple(wire) for wire in decoded.get("wires", [])}
+    expected_wires = {wire.as_factorio_tuple() for wire in result.layout.wires}
+    if serialized_wires != expected_wires:
+        raise ValueError("encoded Snake connector wires differ from the validated Layout")
+
+
 def _placement_from_args(args: argparse.Namespace) -> PlacementOptions:
     if args.row_layout:
         return PlacementOptions(strategy="row", restarts=1)
@@ -101,6 +143,7 @@ def _placement_from_args(args: argparse.Namespace) -> PlacementOptions:
         strategy="annealed",
         corridor_width=args.corridor_width,
         target_fill=args.target_fill,
+        random_seed=args.layout_seed,
         restarts=args.layout_retries,
         retry_fill_scale=0.8,
     )
@@ -117,6 +160,60 @@ def _placement_from_args(args: argparse.Namespace) -> PlacementOptions:
         return safe_crossbar_options()
 
     return safe_folded_crossbar_options()
+
+
+def _seed_lattice(layout: Layout) -> LegalPlacementLattice:
+    """Build a generic half-tile lattice covering an existing benchmark seed envelope."""
+
+    implementation = {entity.id: entity for entity in layout.circuit.entities}
+    relay_ids = {relay.entity_id for relay in layout.relays}
+
+    def sites_for(object_ids: list[int]) -> tuple[tuple[float, float], ...]:
+        if not object_ids:
+            return ()
+        residues = {
+            (layout.positions[object_id][0] % 1.0, layout.positions[object_id][1] % 1.0)
+            for object_id in object_ids
+        }
+        min_x = floor(min(x for x, _y in layout.positions.values()))
+        max_x = ceil(max(x for x, _y in layout.positions.values()))
+        min_y = floor(min(y for _x, y in layout.positions.values()))
+        max_y = ceil(max(y for _x, y in layout.positions.values()))
+        return tuple(
+            (float(x) + residue_x, float(y) + residue_y)
+            for residue_x, residue_y in sorted(residues)
+            for y in range(min_y, max_y + 1)
+            for x in range(min_x, max_x + 1)
+        )
+
+    unit_ids = [
+        object_id
+        for object_id in layout.positions
+        if object_id in relay_ids or isinstance(implementation[object_id], ConstantCombinator)
+    ]
+    wide_ids = [
+        object_id
+        for object_id in layout.positions
+        if object_id not in relay_ids
+        and not isinstance(implementation[object_id], ConstantCombinator)
+    ]
+    return LegalPlacementLattice(
+        unit_sites=sites_for(unit_ids),
+        wide_sites=sites_for(wide_ids),
+    )
+
+
+def _safe_folded_seed_problem(layout: Layout) -> LayoutOptimizationProblem:
+    """Build the generic optimizer input used by the safe-folded benchmark mode."""
+
+    marker_ids = {port.marker_entity for port in layout.circuit.inputs}
+    marker_ids.update(port.marker_entity for port in layout.circuit.outputs)
+    return LayoutOptimizationProblem(
+        layout,
+        _seed_lattice(layout),
+        safe_wire_span=DEFAULT_SAFE_WIRE_SPAN,
+        fixed_positions={entity_id: layout.positions[entity_id] for entity_id in marker_ids},
+    )
 
 
 def main() -> None:
@@ -180,6 +277,14 @@ def main() -> None:
         action="store_true",
         help="use the old one-dimensional diagnostic row placement (routing may be very slow)",
     )
+    placement_group.add_argument(
+        "--anneal-safe-folded-seed",
+        action="store_true",
+        help=(
+            "construct the generic safe-folded layout first, then optimize that complete routed "
+            "Layout through the fail-safe physical-layout annealer"
+        ),
+    )
     parser.add_argument(
         "--corridor-width",
         type=float,
@@ -203,9 +308,15 @@ def main() -> None:
         type=int,
         default=1000,
         help=(
-            "annealing proposals per placement attempt when --annealing-layout is selected "
+            "annealing proposals for --annealing-layout or --anneal-safe-folded-seed "
             "(default: 1000; the library auto-budget is intentionally not used by Snake)"
         ),
+    )
+    parser.add_argument(
+        "--layout-seed",
+        type=int,
+        default=0,
+        help="fixed annealer random seed (default: 0)",
     )
     parser.add_argument(
         "--no-progress",
@@ -232,11 +343,48 @@ def main() -> None:
         if terminal_progress is not None:
             terminal_progress.close()
 
+    if args.anneal_safe_folded_seed:
+        optimization_started = monotonic()
+        optimized = optimize_physical_layout(
+            _safe_folded_seed_problem(result.layout),
+            options=PlacementOptions(
+                anchor_io=False,
+                reserve_corridors=False,
+                iterations=args.annealing_iterations,
+                random_seed=args.layout_seed,
+                restarts=1,
+            ),
+        )
+        result = replace(
+            result,
+            layout=optimized.layout,
+            blueprint_json=layout_to_blueprint_json(optimized.layout),
+            blueprint_string=encode_layout_blueprint_string(optimized.layout),
+        )
+        print(
+            "generic layout optimization: "
+            f"input=({optimized.before.implementation_entities} implementation, "
+            f"{optimized.before.relay_count} relays, "
+            f"area {optimized.before.occupied_area:.1f}, "
+            f"wire {optimized.before.wire_length:.1f}); "
+            f"output=({optimized.after.implementation_entities} implementation, "
+            f"{optimized.after.relay_count} relays, "
+            f"area {optimized.after.occupied_area:.1f}, "
+            f"wire {optimized.after.wire_length:.1f}); "
+            f"work={optimized.proposal_budget} proposals; "
+            f"runtime={monotonic() - optimization_started:.1f}s",
+            file=sys.stderr,
+        )
+        for diagnostic in optimized.diagnostics:
+            print(f"generic layout diagnostic: {diagnostic}", file=sys.stderr)
+
     if args.census:
         print(
             format_abstract_physical_census(census_abstract_physical(result.abstract_physical)),
             file=sys.stderr,
         )
+
+    _validate_serialized_artifact(result)
 
     movement_port = next(port for port in result.physical_circuit.inputs if port.name == "movement")
     reset_port = next(port for port in result.physical_circuit.inputs if port.name == "reset")

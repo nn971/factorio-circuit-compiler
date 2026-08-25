@@ -47,6 +47,26 @@ solved by the mapper.
 Historical temporal/transport probe scripts remain available for regression and comparison, but new
 Snake optimization work should use the `mapping` commands above.
 
+To benchmark the general-purpose physical optimizer from a complete safe-folded routed seed rather
+than from the annealer's constructive seed, run:
+
+```bash
+uv run python -m benchmarks.snake.generate \
+  --anneal-safe-folded-seed \
+  --annealing-iterations 512 \
+  --layout-seed 0 \
+  --layout-retries 1 \
+  --census \
+  --output /tmp/snake-generic-front-panel-512-seed0.txt
+```
+
+This mode records input/output implementation count, relay count, occupied area, routed wire
+length, proposal budget, runtime, and any rejected optimization-phase diagnostics. The production
+optimizer receives only the concrete `Layout` and generic physical constraints; safe-folded is
+used solely to construct this benchmark input. Public marker constants are fixed as a recognizable
+front panel: reset and movement are the first two labeled constants at `(0,0)` and `(3,0)`, and all
+implementation/routing geometry remains on the circuit-facing side of the marker row.
+
 ## Validation tiers
 
 Routine semantic regression:

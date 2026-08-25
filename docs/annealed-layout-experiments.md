@@ -174,3 +174,81 @@ occupied area and routed wire length distinguish candidates without a relay-coun
 - **Conclusion:** the two-tile default is a strict structural improvement over the accepted
   four-tile seed-0 artifact (578 relays, 4,270 area, 6,538.2 wire). The generated blueprint is
   `/tmp/snake-corridor2-final-seed0.txt`.
+
+## 2026-08-26 — generic optimizer from the complete safe-folded Layout
+
+- **Hypothesis:** a transactional coarse placement/topology proposal can escape an arbitrary valid
+  routed input without relying on its construction metadata, then hand the accepted candidate to
+  the local reach-preserving annealer.
+- **Change:** add `LayoutOptimizationProblem` with an explicit legal lattice, fixed coordinates,
+  reserved areas, and reach limit; validate exact geometry/connectors/net connectivity before and
+  after optimization; seed incremental state directly from the input wires; try a bounded compact
+  implementation reseed and full reroute on a clone before ordinary proposals. The final coarse
+  placer traverses the physical-net hypergraph, places an entity at the centroid of already-placed
+  electrical peers, and uses compressed input geometry only to seed disconnected components. Fixed
+  public markers form a front-panel line and constrain the implementation to its circuit-facing
+  half-plane.
+- **Input:** the current full Snake safe-folded layout: 602 implementation combinators, 13,862
+  layout relays, 135,124.0 occupied area, and 79,379.1 routed wire length.
+- **Budget:** 512 proposals, one safe-folded seed, optimizer random seeds 0–2.
+- **Command:**
+
+  ```bash
+  uv run python -m benchmarks.snake.generate \
+    --anneal-safe-folded-seed \
+    --annealing-iterations 512 \
+    --layout-seed 0 \
+    --layout-retries 1 \
+    --census \
+    --output /tmp/snake-generic-front-panel-512-seed0.txt
+  ```
+
+- **Results:**
+
+  | seed | relays | area | wire length | optimizer runtime |
+  | ---: | ---: | ---: | ---: | ---: |
+  | 0 | 246 | 6,014.0 | 3,782.6 | 16.5s |
+  | 1 | 245 | 5,890.0 | 3,770.9 | 17.3s |
+  | 2 | 249 | 5,828.0 | 3,794.0 | 17.4s |
+
+- **Zero-budget control:** the same full input was returned with identical 13,862 relays, 135,124.0
+  area, and 79,379.1 wire length; input validation took 0.5s.
+- **Rejected first probe:** sorting by footprint and input `(y,x,id)` before filling row-major legal
+  sites produced visually regular layouts with buried public ports. On an adversarial 150-net case,
+  connected pairs averaged 14.54 tiles apart. That behavior replayed incidental seed order and was
+  not a general placement policy, so it was replaced rather than tuned.
+- **Conclusion:** all three fixed seeds remain near the requested footprint regime from the same
+  complete safe-folded artifact while using only 245–249 relays. The production optimizer sees only
+  concrete entities/footprints, positions, legal sites, fixed coordinates, wires/connectors,
+  concrete physical connections, and reach. In each decoded artifact the eleven public markers are
+  the only entities on the `y=0` perimeter; reset, movement, and framebuffer are exactly `(0,0)`,
+  `(3,0)`, and `(6,0)`. The artifacts pass authoritative geometry, reach, connector-color
+  separation, physical-net connectivity, and encode/decode identity checks. Factorio in-game
+  acceptance of this new generic-seed artifact remains to be performed.
+
+## 2026-08-26 — unrelated generic-layout corpus
+
+- **Hypothesis:** the same public optimizer should compact hand-built layouts unrelated to Snake or
+  any constructive compiler placer, including thousands of pre-existing relays.
+- **Command:**
+
+  ```bash
+  uv run python -m benchmarks.layout_optimizer_corpus --proposals 256 --seed 0
+  ```
+
+- **Cases:**
+  - 300 independent constant combinators spread over area 4,329;
+  - 100 unrelated alternating red/green point-to-point nets containing 200 implementation
+    constants and 1,900 hand-authored layout relays over area 28,059.
+- **Results:**
+
+  | case | seed | input relays | output relays | input area | output area | runtime |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | sparse independent | 0–2 | 0 | 0 | 4,329 | 705 | 2.14–2.17s |
+  | hand-routed forest | 0–2 | 1,900 | 0 | 28,059 | 280 | 0.79–0.82s |
+
+- **Conclusion:** validation and optimization remain comfortably bounded for more than two
+  thousand physical entities. Fixed random seeds preserve validity and converge to the same score
+  on these deliberately simple corpus cases.
+  Both inputs are complete hand-built `Layout` artifacts and use no Abstract Physical or upstream
+  placement metadata.

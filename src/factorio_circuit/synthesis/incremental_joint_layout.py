@@ -893,6 +893,8 @@ def _simplify_feasible_topology(
         queued.discard(relay_id)
         if relay_id not in state.relay_positions:
             continue
+        if relay_id in state.fixed_objects:
+            continue
         relay_edges = tuple(incident.get(relay_id, ()))
         if len(relay_edges) > 2:
             continue
@@ -1153,9 +1155,10 @@ def _anneal_feasible(
     topology: _FeasibleTopology,
     options: PlacementOptions,
     grid: base_placement._GridGeometry,
+    diagnostics: list[str] | None = None,
 ) -> _FeasibleTopology:
     automatic_io = _automatic_io_entity_ids(state.circuit, options)
-    explicitly_anchored = set(options.anchors)
+    explicitly_anchored = set(options.anchors) | set(state.fixed_objects)
     movable_entities = [
         entity.id for entity in state.circuit.entities if entity.id not in explicitly_anchored
     ]
@@ -1203,7 +1206,7 @@ def _anneal_feasible(
 
     for epoch_start in range(0, iterations, _EPOCH_PROPOSALS):
         epoch_end = min(iterations, epoch_start + _EPOCH_PROPOSALS)
-        movable_relays = sorted(state.relay_positions)
+        movable_relays = sorted(set(state.relay_positions) - explicitly_anchored)
         movable_objects = sorted(set(movable_entities) | set(movable_relays))
         movable_set = set(movable_objects)
         if not movable_objects and not automatic_io:
@@ -1312,7 +1315,12 @@ def _anneal_feasible(
 
         topology = _simplify_feasible_topology(state, topology)
         if epoch_end in topology_rebuilds and epoch_end < iterations:
-            topology = _try_rebuild_annealed_topology(state, topology, grid)
+            topology = _try_rebuild_annealed_topology(
+                state,
+                topology,
+                grid,
+                diagnostics=diagnostics,
+            )
         occupancy = _SpatialOccupancy.build(state)
         score = _exact_score(state, topology, center)
         if score < best_score:
@@ -1336,8 +1344,16 @@ def _try_rebuild_annealed_topology(
     state: exact._JointState,
     topology: _FeasibleTopology,
     grid: base_placement._GridGeometry,
+    *,
+    diagnostics: list[str] | None = None,
 ) -> _FeasibleTopology:
     """Try one coarse retopology pass without risking the current feasible state."""
+
+    # A fixed relay is part of the caller's physical boundary contract. The constructive router
+    # does not yet accept mandatory Steiner vertices, so replacing this topology could silently
+    # delete that anchor. Local motion and simplification can still improve everything around it.
+    if state.fixed_objects & state.relay_positions.keys():
+        return topology
 
     relay_positions = dict(state.relay_positions)
     relay_groups = dict(state.relay_groups)
@@ -1345,9 +1361,11 @@ def _try_rebuild_annealed_topology(
     state.relay_groups.clear()
     try:
         rebuilt = _construct_feasible_bootstrap(state, grid)
-    except ValueError:
+    except ValueError as exc:
         state.relay_positions.update(relay_positions)
         state.relay_groups.update(relay_groups)
+        if diagnostics is not None:
+            diagnostics.append(f"coarse retopology rejected: {exc}")
         return topology
     return _simplify_feasible_topology(state, rebuilt)
 
@@ -1498,14 +1516,17 @@ def _exact_score(
     topology: _FeasibleTopology,
     center: Position,
 ) -> tuple[int, float, float]:
-    movable_objects = [*state.positions, *state.relay_positions]
-    compactness = sum(
-        exact._compactness(state.object_position(object_id), center)
-        for object_id in movable_objects
-    )
+    _ = center
     left, right, top, bottom = _occupied_envelope(state)
     area = (right - left) * (bottom - top)
-    return (len(state.relay_positions), area, topology.total_energy + compactness)
+    wire_length = sum(
+        _distance(
+            state.object_position(wire.source_entity),
+            state.object_position(wire.target_entity),
+        )
+        for wire in topology.routing.wires
+    )
+    return (len(state.relay_positions), area, wire_length)
 
 
 def _proposed_position(

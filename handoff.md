@@ -1,5 +1,41 @@
 # Annealed joint-layout handoff
 
+## 2026-08-26 generic routed-layout continuation
+
+The optimizer now has a public generic input boundary in
+`src/factorio_circuit/synthesis/layout_optimizer.py`. It accepts a complete valid `Layout` plus its
+legal lattice, reserved areas, fixed object coordinates, and conservative reach limit. Budget zero
+returns the exact input after authoritative validation. Positive optimization seeds the existing
+incremental topology directly from input wires, retains the input as best-known state, and uses a
+transactional generic coarse compaction/reroute before local annealing. Coarse placement traverses
+the concrete physical-net hypergraph and places each entity near already-placed electrical peers;
+input row order and safe-folded construction order are not placement policies. Fixed public markers
+define a front-panel line and the implementation is placed on its circuit-facing side.
+
+The full safe-folded Snake (13,862 relays, area 135,124.0) reaches 245–249 relays and area
+5,828–6,014 across fixed seeds 0–2 with 512 proposals. In every serialized result the eleven public
+markers are the only entities on the `y=0` perimeter; reset, movement, and framebuffer remain at
+`(0,0)`, `(3,0)`, and `(6,0)`. See `docs/annealed-layout-experiments.md` for exact measurements. The
+benchmark command is:
+
+```bash
+uv run python -m benchmarks.snake.generate \
+  --anneal-safe-folded-seed \
+  --annealing-iterations 512 \
+  --layout-seed 0 \
+  --layout-retries 1 \
+  --census \
+  --output /tmp/snake-generic-front-panel-512-seed0.txt
+```
+
+The generated artifacts pass the new authoritative physical validator. They have not yet been
+tested in Factorio; do not treat structural generation alone as target-level acceptance.
+
+An unrelated opt-in corpus is available through
+`uv run python -m benchmarks.layout_optimizer_corpus --proposals 256 --seed 0`. Its largest case
+contains 200 implementation entities plus 1,900 hand-authored relays and completes in about 0.8s;
+see `docs/annealed-layout-experiments.md` for the three-seed results.
+
 This file is the continuation note for PR #34 (`agent/annealed-joint-layout`). It records the current validated state, the architecture that should be preserved, and the next optimization targets. Read `AGENTS.md`, `docs/data-contract.md`, and `docs/compiler-pipeline.md` first; this file is branch-scoped and intentionally more operational.
 
 ## Status
