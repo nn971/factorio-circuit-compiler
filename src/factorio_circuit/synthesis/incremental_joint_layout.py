@@ -658,6 +658,7 @@ def _simplify_feasible_topology(
             del state.relay_groups[relay_id]
             enqueue(remote)
             continue
+
         first = wires[relay_edges[0]]
         second = wires[relay_edges[1]]
         if first.color is not second.color:
