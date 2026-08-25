@@ -1,128 +1,98 @@
 # Constrained component seam ABI
 
-This document defines the physical composition conventions for reusable Factorio circuit modules.
-It sits above the low-level electrical `AnchoredBlueprint` primitive.
+This document defines the physical composition contract for reusable Factorio circuit modules. It sits above the low-level electrical `AnchoredBlueprint` primitive from `device-anchoring.md`.
 
 ## Why this layer exists
 
-An electrically valid anchor is not enough to make a reusable physical component. A caller that can
-choose arbitrary coordinates and arbitrary relay waypoints can create a correct but unmaintainable
-blueprint whose implementation leaks across neighboring modules. The constrained ABI therefore treats
-geometry as part of the component contract.
+Electrical compatibility alone does not make a reusable physical component. Public docks, component confinement, and rigid module-to-module alignment are also part of the interface. The constrained ABI therefore treats boundary geometry as an explicit contract rather than allowing callers to choose arbitrary relay waypoints or floating coordinates.
 
 ## Normative rules
 
-### 1. Components own bounded physical regions
+### Components own bounded regions
 
-A constrained component MUST declare one or more rectangular `ComponentFootprint` regions. Every
-ordinary blueprint entity centre emitted by the component MUST lie inside at least one declared
-region. Distinct regions in one assembly MUST NOT overlap in their interiors; touching boundaries are
-allowed for exact seam composition.
+A `ConstrainedComponent` declares one or more rectangular `ComponentFootprint` regions. Every emitted blueprint entity centre must lie inside at least one declared region. Constituent regions may touch along boundaries but must not overlap in their interiors.
 
-`ComponentFootprint` currently constrains entity centres, not prototype collision boxes. Component
-generators remain responsible for choosing enough margin for their real entity footprints.
+`ComponentFootprint` currently constrains entity centres rather than maintaining a prototype-specific collision-box catalogue. Generators must still leave appropriate physical margin for the entities they place.
 
-### 2. Public anchors live on declared boundary slots
+### Public anchors occupy declared boundary slots
 
-A constrained boundary anchor MUST be identified by:
+Every surviving public anchor is associated with exactly one `BoundarySlot`:
 
-- one component side: north, east, south, or west;
-- one non-negative integer slot;
-- one owning footprint.
+```text
+footprint + side + integer slot + slot pitch
+```
 
-The physical anchor coordinate is derived from `(footprint, side, slot, slot_pitch)`. Application code
-SHOULD use `boundary_anchor(...)` rather than supplying a raw `(x, y)` coordinate.
+`boundary_anchor(...)` derives the physical coordinate from that data. Interior or floating public anchors are invalid, and two public anchors may not resolve to the same physical coordinate, including corner aliases.
 
-A constrained component MUST cover every surviving public anchor with exactly one boundary slot.
-Interior/floating anchors are invalid. Two surviving anchors MUST NOT resolve to the same physical
-dock coordinate, including corner aliases such as `WEST slot 0` and `NORTH slot 0`.
+### Public anchors belong to ordered seams
 
-### 3. Public anchors belong to ordered named seams
+Every public boundary anchor belongs to exactly one named `ComponentSeam`. A seam:
 
-Every constrained boundary anchor MUST belong to exactly one `ComponentSeam`. A seam:
-
-- has one stable name;
-- lies on one side;
-- belongs to one constituent component footprint;
+- lies on one side of one constituent footprint;
 - contains one or more anchors;
-- orders those anchors by increasing boundary slot.
+- orders its lanes by increasing boundary slot;
+- acts as the unit of physical composition.
 
-A seam is the unit of physical composition. Callers should compose a seam, not manually align a set
-of unrelated terminals. One seam MUST NOT silently span several constituent cells of a composed
-assembly.
+One seam may not silently span several constituent cells of an already composed assembly.
 
-### 4. Seam composition derives translation
+### Seam composition derives the rigid translation
 
-`compose_component_seams(...)` MUST derive the right component's rigid translation from matching seam
-lanes. Callers do not supply a manual `right_offset` in the constrained API.
+`compose_component_seams(...)` derives the right component's translation from corresponding seam lanes. Callers do not supply an arbitrary offset.
 
-The composition is valid only when:
+Composition succeeds only when:
 
-- the two seams face opposite directions;
+- the seams face opposite directions;
 - they contain the same number of lanes;
-- each corresponding low-level anchor pair is electrically compatible;
-- every lane implies exactly the same rigid translation;
-- translated component regions do not overlap existing component interiors.
+- corresponding low-level anchor contracts are compatible;
+- every lane implies the same rigid translation;
+- translated component interiors do not overlap existing interiors.
 
-The composer merges exact-overlap terminals. It MUST NOT invent routing entities or cross-component
-wires.
+The composer merges exact-overlap terminals. It does not invent routing entities or cross-component wires.
 
-### 5. Repeated composition preserves cell boundaries
+### Repeated composition preserves constituent footprints
 
-A composed constrained assembly keeps the translated footprint of every constituent cell rather than
-collapsing them into one giant rectangle. This allows repeated modules to remain physically
-independent and lets later seam composition append another cell without weakening confinement.
+A composed assembly keeps each translated constituent footprint rather than collapsing the whole result into one bounding rectangle. This preserves per-cell confinement and lets another compatible component be appended without weakening the geometry contract.
 
-### 6. Compiled interfaces participate in placement
+### Compiled public ports participate in placement
 
-For compiler-generated components, final public dock coordinates SHOULD be supplied to
-`compile_circuit(..., port_positions=...)` before physical synthesis. Named compiler I/O marker
-entities are then pinned in the abstract physical graph and the normal net-aware/annealing placer
-optimizes implementation logic around those fixed docks.
+For compiler-generated reusable components, supply final named dock coordinates with:
 
-Do not first generate an arbitrary finished layout and then route long adapter chains to distant ABI
-coordinates unless a legacy component makes that unavoidable.
+```python
+compile_circuit(..., port_positions={...})
+```
 
-### 7. Safe crossbars are fallback/debug layouts
+The compiler converts those names into ordinary anchored placement constraints before physical synthesis. The current annealed layout path therefore sees the final public boundary while placing implementation logic.
 
-`safe-crossbar` and `safe-folded-crossbar` prioritize guaranteed constructive routing. They are useful
-for correctness fallback and stress/debug work, but SHOULD NOT be the default layout policy for a
-human-facing reusable component when the net-aware annealing placer can be used.
+Post-compilation anchor adaptation remains useful for electrical isolation/renaming at the boundary, but long arbitrary adapter routes should not be the normal way to define a component's external geometry.
 
 ## Layering
-
-The intended layering is:
 
 ```text
 logical/device protocol
         ↓
-constrained component ABI
-  footprint + side/slot + seam
+exact-overlap AnchorSpec / AnchoredBlueprint
         ↓
-compiler I/O pinned before placement
+ConstrainedComponent
+  footprint + boundary slot + ordered seam
         ↓
-net-aware / annealing physical placement
+named compiler ports pinned before placement
         ↓
-component-owned internal routing
+annealed physical placement and internal routing
         ↓
 exact seam composition
 ```
 
-`AnchoredBlueprint` remains the low-level electrical primitive. `ConstrainedComponent` adds geometry
-and composition invariants; it does not replace the electrical checks.
+`AnchoredBlueprint` owns electrical compatibility. `ConstrainedComponent` adds geometry and composition invariants; it does not weaken or replace the electrical checks.
 
 ## Current limitations
 
-The first implementation intentionally does not yet model:
+The extracted ABI intentionally does not yet provide:
 
-- prototype-specific collision boxes;
-- a hard placement region consumed directly by the annealing candidate-grid generator; current
-  compiler integration pins public docks before placement and `ConstrainedComponent` rejects emitted
-  entities outside declared footprints afterwards;
-- explicit through-bus/tap/contribute roles;
-- seam-level red/green multiplexing policy beyond the underlying anchor specs;
-- automatic compiler signal/color allocation to eliminate all interface isolation adapters;
+- prototype-specific collision-box confinement for whole component regions;
+- hard component keepouts consumed by the annealer;
+- automatic derivation of reserved adapter areas during placement;
+- through-bus/tap/contribution roles;
+- seam-level signal/color allocation policy beyond the underlying anchor specs;
 - arbitrary non-rectangular component regions.
 
-These are later extensions. The urgent invariant is that reusable modules no longer expose arbitrary
-floating coordinates or composer-generated wandering relay routes as their normal physical ABI.
+Those capabilities should be added only when they have independent physical validation. In particular, the abandoned hard-keepout/strict-adapter experiment is not part of this extracted mainline contract.
