@@ -175,9 +175,7 @@ def compiled_module_as_anchored_blueprint(
             )
         )
 
-    blueprint["wires"] = [
-        list(wire) for wire in sorted({_wire_tuple(raw) for raw in wires})
-    ]
+    blueprint["wires"] = [list(wire) for wire in sorted({_wire_tuple(raw) for raw in wires})]
     if label is not None:
         blueprint["label"] = label
     return AnchoredBlueprint(blueprint, tuple(anchors), label or result.layout.name)
@@ -200,9 +198,7 @@ def _resolve_port(
     return matches[0]
 
 
-def _validate_shape_and_direction(
-    port: InputPort | OutputPort, spec: AnchorSpec
-) -> None:
+def _validate_shape_and_direction(port: InputPort | OutputPort, spec: AnchorSpec) -> None:
     shape = PayloadShape.VECTOR if port.signal is None else PayloadShape.SCALAR
     if shape is not spec.payload_shape:
         raise ValueError(
@@ -432,18 +428,14 @@ def _route_external_side(
                     "player_description": f"{description} {relay_index}",
                 }
             )
-            _append_wire(
-                wires, previous_entity, previous_connector, relay_id, relay_connector
-            )
+            _append_wire(wires, previous_entity, previous_connector, relay_id, relay_connector)
             previous_entity = relay_id
             previous_connector = relay_connector
             previous_position = position
     return next_entity
 
 
-def _entity_position(
-    entities: Sequence[dict[str, object]], entity_id: int
-) -> tuple[float, float]:
+def _entity_position(entities: Sequence[dict[str, object]], entity_id: int) -> tuple[float, float]:
     matches = [entity for entity in entities if int(entity["entity_number"]) == entity_id]
     if len(matches) != 1:
         raise ValueError(f"compiled marker entity {entity_id} resolved to {len(matches)} entities")

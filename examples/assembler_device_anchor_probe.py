@@ -85,9 +85,7 @@ def _output_anchor(
 def _command_component(device: AnchoredBlueprint) -> AnchoredBlueprint:
     recipe = device.anchor("recipe")
     demand = device.anchor("requester_demand")
-    recipe_entity, recipe_anchor = _output_anchor(
-        1, "recipe_out", recipe.position, IRON_GEAR, 1
-    )
+    recipe_entity, recipe_anchor = _output_anchor(1, "recipe_out", recipe.position, IRON_GEAR, 1)
     demand_entity, demand_anchor = _output_anchor(
         2, "requester_demand_out", demand.position, IRON_PLATE, 2
     )

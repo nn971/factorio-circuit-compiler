@@ -343,9 +343,9 @@ def compose_component_seams(
         for slot in right.slots
         if slot.anchor not in consumed_right
     )
-    surviving_seams = tuple(
-        seam for seam in left.seams if seam.name != left_seam
-    ) + tuple(seam for seam in right.seams if seam.name != right_seam)
+    surviving_seams = tuple(seam for seam in left.seams if seam.name != left_seam) + tuple(
+        seam for seam in right.seams if seam.name != right_seam
+    )
 
     return ConstrainedComponent(
         anchored,

@@ -245,8 +245,7 @@ def _assembler_entity(
                 "id": {"name": module, "quality": "normal"},
                 "items": {
                     "in_inventory": [
-                        {"inventory": 4, "stack": stack, "count": 1}
-                        for stack in stacks
+                        {"inventory": 4, "stack": stack, "count": 1} for stack in stacks
                     ]
                 },
             }
@@ -648,9 +647,11 @@ def build_assembler_device_blueprint(
 ) -> Blueprint:
     """Convenience wrapper returning only blueprint JSON."""
 
-    return AssemblerDevice(
-        prototype=prototype, direction=direction, modules=modules, label=label
-    ).build().blueprint
+    return (
+        AssemblerDevice(prototype=prototype, direction=direction, modules=modules, label=label)
+        .build()
+        .blueprint
+    )
 
 
 def generate_assembler_device_blueprint_string(

@@ -134,8 +134,7 @@ class ExternalDeviceBlueprint:
         actual = {port.name for port in self.ports}
         if actual != expected or len(self.ports) != len(self.protocol.ports):
             raise ValueError(
-                f"bound device ports {sorted(actual)!r} do not match protocol "
-                f"{sorted(expected)!r}"
+                f"bound device ports {sorted(actual)!r} do not match protocol {sorted(expected)!r}"
             )
         attachment_names = [attachment.name for attachment in self.attachments]
         if len(set(attachment_names)) != len(attachment_names):

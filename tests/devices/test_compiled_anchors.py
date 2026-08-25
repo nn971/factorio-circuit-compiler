@@ -83,10 +83,13 @@ def test_compiled_module_ports_normalize_to_typed_colored_anchors() -> None:
         for entity in anchored.blueprint["entities"]
     }
     for left, _lc, right, _rc in anchored.blueprint["wires"]:
-        assert hypot(
-            positions[int(left)][0] - positions[int(right)][0],
-            positions[int(left)][1] - positions[int(right)][1],
-        ) <= 7.5 + 1e-9
+        assert (
+            hypot(
+                positions[int(left)][0] - positions[int(right)][0],
+                positions[int(left)][1] - positions[int(right)][1],
+            )
+            <= 7.5 + 1e-9
+        )
 
 
 def test_compiled_anchor_adapter_moves_around_existing_relay() -> None:
@@ -134,7 +137,10 @@ def test_compiled_anchor_adapter_moves_around_existing_relay() -> None:
         for entity in legalized.blueprint["entities"]
     }
     for left, _lc, right, _rc in legalized.blueprint["wires"]:
-        assert hypot(
-            positions[int(left)][0] - positions[int(right)][0],
-            positions[int(left)][1] - positions[int(right)][1],
-        ) <= 7.5 + 1e-9
+        assert (
+            hypot(
+                positions[int(left)][0] - positions[int(right)][0],
+                positions[int(left)][1] - positions[int(right)][1],
+            )
+            <= 7.5 + 1e-9
+        )
