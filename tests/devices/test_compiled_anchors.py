@@ -1,6 +1,6 @@
 from math import hypot
 
-from factorio_circuit import Circuit, ModuleInterface, SignalId, compile_module
+from factorio_circuit import Circuit, SignalId, compile_circuit
 from factorio_circuit.devices import AnchorSpec
 from factorio_circuit.devices.compiled_anchors import (
     CompiledAnchorBinding,
@@ -47,9 +47,10 @@ def _compile_smoke():
     circuit = Circuit("compiled_anchor_smoke")
     value = circuit.input("value")
     circuit.output("result", value + 1)
-    return compile_module(
+    return compile_circuit(
         circuit,
-        ModuleInterface(inputs={"value": (8.0, 4.0)}, outputs={"result": (8.0, 10.0)}),
+        optimize=False,
+        port_positions={"value": (8.0, 4.0), "result": (8.0, 10.0)},
     )
 
 
@@ -68,8 +69,7 @@ def test_compiled_module_ports_normalize_to_typed_colored_anchors() -> None:
     assert anchored.anchor("value_in").connector_id == 2
     assert anchored.anchor("result_out").connector_id == 1
     descriptions = {
-        str(entity.get("player_description", ""))
-        for entity in anchored.blueprint["entities"]
+        str(entity.get("player_description", "")) for entity in anchored.blueprint["entities"]
     }
     assert "ANCHOR ADAPTER value_in" in descriptions
     assert "ANCHOR ADAPTER result_out" in descriptions
