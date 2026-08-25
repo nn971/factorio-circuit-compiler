@@ -9,19 +9,13 @@ permissions:
   contents: read
 
 jobs:
-  snake-area-score:
+  snake-span-trace:
     strategy:
       fail-fast: false
       matrix:
-        variant:
-          - current
-          - area-tiebreak
         seed:
           - 0
-          - 1
           - 2
-          - 3
-          - 4
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -30,9 +24,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Patch annealing seed and optional area tie-break
+      - name: Patch annealing seed and span tracing
         env:
-          VARIANT: ${{ matrix.variant }}
           SEED: ${{ matrix.seed }}
         run: |
           python - <<'PY'
@@ -40,8 +33,6 @@ jobs:
           from pathlib import Path
 
           seed = int(os.environ["SEED"])
-          variant = os.environ["VARIANT"]
-
           generate_path = Path("benchmarks/snake/generate.py")
           generate = generate_path.read_text()
           old_seed = "        retry_fill_scale=0.8,\n"
@@ -50,58 +41,48 @@ jobs:
               raise SystemExit("Snake placement option site not found")
           generate_path.write_text(generate.replace(old_seed, new_seed, 1))
 
-          if variant == "current":
-              raise SystemExit(0)
-
           path = Path("src/factorio_circuit/synthesis/incremental_joint_layout.py")
           source = path.read_text()
-          old = '''def _exact_score(
-              state: exact._JointState,
-              topology: _FeasibleTopology,
-              center: Position,
-          ) -> tuple[int, float]:
-              movable_objects = [*state.positions, *state.relay_positions]
-              compactness = sum(
-                  exact._compactness(state.object_position(object_id), center)
-                  for object_id in movable_objects
-              )
-              return (len(state.relay_positions), topology.total_energy + compactness)
+          old_setup = '''    occupancy = _SpatialOccupancy.build(state)
+              rng = Random(options.random_seed ^ 0x61A7E5ED)
+
+              best_score = _exact_score(state, topology, center)
           '''
-          new = '''def _exact_score(
-              state: exact._JointState,
-              topology: _FeasibleTopology,
-              center: Position,
-          ) -> tuple[int, float, float]:
-              movable_objects = [*state.positions, *state.relay_positions]
-              compactness = sum(
-                  exact._compactness(state.object_position(object_id), center)
-                  for object_id in movable_objects
-              )
-              if not movable_objects:
-                  area = 0.0
-              else:
-                  left = min(
-                      state.object_position(object_id)[0] - state.object_half_extent(object_id)[0]
-                      for object_id in movable_objects
-                  )
-                  right = max(
-                      state.object_position(object_id)[0] + state.object_half_extent(object_id)[0]
-                      for object_id in movable_objects
-                  )
+          new_setup = '''    occupancy = _SpatialOccupancy.build(state)
+              rng = Random(options.random_seed ^ 0x61A7E5ED)
+
+              def trace_span(label: str) -> None:
+                  object_ids = [*state.positions, *state.relay_positions]
                   top = min(
-                      state.object_position(object_id)[1] - state.object_half_extent(object_id)[1]
-                      for object_id in movable_objects
+                      state.object_position(item)[1] - state.object_half_extent(item)[1]
+                      for item in object_ids
                   )
                   bottom = max(
-                      state.object_position(object_id)[1] + state.object_half_extent(object_id)[1]
-                      for object_id in movable_objects
+                      state.object_position(item)[1] + state.object_half_extent(item)[1]
+                      for item in object_ids
                   )
-                  area = (right - left) * (bottom - top)
-              return (len(state.relay_positions), area, topology.total_energy + compactness)
+                  print(
+                      f"SPAN_TRACE label={label} relays={len(state.relay_positions)} "
+                      f"top={top:.1f} bottom={bottom:.1f} height={bottom - top:.1f}"
+                  )
+
+              trace_span("initial")
+              best_score = _exact_score(state, topology, center)
           '''
-          if old not in source:
-              raise SystemExit("exact score site not found")
-          path.write_text(source.replace(old, new, 1))
+          old_epoch = '''        topology = _simplify_feasible_topology(state, topology)
+                  occupancy = _SpatialOccupancy.build(state)
+                  score = _exact_score(state, topology, center)
+          '''
+          new_epoch = '''        topology = _simplify_feasible_topology(state, topology)
+                  occupancy = _SpatialOccupancy.build(state)
+                  trace_span(f"epoch-{epoch_end}")
+                  score = _exact_score(state, topology, center)
+          '''
+          if old_setup not in source or old_epoch not in source:
+              raise SystemExit("annealing instrumentation sites not found")
+          source = source.replace(old_setup, new_setup, 1)
+          source = source.replace(old_epoch, new_epoch, 1)
+          path.write_text(source)
           PY
       - name: Install uv
         run: python -m pip install uv
@@ -109,12 +90,10 @@ jobs:
         run: uv sync --extra dev
       - name: Run 1000-proposal Snake layout
         run: |
-          echo "BENCHMARK_VARIANT=${{ matrix.variant }}"
           echo "BENCHMARK_SEED=${{ matrix.seed }}"
-          /usr/bin/time -f 'BENCHMARK_WALL_SECONDS=%e' \
-            uv run python -m benchmarks.snake.generate \
-              --annealing-layout \
-              --annealing-iterations 1000 \
-              --layout-retries 1 \
-              --census \
-              --output snake-annealed-blueprint.txt
+          uv run python -m benchmarks.snake.generate \
+            --annealing-layout \
+            --annealing-iterations 1000 \
+            --layout-retries 1 \
+            --census \
+            --output snake-annealed-blueprint.txt
