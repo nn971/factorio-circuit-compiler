@@ -9,10 +9,16 @@ permissions:
   contents: read
 
 jobs:
-  snake-span-trace:
+  snake-envelope-screen:
     strategy:
       fail-fast: false
       matrix:
+        variant:
+          - current
+          - hard
+          - p025
+          - p1
+          - p4
         seed:
           - 0
           - 2
@@ -24,8 +30,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Patch annealing seed and span tracing
+      - name: Patch annealing seed and envelope objective
         env:
+          VARIANT: ${{ matrix.variant }}
           SEED: ${{ matrix.seed }}
         run: |
           python - <<'PY'
@@ -33,6 +40,7 @@ jobs:
           from pathlib import Path
 
           seed = int(os.environ["SEED"])
+          variant = os.environ["VARIANT"]
           generate_path = Path("benchmarks/snake/generate.py")
           generate = generate_path.read_text()
           old_seed = "        retry_fill_scale=0.8,\n"
@@ -41,6 +49,13 @@ jobs:
               raise SystemExit("Snake placement option site not found")
           generate_path.write_text(generate.replace(old_seed, new_seed, 1))
 
+          if variant == "current":
+              raise SystemExit(0)
+
+          hard_envelope = variant == "hard"
+          weights = {"hard": 0.0, "p025": 0.25, "p1": 1.0, "p4": 4.0}
+          overflow_weight = weights[variant]
+
           path = Path("src/factorio_circuit/synthesis/incremental_joint_layout.py")
           source = path.read_text()
           old_setup = '''    occupancy = _SpatialOccupancy.build(state)
@@ -48,40 +63,71 @@ jobs:
 
               best_score = _exact_score(state, topology, center)
           '''
-          new_setup = '''    occupancy = _SpatialOccupancy.build(state)
+          new_setup = f'''    occupancy = _SpatialOccupancy.build(state)
               rng = Random(options.random_seed ^ 0x61A7E5ED)
 
-              def trace_span(label: str) -> None:
-                  object_ids = [*state.positions, *state.relay_positions]
-                  top = min(
-                      state.object_position(item)[1] - state.object_half_extent(item)[1]
-                      for item in object_ids
-                  )
-                  bottom = max(
-                      state.object_position(item)[1] + state.object_half_extent(item)[1]
-                      for item in object_ids
-                  )
-                  print(
-                      f"SPAN_TRACE label={label} relays={len(state.relay_positions)} "
-                      f"top={top:.1f} bottom={bottom:.1f} height={bottom - top:.1f}"
-                  )
+              envelope_objects = [*state.positions, *state.relay_positions]
+              envelope_top = min(
+                  state.object_position(item)[1] - state.object_half_extent(item)[1]
+                  for item in envelope_objects
+              )
+              envelope_bottom = max(
+                  state.object_position(item)[1] + state.object_half_extent(item)[1]
+                  for item in envelope_objects
+              )
+              hard_vertical_envelope = {hard_envelope!r}
+              vertical_overflow_weight = {overflow_weight!r}
 
-              trace_span("initial")
+              def vertical_overflow(item: int, position: Position) -> float:
+                  half_y = state.object_half_extent(item)[1]
+                  return max(0.0, envelope_top - (position[1] - half_y)) ** 2 + max(
+                      0.0, (position[1] + half_y) - envelope_bottom
+                  ) ** 2
+
               best_score = _exact_score(state, topology, center)
           '''
-          old_epoch = '''        topology = _simplify_feasible_topology(state, topology)
-                  occupancy = _SpatialOccupancy.build(state)
-                  score = _exact_score(state, topology, center)
+          old_targets = '''            targets = {object_id: target}
+                      if other is not None:
+                          targets[other] = current
+                      wire_delta = topology.proposal_delta(state, targets)
+                      if wire_delta is None:
+                          continue
+
+                      compact_delta = sum(
+                          exact._compactness(position, center)
+                          - exact._compactness(state.object_position(item), center)
+                          for item, position in targets.items()
+                      )
+                      delta = wire_delta + compact_delta
           '''
-          new_epoch = '''        topology = _simplify_feasible_topology(state, topology)
-                  occupancy = _SpatialOccupancy.build(state)
-                  trace_span(f"epoch-{epoch_end}")
-                  score = _exact_score(state, topology, center)
+          new_targets = '''            targets = {object_id: target}
+                      if other is not None:
+                          targets[other] = current
+                      if hard_vertical_envelope and any(
+                          vertical_overflow(item, position) > 0.0
+                          for item, position in targets.items()
+                      ):
+                          continue
+                      wire_delta = topology.proposal_delta(state, targets)
+                      if wire_delta is None:
+                          continue
+
+                      compact_delta = sum(
+                          exact._compactness(position, center)
+                          - exact._compactness(state.object_position(item), center)
+                          for item, position in targets.items()
+                      )
+                      overflow_delta = sum(
+                          vertical_overflow(item, position)
+                          - vertical_overflow(item, state.object_position(item))
+                          for item, position in targets.items()
+                      )
+                      delta = wire_delta + compact_delta + vertical_overflow_weight * overflow_delta
           '''
-          if old_setup not in source or old_epoch not in source:
-              raise SystemExit("annealing instrumentation sites not found")
+          if old_setup not in source or old_targets not in source:
+              raise SystemExit("annealing envelope patch site not found")
           source = source.replace(old_setup, new_setup, 1)
-          source = source.replace(old_epoch, new_epoch, 1)
+          source = source.replace(old_targets, new_targets, 1)
           path.write_text(source)
           PY
       - name: Install uv
@@ -90,10 +136,12 @@ jobs:
         run: uv sync --extra dev
       - name: Run 1000-proposal Snake layout
         run: |
+          echo "BENCHMARK_VARIANT=${{ matrix.variant }}"
           echo "BENCHMARK_SEED=${{ matrix.seed }}"
-          uv run python -m benchmarks.snake.generate \
-            --annealing-layout \
-            --annealing-iterations 1000 \
-            --layout-retries 1 \
-            --census \
-            --output snake-annealed-blueprint.txt
+          /usr/bin/time -f 'BENCHMARK_WALL_SECONDS=%e' \
+            uv run python -m benchmarks.snake.generate \
+              --annealing-layout \
+              --annealing-iterations 1000 \
+              --layout-retries 1 \
+              --census \
+              --output snake-annealed-blueprint.txt
