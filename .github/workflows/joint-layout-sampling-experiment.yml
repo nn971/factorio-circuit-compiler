@@ -9,11 +9,11 @@ permissions:
   contents: read
 
 jobs:
-  compactness-sweep:
+  target-fill-sweep:
     strategy:
       fail-fast: false
       matrix:
-        coefficient: [0.002, 0.01, 0.02, 0.05, 0.1]
+        target_fill: [0.60, 0.70, 0.80, 0.90, 1.00]
         seed: [0, 2]
     runs-on: ubuntu-latest
     steps:
@@ -23,26 +23,15 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Patch compactness coefficient and Snake seed
+      - name: Patch Snake seed
         env:
-          COEFFICIENT: ${{ matrix.coefficient }}
           SEED: ${{ matrix.seed }}
         run: |
           python - <<'PY'
           import os
           from pathlib import Path
 
-          coefficient = os.environ["COEFFICIENT"]
           seed = int(os.environ["SEED"])
-
-          joint = Path("src/factorio_circuit/synthesis/joint_layout.py")
-          source = joint.read_text()
-          old = "    return 0.002 * _distance_sq(position, center)\n"
-          new = f"    return {coefficient} * _distance_sq(position, center)\n"
-          if old not in source:
-              raise SystemExit("compactness coefficient site not found")
-          joint.write_text(source.replace(old, new, 1))
-
           generate = Path("benchmarks/snake/generate.py")
           source = generate.read_text()
           marker = "        retry_fill_scale=0.8,\n"
@@ -56,12 +45,13 @@ jobs:
         run: uv sync --extra dev
       - name: Run 1000-proposal Snake layout
         run: |
-          echo "BENCHMARK_COEFFICIENT=${{ matrix.coefficient }}"
+          echo "BENCHMARK_TARGET_FILL=${{ matrix.target_fill }}"
           echo "BENCHMARK_SEED=${{ matrix.seed }}"
           /usr/bin/time -f 'BENCHMARK_WALL_SECONDS=%e' \
             uv run python -m benchmarks.snake.generate \
               --annealing-layout \
               --annealing-iterations 1000 \
               --layout-retries 1 \
+              --target-fill ${{ matrix.target_fill }} \
               --census \
               --output snake-annealed-blueprint.txt
