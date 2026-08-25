@@ -6,132 +6,184 @@ on:
       - agent/annealed-joint-layout-sampling-experiment
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  snake-envelope-validation:
-    strategy:
-      fail-fast: false
-      matrix:
-        variant:
-          - current
-          - p025
-          - p1
-        seed:
-          - 1
-          - 3
-          - 4
+  promote-vertical-overflow:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: agent/annealed-joint-layout-implementation-priority
+          ref: agent/annealed-joint-layout-vertical-overflow
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Patch annealing seed and envelope objective
-        env:
-          VARIANT: ${{ matrix.variant }}
-          SEED: ${{ matrix.seed }}
+      - name: Apply validated vertical overflow objective
         run: |
           python - <<'PY'
-          import os
           from pathlib import Path
 
-          seed = int(os.environ["SEED"])
-          variant = os.environ["VARIANT"]
-          generate_path = Path("benchmarks/snake/generate.py")
-          generate = generate_path.read_text()
-          old_seed = "        retry_fill_scale=0.8,\n"
-          new_seed = old_seed + f"        random_seed={seed},\n"
-          if old_seed not in generate:
-              raise SystemExit("Snake placement option site not found")
-          generate_path.write_text(generate.replace(old_seed, new_seed, 1))
-
-          if variant == "current":
-              raise SystemExit(0)
-
-          overflow_weight = {"p025": 0.25, "p1": 1.0}[variant]
           path = Path("src/factorio_circuit/synthesis/incremental_joint_layout.py")
           source = path.read_text()
+
+          old_constants = '''_SLACK_START = 0.85
+          _BOOTSTRAP_EXPANSIONS = 4
+          '''
+          new_constants = '''_SLACK_START = 0.85
+          _VERTICAL_OVERFLOW_WEIGHT = 0.25
+          _BOOTSTRAP_EXPANSIONS = 4
+          '''
+
           old_setup = '''    occupancy = _SpatialOccupancy.build(state)
               rng = Random(options.random_seed ^ 0x61A7E5ED)
 
               best_score = _exact_score(state, topology, center)
           '''
-          new_setup = f'''    occupancy = _SpatialOccupancy.build(state)
+          new_setup = '''    occupancy = _SpatialOccupancy.build(state)
               rng = Random(options.random_seed ^ 0x61A7E5ED)
-
-              envelope_objects = [*state.positions, *state.relay_positions]
-              envelope_top = min(
-                  state.object_position(item)[1] - state.object_half_extent(item)[1]
-                  for item in envelope_objects
-              )
-              envelope_bottom = max(
-                  state.object_position(item)[1] + state.object_half_extent(item)[1]
-                  for item in envelope_objects
-              )
-              vertical_overflow_weight = {overflow_weight!r}
-
-              def vertical_overflow(item: int, position: Position) -> float:
-                  half_y = state.object_half_extent(item)[1]
-                  return max(0.0, envelope_top - (position[1] - half_y)) ** 2 + max(
-                      0.0, (position[1] + half_y) - envelope_bottom
-                  ) ** 2
+              vertical_envelope = _vertical_envelope(state)
 
               best_score = _exact_score(state, topology, center)
           '''
-          old_targets = '''            targets = {object_id: target}
-                      if other is not None:
-                          targets[other] = current
-                      wire_delta = topology.proposal_delta(state, targets)
-                      if wire_delta is None:
-                          continue
 
-                      compact_delta = sum(
+          old_delta = '''            compact_delta = sum(
                           exact._compactness(position, center)
                           - exact._compactness(state.object_position(item), center)
                           for item, position in targets.items()
                       )
                       delta = wire_delta + compact_delta
           '''
-          new_targets = '''            targets = {object_id: target}
-                      if other is not None:
-                          targets[other] = current
-                      wire_delta = topology.proposal_delta(state, targets)
-                      if wire_delta is None:
-                          continue
-
-                      compact_delta = sum(
+          new_delta = '''            compact_delta = sum(
                           exact._compactness(position, center)
                           - exact._compactness(state.object_position(item), center)
                           for item, position in targets.items()
                       )
                       overflow_delta = sum(
-                          vertical_overflow(item, position)
-                          - vertical_overflow(item, state.object_position(item))
+                          _vertical_overflow(state, item, position, vertical_envelope)
+                          - _vertical_overflow(
+                              state,
+                              item,
+                              state.object_position(item),
+                              vertical_envelope,
+                          )
                           for item, position in targets.items()
                       )
-                      delta = wire_delta + compact_delta + vertical_overflow_weight * overflow_delta
+                      delta = (
+                          wire_delta
+                          + compact_delta
+                          + _VERTICAL_OVERFLOW_WEIGHT * overflow_delta
+                      )
           '''
-          if old_setup not in source or old_targets not in source:
-              raise SystemExit("annealing envelope patch site not found")
-          source = source.replace(old_setup, new_setup, 1)
-          source = source.replace(old_targets, new_targets, 1)
+
+          old_helper_site = '''    return _FeasibleTopology.build(state, best_routing)
+
+
+          def _exact_score(
+          '''
+          new_helper_site = '''    return _FeasibleTopology.build(state, best_routing)
+
+
+          def _vertical_envelope(state: exact._JointState) -> tuple[float, float]:
+              """Return the initial occupied vertical extent as (top, bottom)."""
+
+              object_ids = [*state.positions, *state.relay_positions]
+              if not object_ids:
+                  return (0.0, 0.0)
+              return (
+                  min(
+                      state.object_position(item)[1] - state.object_half_extent(item)[1]
+                      for item in object_ids
+                  ),
+                  max(
+                      state.object_position(item)[1] + state.object_half_extent(item)[1]
+                      for item in object_ids
+                  ),
+              )
+
+
+          def _vertical_overflow(
+              state: exact._JointState,
+              object_id: int,
+              position: Position,
+              envelope: tuple[float, float],
+          ) -> float:
+              """Quadratic overflow beyond a reference vertical envelope."""
+
+              top, bottom = envelope
+              half_y = state.object_half_extent(object_id)[1]
+              above = max(0.0, top - (position[1] - half_y))
+              below = max(0.0, (position[1] + half_y) - bottom)
+              return above * above + below * below
+
+
+          def _exact_score(
+          '''
+
+          replacements = (
+              (old_constants, new_constants, "constant site"),
+              (old_setup, new_setup, "annealing setup"),
+              (old_delta, new_delta, "proposal energy"),
+              (old_helper_site, new_helper_site, "vertical helper site"),
+          )
+          for old, new, label in replacements:
+              if old not in source:
+                  raise SystemExit(f"{label} not found")
+              source = source.replace(old, new, 1)
           path.write_text(source)
+
+          test_path = Path("tests/synthesis/test_incremental_joint_regressions.py")
+          tests = test_path.read_text()
+          marker = "def test_vertical_overflow_tracks_distance_beyond_initial_envelope"
+          if marker in tests:
+              raise SystemExit("vertical overflow tests already present")
+          tests += '''
+
+
+def test_vertical_overflow_tracks_distance_beyond_initial_envelope() -> None:
+    state = _constant_state_with_relay()
+    envelope = incremental._vertical_envelope(state)
+
+    assert envelope == (-0.5, 0.5)
+    assert incremental._vertical_overflow(state, 1, (0.0, 0.0), envelope) == 0.0
+    assert incremental._vertical_overflow(state, 1, (0.0, 1.0), envelope) == pytest.approx(1.0)
+    assert incremental._vertical_overflow(state, 3, (1.5, -1.0), envelope) == pytest.approx(1.0)
+
+
+def test_vertical_overflow_penalty_is_local_to_reference_envelope() -> None:
+    state = _constant_state_with_relay()
+    envelope = incremental._vertical_envelope(state)
+
+    inside = incremental._vertical_overflow(state, 2, (3.0, 0.0), envelope)
+    one_row_below = incremental._vertical_overflow(state, 2, (3.0, 1.0), envelope)
+    two_rows_below = incremental._vertical_overflow(state, 2, (3.0, 2.0), envelope)
+
+    assert inside == 0.0
+    assert one_row_below == pytest.approx(1.0)
+    assert two_rows_below == pytest.approx(4.0)
+'''
+          test_path.write_text(tests)
           PY
       - name: Install uv
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Run 1000-proposal Snake layout
+      - name: Format changed files
+        run: uv run ruff format src/factorio_circuit/synthesis/incremental_joint_layout.py tests/synthesis/test_incremental_joint_regressions.py
+      - name: Run focused regression tests
+        run: uv run pytest tests/synthesis/test_incremental_joint_regressions.py
+      - name: Run full test suite
+        run: uv run pytest
+      - name: Run lint and type checks
         run: |
-          echo "BENCHMARK_VARIANT=${{ matrix.variant }}"
-          echo "BENCHMARK_SEED=${{ matrix.seed }}"
-          /usr/bin/time -f 'BENCHMARK_WALL_SECONDS=%e' \
-            uv run python -m benchmarks.snake.generate \
-              --annealing-layout \
-              --annealing-iterations 1000 \
-              --layout-retries 1 \
-              --census \
-              --output snake-annealed-blueprint.txt
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run mypy src
+      - name: Commit production change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/factorio_circuit/synthesis/incremental_joint_layout.py tests/synthesis/test_incremental_joint_regressions.py
+          git diff --cached --check
+          git diff --cached --stat
+          git commit -m "Penalize vertical annealing overflow"
+          git push origin HEAD:agent/annealed-joint-layout-vertical-overflow
