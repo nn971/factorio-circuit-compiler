@@ -200,3 +200,26 @@ def test_new_joint_bootstrap_failure_is_retryable() -> None:
     )
 
     assert _retryable_layout_error(error)
+
+
+def test_vertical_overflow_tracks_distance_beyond_initial_envelope() -> None:
+    state = _constant_state_with_relay()
+    envelope = incremental._vertical_envelope(state)
+
+    assert envelope == (-0.5, 0.5)
+    assert incremental._vertical_overflow(state, 1, (0.0, 0.0), envelope) == 0.0
+    assert incremental._vertical_overflow(state, 1, (0.0, 1.0), envelope) == pytest.approx(1.0)
+    assert incremental._vertical_overflow(state, 3, (1.5, -1.0), envelope) == pytest.approx(1.0)
+
+
+def test_vertical_overflow_penalty_is_local_to_reference_envelope() -> None:
+    state = _constant_state_with_relay()
+    envelope = incremental._vertical_envelope(state)
+
+    inside = incremental._vertical_overflow(state, 2, (3.0, 0.0), envelope)
+    one_row_below = incremental._vertical_overflow(state, 2, (3.0, 1.0), envelope)
+    two_rows_below = incremental._vertical_overflow(state, 2, (3.0, 2.0), envelope)
+
+    assert inside == 0.0
+    assert one_row_below == pytest.approx(1.0)
+    assert two_rows_below == pytest.approx(4.0)
