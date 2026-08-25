@@ -14,7 +14,19 @@ EXT_IN = SignalId("virtual", "signal-I")
 EXT_OUT = SignalId("virtual", "signal-O")
 
 
-def _bindings() -> tuple[CompiledAnchorBinding, ...]:
+def _compile_smoke():
+    circuit = Circuit("compiled_anchor_smoke")
+    value = circuit.input("value")
+    circuit.output("result", value + 1)
+    return compile_circuit(circuit, optimize=False)
+
+
+def _bindings(result) -> tuple[CompiledAnchorBinding, ...]:
+    positions = result.layout.positions
+    inputs = {port.name: port for port in result.physical_circuit.inputs}
+    outputs = {port.name: port for port in result.physical_circuit.outputs}
+    input_position = positions[inputs["value"].marker_entity]
+    output_position = positions[outputs["result"].marker_entity]
     return (
         CompiledAnchorBinding(
             "value",
@@ -26,7 +38,7 @@ def _bindings() -> tuple[CompiledAnchorBinding, ...]:
                 WireColor.GREEN,
                 EXT_IN,
             ),
-            (0.0, 4.0),
+            (input_position[0] - 7.0, input_position[1]),
         ),
         CompiledAnchorBinding(
             "result",
@@ -38,19 +50,8 @@ def _bindings() -> tuple[CompiledAnchorBinding, ...]:
                 WireColor.RED,
                 EXT_OUT,
             ),
-            (16.0, 10.0),
+            (output_position[0] + 7.0, output_position[1]),
         ),
-    )
-
-
-def _compile_smoke():
-    circuit = Circuit("compiled_anchor_smoke")
-    value = circuit.input("value")
-    circuit.output("result", value + 1)
-    return compile_circuit(
-        circuit,
-        optimize=False,
-        port_positions={"value": (8.0, 4.0), "result": (8.0, 10.0)},
     )
 
 
@@ -64,7 +65,7 @@ def _entity_with_description(blueprint, description: str):
 
 def test_compiled_module_ports_normalize_to_typed_colored_anchors() -> None:
     result = _compile_smoke()
-    anchored = compiled_module_as_anchored_blueprint(result, _bindings())
+    anchored = compiled_module_as_anchored_blueprint(result, _bindings(result))
 
     assert anchored.anchor("value_in").connector_id == 2
     assert anchored.anchor("result_out").connector_id == 1
@@ -90,7 +91,8 @@ def test_compiled_module_ports_normalize_to_typed_colored_anchors() -> None:
 
 def test_compiled_anchor_adapter_moves_around_existing_relay() -> None:
     result = _compile_smoke()
-    baseline = compiled_module_as_anchored_blueprint(result, _bindings())
+    bindings = _bindings(result)
+    baseline = compiled_module_as_anchored_blueprint(result, bindings)
     baseline_adapter = _entity_with_description(baseline.blueprint, "ANCHOR ADAPTER value_in")
     blocked_position = {
         "x": float(baseline_adapter["position"]["x"]),
@@ -109,7 +111,7 @@ def test_compiled_anchor_adapter_moves_around_existing_relay() -> None:
         }
     )
 
-    legalized = compiled_module_as_anchored_blueprint(result, _bindings())
+    legalized = compiled_module_as_anchored_blueprint(result, bindings)
     adapter = _entity_with_description(legalized.blueprint, "ANCHOR ADAPTER value_in")
     adapter_position = (
         float(adapter["position"]["x"]),

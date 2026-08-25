@@ -53,17 +53,11 @@ The composer merges exact-overlap terminals. It does not invent routing entities
 
 A composed assembly keeps each translated constituent footprint rather than collapsing the whole result into one bounding rectangle. This preserves per-cell confinement and lets another compatible component be appended without weakening the geometry contract.
 
-### Compiled public ports participate in placement
+### Compiled modules may expose constrained seams after synthesis
 
-For compiler-generated reusable components, supply final named dock coordinates with:
+The current extracted implementation can wrap named ports of an already compiled module with `compiled_module_as_anchored_blueprint(...)`, then place those anchors on declared boundary slots and validate the resulting `ConstrainedComponent`.
 
-```python
-compile_circuit(..., port_positions={...})
-```
-
-The compiler converts those names into ordinary anchored placement constraints before physical synthesis. The current annealed layout path therefore sees the final public boundary while placing implementation logic.
-
-Post-compilation anchor adaptation remains useful for electrical isolation/renaming at the boundary, but long arbitrary adapter routes should not be the normal way to define a component's external geometry.
+Arbitrary pre-placement port pinning is intentionally deferred. Current `main` does not yet guarantee a reachable relay workspace around distant explicit anchors, so that layout feature should return as a separate, independently validated compiler change rather than being bundled into this geometry ABI.
 
 ## Layering
 
@@ -72,12 +66,10 @@ logical/device protocol
         ↓
 exact-overlap AnchorSpec / AnchoredBlueprint
         ↓
+compiled-module boundary adaptation when needed
+        ↓
 ConstrainedComponent
   footprint + boundary slot + ordered seam
-        ↓
-named compiler ports pinned before placement
-        ↓
-annealed physical placement and internal routing
         ↓
 exact seam composition
 ```
@@ -89,10 +81,11 @@ exact seam composition
 The extracted ABI intentionally does not yet provide:
 
 - prototype-specific collision-box confinement for whole component regions;
+- pre-placement public-port pinning for arbitrary distant anchors;
 - hard component keepouts consumed by the annealer;
 - automatic derivation of reserved adapter areas during placement;
 - through-bus/tap/contribution roles;
 - seam-level signal/color allocation policy beyond the underlying anchor specs;
 - arbitrary non-rectangular component regions.
 
-Those capabilities should be added only when they have independent physical validation. In particular, the abandoned hard-keepout/strict-adapter experiment is not part of this extracted mainline contract.
+Those capabilities should be added only when they have independent physical validation. In particular, the abandoned hard-keepout/strict-adapter experiment and the incomplete explicit-anchor bootstrap experiment are not part of this extracted mainline contract.

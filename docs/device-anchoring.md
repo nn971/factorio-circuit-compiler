@@ -42,7 +42,7 @@ An output anchor may be a non-empty constant-combinator source without an incide
 
 ## Device adaptation
 
-`ExternalDeviceBlueprint.anchored()` exposes any typed external device through the same anchor API. This keeps mechanical device generation separate from application control policy while giving compiled or hand-generated controllers a uniform physical composition boundary.
+`ExternalDeviceBlueprint.anchored()` exposes any typed external device through the same anchor API. This keeps mechanical device generation separate from application control policy while giving generated controllers a uniform physical composition boundary.
 
 The current reusable-device convention is:
 
@@ -55,11 +55,11 @@ This is a protocol convention, not a compiler-wide restriction; individual `Anch
 
 ## Compiled-module adaptation
 
-`compiled_module_as_anchored_blueprint(...)` adapts named compiler ports to stable anchor contracts. It inserts only boundary isolation/renaming infrastructure and never discovers ports by description or reaches into application-specific internals.
+`compiled_module_as_anchored_blueprint(...)` adapts named ports of an already compiled module to stable anchor contracts. It inserts only boundary isolation/renaming infrastructure and never discovers ports by description or reaches into application-specific internals.
 
 The adapter position is collision-checked against the already generated module. If the preferred arithmetic-combinator footprint is occupied, the wrapper searches a deterministic nearby legal position while preserving the configured maximum wire hop. Failure to find a legal adapter is reported instead of emitting an unplaceable blueprint.
 
-For reusable constrained components, prefer pinning final named compiler ports with `compile_circuit(..., port_positions=...)` before placement so the physical implementation is synthesized around its real public boundary.
+Pinning arbitrary public compiler ports before annealed placement is deliberately **not** part of this extracted contract yet. Current `main` does not robustly provide relay workspace for distant fixed anchors; that layout capability should be added separately once it has independent physical validation.
 
 ## Scope
 

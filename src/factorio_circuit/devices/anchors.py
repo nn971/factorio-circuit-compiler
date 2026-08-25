@@ -1,18 +1,15 @@
 """Exact-overlap anchoring for composing independently generated device blueprints.
 
-An anchor is a typed constant-combinator terminal owned by one component.  Components are composed
-by translating them until compatible anchors occupy exactly the same position and then *merging the
-anchor entities*.  The composer never invents a circuit wire between component internals.
-
-This is deliberately the same physical idea used by the autonomous mall's horizontal seam docks,
-generalized into reusable metadata with structural validation.
+An anchor is a typed constant-combinator terminal owned by one component. Components are composed by
+translating them until compatible anchors occupy exactly the same position and then merging the anchor
+entities. The composer never invents a circuit wire between component internals.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Sequence
 
 from factorio_circuit.devices._blueprint import Blueprint
 from factorio_circuit.devices.protocol import DevicePortDirection
@@ -116,10 +113,10 @@ def compose_anchored_blueprints(
 ) -> ComposedAnchoredBlueprint:
     """Compose two blueprints by merging matching anchor entities, never by adding a cross-wire.
 
-    The caller chooses a translation for ``right``.  Every requested pair must then occupy exactly
+    The caller chooses a translation for ``right``. Every requested pair must then occupy exactly
     the same physical position and have compatible direction/shape/modality/signal/wire contracts.
     Both endpoints must already be connected to their own component internals (or, for an OUTPUT
-    anchor, be a non-empty constant combinator source).  This catches electrically dead terminals
+    anchor, be a non-empty constant combinator source). This catches electrically dead terminals
     before composition.
     """
 
@@ -342,7 +339,7 @@ def _validate_bound_junctions(
             or (wire[2] == shared_id and wire[3] == connector)
         ]
         # If one side is a constant source it can legitimately contribute no incident wire; otherwise
-        # two component-local incident paths should survive the merge.  The local checks above already
+        # two component-local incident paths should survive the merge. The local checks above already
         # prove each side independently, so at least one incident path is mandatory in the result.
         if not incident:
             left_entity = _entity_by_id(_entities(left.blueprint), left_anchor.entity_number)
