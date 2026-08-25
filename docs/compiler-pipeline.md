@@ -145,6 +145,19 @@ Physical synthesis resolves abstract signals/nets into a concrete `PhysicalCircu
 
 A completed `Layout` is the physical contract handed to blueprint serialization.
 
+An already-routed `Layout` can also be optimized independently through
+`synthesis/layout_optimizer.py`. Its input includes the exact layout, explicit legal unit/wide
+sites, reserved areas, fixed object coordinates, and the conservative reach limit. The optimizer
+validates that artifact as its initial best-known state, derives physical-net membership from the
+concrete circuit connections and routed connector graph, and returns only a validated layout whose
+lexicographic `(relay count, occupied area, wire length)` objective is no worse. A zero proposal
+budget is an exact pass-through. Coarse placement/topology replacements are transactional and do
+not depend on the upstream layout generator. The coarse proposal traverses concrete physical nets
+and places entities near already-placed electrical peers; it does not replay entity ids or source
+rows. When public marker entities have fixed coordinates, their line defines a recognizable
+front-panel perimeter and only the circuit-facing half-plane is used for coarse implementation
+placement.
+
 ### Progress observability
 
 Long physical synthesis is observable through the optional callback on the canonical entry point:
