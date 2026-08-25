@@ -569,15 +569,15 @@ def _first_buried_net_component(
             components.append(frozenset(component))
         if len(components) <= 1:
             continue
-        for component in components:
+        for net_component in components:
             relay_choices = {
                 site
-                for entity_id in component
+                for entity_id in net_component
                 for site in workspace.nearby_sites(state.positions[entity_id])
                 if _distance(state.positions[entity_id], site) <= state.safe_span + _EPSILON
             }
             if len(relay_choices) < _MIN_TERMINAL_RELAY_CHOICES:
-                return component
+                return net_component
     return None
 
 
