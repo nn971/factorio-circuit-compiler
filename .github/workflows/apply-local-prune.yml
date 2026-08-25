@@ -1,0 +1,147 @@
+name: Apply local relay prune experiment
+
+on:
+  push:
+    branches:
+      - agent/annealed-joint-layout-local-prune
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent/annealed-joint-layout-local-prune
+      - name: Apply bounded local relay elimination
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source_path = Path("src/factorio_circuit/synthesis/incremental_joint_layout.py")
+          source = source_path.read_text()
+          source = source.replace(
+              "_RELAY_HALF_EXTENT = (0.5, 0.5)\n_SLACK_START = 0.85\n",
+              "_RELAY_HALF_EXTENT = (0.5, 0.5)\n_MAX_LOCAL_RELAY_DEGREE = 4\n_SLACK_START = 0.85\n",
+              1,
+          )
+          old = '''        relay_edges = tuple(incident.get(relay_id, ()))
+                  if len(relay_edges) > 2:
+                      continue
+
+                  if len(relay_edges) == 0:
+                      del state.relay_positions[relay_id]
+                      del state.relay_groups[relay_id]
+                      continue
+
+                  if len(relay_edges) == 1:
+                      wire = remove_wire(relay_edges[0])
+                      remote, _connector = _remote_endpoint(wire, relay_id)
+                      del state.relay_positions[relay_id]
+                      del state.relay_groups[relay_id]
+                      enqueue(remote)
+                      continue
+
+                  first = wires[relay_edges[0]]
+                  second = wires[relay_edges[1]]
+                  if first.color is not second.color:
+                      continue
+                  left_entity, left_connector = _remote_endpoint(first, relay_id)
+                  right_entity, right_connector = _remote_endpoint(second, relay_id)
+                  if (
+                      _distance(
+                          state.object_position(left_entity),
+                          state.object_position(right_entity),
+                      )
+                      > state.safe_span + _EPSILON
+                  ):
+                      continue
+
+                  remove_wire(relay_edges[0])
+                  remove_wire(relay_edges[1])
+                  if (left_entity, left_connector) != (right_entity, right_connector):
+                      add_wire(
+                          wire_routing.RoutedWire(
+                              left_entity,
+                              left_connector,
+                              right_entity,
+                              right_connector,
+                              first.color,
+                          )
+                      )
+                  del state.relay_positions[relay_id]
+                  del state.relay_groups[relay_id]
+                  enqueue(left_entity)
+                  enqueue(right_entity)
+          '''
+          new = '''        relay_edges = tuple(incident.get(relay_id, ()))
+                  if len(relay_edges) > _MAX_LOCAL_RELAY_DEGREE:
+                      continue
+
+                  if len(relay_edges) == 0:
+                      del state.relay_positions[relay_id]
+                      del state.relay_groups[relay_id]
+                      continue
+
+                  if len(relay_edges) == 1:
+                      wire = remove_wire(relay_edges[0])
+                      remote, _connector = _remote_endpoint(wire, relay_id)
+                      del state.relay_positions[relay_id]
+                      del state.relay_groups[relay_id]
+                      enqueue(remote)
+                      continue
+
+                  relay_wires = tuple(wires[key] for key in relay_edges)
+                  color = relay_wires[0].color
+                  if any(wire.color is not color for wire in relay_wires[1:]):
+                      continue
+                  remote_endpoints = tuple(
+                      sorted({_remote_endpoint(wire, relay_id) for wire in relay_wires})
+                  )
+                  bypass = exact._prim_tree(
+                      remote_endpoints,
+                      lambda endpoint: state.object_position(endpoint[0]),
+                      maximum_span=state.safe_span,
+                  )
+                  if bypass is None:
+                      continue
+
+                  for key in relay_edges:
+                      remove_wire(key)
+                  for left, right in bypass[0]:
+                      if left == right:
+                          continue
+                      add_wire(
+                          wire_routing.RoutedWire(
+                              left[0],
+                              left[1],
+                              right[0],
+                              right[1],
+                              color,
+                          )
+                      )
+                  del state.relay_positions[relay_id]
+                  del state.relay_groups[relay_id]
+                  for remote_entity, _connector in remote_endpoints:
+                      enqueue(remote_entity)
+          '''
+          if old not in source:
+              raise SystemExit("expected simplifier block was not found")
+          source_path.write_text(source.replace(old, new, 1))
+
+          tests_path = Path("tests/synthesis/test_incremental_joint_regressions.py")
+          tests = tests_path.read_text()
+          test = '''\n\ndef test_simplifier_eliminates_redundant_degree_three_relay() -> None:\n    physical = PhysicalCircuit(\n        "degree_three_bypass",\n        entities=[ConstantCombinator(entity_id) for entity_id in (1, 2, 3)],\n    )\n    state = exact._JointState(\n        circuit=physical,\n        endpoints_by_group={\n            1: tuple(\n                abstract.Endpoint(entity_id, abstract.Connector.SINGLE)\n                for entity_id in (1, 2, 3)\n            )\n        },\n        colors_by_group={1: WireColor.RED},\n        positions={1: (0.0, 0.0), 2: (2.0, 0.0), 3: (1.0, 1.5)},\n        relay_positions={4: (1.0, 0.5)},\n        relay_groups={4: 1},\n        safe_span=2.1,\n        forbidden_areas=(),\n    )\n    routing = RoutingPlan(\n        relays=(BlueprintRelay(4, (1.0, 0.5), "relay"),),\n        wires=tuple(\n            RoutedWire(entity_id, 1, 4, 1, WireColor.RED)\n            for entity_id in (1, 2, 3)\n        ),\n    )\n    topology = incremental._FeasibleTopology.build(state, routing)\n\n    simplified = incremental._simplify_feasible_topology(state, topology)\n\n    assert state.relay_positions == {}\n    assert state.relay_groups == {}\n    assert simplified.routing.relays == ()\n    assert len(simplified.routing.wires) == 2\n    assert all(\n        incremental._distance(\n            state.object_position(wire.source_entity),\n            state.object_position(wire.target_entity),\n        )\n        <= state.safe_span\n        for wire in simplified.routing.wires\n    )\n'''
+          marker = "test_simplifier_eliminates_redundant_degree_three_relay"
+          if marker not in tests:
+              tests_path.write_text(tests.rstrip() + test + "\n")
+          PY
+      - name: Commit experiment
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/factorio_circuit/synthesis/incremental_joint_layout.py tests/synthesis/test_incremental_joint_regressions.py
+          git commit -m "Eliminate bounded redundant relay branch points"
+          git push origin HEAD:agent/annealed-joint-layout-local-prune
