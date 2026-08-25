@@ -9,15 +9,12 @@ permissions:
   contents: read
 
 jobs:
-  shrinking-envelope-sweep:
+  paired-shrink-validation:
     strategy:
       fail-fast: false
       matrix:
-        variant:
-          - scale80-w1
-          - scale70-w1
-          - scale70-w4
-        seed: [0, 2]
+        variant: [current, shrink70-w4]
+        seed: [0, 1, 2, 3, 4]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -26,7 +23,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Patch progressive shrinking envelope
+      - name: Patch seed and optional progressive shrinking envelope
         env:
           VARIANT: ${{ matrix.variant }}
           SEED: ${{ matrix.seed }}
@@ -37,35 +34,35 @@ jobs:
 
           variant = os.environ["VARIANT"]
           seed = int(os.environ["SEED"])
-          final_scale, weight = {
-              "scale80-w1": (0.80, 1.0),
-              "scale70-w1": (0.70, 1.0),
-              "scale70-w4": (0.70, 4.0),
-          }[variant]
+
+          generate = Path("benchmarks/snake/generate.py")
+          source = generate.read_text()
+          marker = "        retry_fill_scale=0.8,\n"
+          if marker not in source:
+              raise SystemExit("Snake placement option site not found")
+          generate.write_text(source.replace(marker, marker + f"        random_seed={seed},\n", 1))
+
+          if variant == "current":
+              raise SystemExit(0)
 
           path = Path("src/factorio_circuit/synthesis/incremental_joint_layout.py")
           source = path.read_text()
-
-          source = source.replace(
-              "_VERTICAL_OVERFLOW_WEIGHT = 0.25\n",
-              f"_VERTICAL_OVERFLOW_WEIGHT = {weight!r}\n",
-              1,
-          )
+          source = source.replace("_VERTICAL_OVERFLOW_WEIGHT = 0.25\n", "_VERTICAL_OVERFLOW_WEIGHT = 4.0\n", 1)
 
           old_movable = "    movable_entities = exact._movable_entity_ids(state.circuit, options)\n"
-          new_movable = '''    # Experiment: automatic I/O perimeter markers participate in global\n    # compaction; only explicit user anchors remain immovable.\n    fixed_entities = set(options.anchors)\n    movable_entities = [\n        entity.id for entity in state.circuit.entities if entity.id not in fixed_entities\n    ]\n'''
+          new_movable = '''    fixed_entities = set(options.anchors)\n    movable_entities = [\n        entity.id for entity in state.circuit.entities if entity.id not in fixed_entities\n    ]\n'''
           if old_movable not in source:
               raise SystemExit("movable entity site not found")
           source = source.replace(old_movable, new_movable, 1)
 
           old_setup = '''    occupancy = _SpatialOccupancy.build(state)\n    rng = Random(options.random_seed ^ 0x61A7E5ED)\n    vertical_envelope = _vertical_envelope(state)\n\n    best_score = _exact_score(state, topology, center)\n'''
-          new_setup = f'''    occupancy = _SpatialOccupancy.build(state)\n    rng = Random(options.random_seed ^ 0x61A7E5ED)\n\n    envelope_objects = [*state.positions, *state.relay_positions]\n    initial_left = min(\n        state.object_position(item)[0] - state.object_half_extent(item)[0]\n        for item in envelope_objects\n    )\n    initial_right = max(\n        state.object_position(item)[0] + state.object_half_extent(item)[0]\n        for item in envelope_objects\n    )\n    initial_top = min(\n        state.object_position(item)[1] - state.object_half_extent(item)[1]\n        for item in envelope_objects\n    )\n    initial_bottom = max(\n        state.object_position(item)[1] + state.object_half_extent(item)[1]\n        for item in envelope_objects\n    )\n    box_center = (\n        (initial_left + initial_right) / 2.0,\n        (initial_top + initial_bottom) / 2.0,\n    )\n    final_envelope_scale = {final_scale!r}\n\n    def target_envelope(scale: float) -> tuple[float, float, float, float]:\n        half_width = (initial_right - initial_left) * scale / 2.0\n        half_height = (initial_bottom - initial_top) * scale / 2.0\n        return (\n            box_center[0] - half_width,\n            box_center[0] + half_width,\n            box_center[1] - half_height,\n            box_center[1] + half_height,\n        )\n\n    def rectangle_overflow(\n        item: int,\n        position: Position,\n        envelope: tuple[float, float, float, float],\n    ) -> float:\n        left, right, top, bottom = envelope\n        half_x, half_y = state.object_half_extent(item)\n        left_over = max(0.0, left - (position[0] - half_x))\n        right_over = max(0.0, (position[0] + half_x) - right)\n        top_over = max(0.0, top - (position[1] - half_y))\n        bottom_over = max(0.0, (position[1] + half_y) - bottom)\n        return (\n            left_over * left_over\n            + right_over * right_over\n            + top_over * top_over\n            + bottom_over * bottom_over\n        )\n\n    best_score = _exact_score(state, topology, center)\n'''
+          new_setup = '''    occupancy = _SpatialOccupancy.build(state)\n    rng = Random(options.random_seed ^ 0x61A7E5ED)\n\n    envelope_objects = [*state.positions, *state.relay_positions]\n    initial_left = min(\n        state.object_position(item)[0] - state.object_half_extent(item)[0]\n        for item in envelope_objects\n    )\n    initial_right = max(\n        state.object_position(item)[0] + state.object_half_extent(item)[0]\n        for item in envelope_objects\n    )\n    initial_top = min(\n        state.object_position(item)[1] - state.object_half_extent(item)[1]\n        for item in envelope_objects\n    )\n    initial_bottom = max(\n        state.object_position(item)[1] + state.object_half_extent(item)[1]\n        for item in envelope_objects\n    )\n    box_center = (\n        (initial_left + initial_right) / 2.0,\n        (initial_top + initial_bottom) / 2.0,\n    )\n    final_envelope_scale = 0.70\n\n    def target_envelope(scale: float) -> tuple[float, float, float, float]:\n        half_width = (initial_right - initial_left) * scale / 2.0\n        half_height = (initial_bottom - initial_top) * scale / 2.0\n        return (\n            box_center[0] - half_width,\n            box_center[0] + half_width,\n            box_center[1] - half_height,\n            box_center[1] + half_height,\n        )\n\n    def rectangle_overflow(\n        item: int,\n        position: Position,\n        envelope: tuple[float, float, float, float],\n    ) -> float:\n        left, right, top, bottom = envelope\n        half_x, half_y = state.object_half_extent(item)\n        left_over = max(0.0, left - (position[0] - half_x))\n        right_over = max(0.0, (position[0] + half_x) - right)\n        top_over = max(0.0, top - (position[1] - half_y))\n        bottom_over = max(0.0, (position[1] + half_y) - bottom)\n        return left_over**2 + right_over**2 + top_over**2 + bottom_over**2\n\n    best_score = _exact_score(state, topology, center)\n'''
           if old_setup not in source:
               raise SystemExit("annealing setup site not found")
           source = source.replace(old_setup, new_setup, 1)
 
           old_epoch = '''        movable_relays = sorted(state.relay_positions)\n        movable_objects = sorted(set(movable_entities) | set(movable_relays))\n        movable_set = set(movable_objects)\n        if not movable_objects:\n            break\n        # Moving implementation combinators changes terminal geometry and can make\n        # whole relay-chain segments redundant at the next epoch simplification.\n        # Relays remain movable through legal swaps; relay-only layouts fall back\n        # to proposing relays directly.\n        proposal_pool = movable_entities if movable_entities else movable_relays\n\n        for step in range(epoch_start, epoch_end):\n'''
-          new_epoch = '''        movable_relays = sorted(state.relay_positions)\n        movable_objects = sorted(set(movable_entities) | set(movable_relays))\n        movable_set = set(movable_objects)\n        if not movable_objects:\n            break\n        # Tighten a global target rectangle at each epoch. Objects that still\n        # protrude beyond it get proposal priority, including relays.\n        shrink_progress = epoch_end / max(1, iterations)\n        envelope_scale = 1.0 - (1.0 - final_envelope_scale) * shrink_progress\n        current_target_envelope = target_envelope(envelope_scale)\n        outliers = [\n            item\n            for item in movable_objects\n            if rectangle_overflow(\n                item, state.object_position(item), current_target_envelope\n            )\n            > 1e-12\n        ]\n        proposal_pool = outliers or (movable_entities if movable_entities else movable_relays)\n\n        for step in range(epoch_start, epoch_end):\n'''
+          new_epoch = '''        movable_relays = sorted(state.relay_positions)\n        movable_objects = sorted(set(movable_entities) | set(movable_relays))\n        movable_set = set(movable_objects)\n        if not movable_objects:\n            break\n        shrink_progress = epoch_end / max(1, iterations)\n        envelope_scale = 1.0 - (1.0 - final_envelope_scale) * shrink_progress\n        current_target_envelope = target_envelope(envelope_scale)\n        outliers = [\n            item\n            for item in movable_objects\n            if rectangle_overflow(item, state.object_position(item), current_target_envelope)\n            > 1e-12\n        ]\n        proposal_pool = outliers or (movable_entities if movable_entities else movable_relays)\n\n        for step in range(epoch_start, epoch_end):\n'''
           if old_epoch not in source:
               raise SystemExit("epoch proposal site not found")
           source = source.replace(old_epoch, new_epoch, 1)
@@ -76,19 +73,12 @@ jobs:
               raise SystemExit("overflow delta site not found")
           source = source.replace(old_overflow, new_overflow, 1)
           path.write_text(source)
-
-          generate = Path("benchmarks/snake/generate.py")
-          source = generate.read_text()
-          marker = "        retry_fill_scale=0.8,\n"
-          if marker not in source:
-              raise SystemExit("Snake placement option site not found")
-          generate.write_text(source.replace(marker, marker + f"        random_seed={seed},\n", 1))
           PY
       - name: Install uv
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Run 5000-proposal Snake layout
+      - name: Run paired 5000-proposal Snake layout
         run: |
           echo "BENCHMARK_VARIANT=${{ matrix.variant }}"
           echo "BENCHMARK_SEED=${{ matrix.seed }}"
