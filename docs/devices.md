@@ -6,6 +6,12 @@ These generators build physical Factorio blueprints directly. They are intention
 compiler pipeline: a device may expose circuit-network signals that a compiled circuit consumes or
 drives, while its internal game entities do not pass through semantic IR or physical synthesis.
 
+Reusable devices may also expose a typed `DeviceProtocol`: named input/output ports carry payload
+shape, Level/Event modality, wire color, and an optional fixed scalar signal. `ExternalDeviceBlueprint`
+binds those logical ports to concrete Factorio entity connectors. Exact-overlap composition is defined
+by `docs/device-anchoring.md`; application-specific scheduling and accounting do not belong in the
+device layer.
+
 ## Player movement detector
 
 Generate the current eight-way player movement sensor with:
@@ -84,8 +90,36 @@ combinator to the left of the top row is labelled `DISPLAY INPUT: 16x16 packed-R
 only the wire color used by the compiled `OUTPUT framebuffer` port; the unused parallel color remains
 empty, so RGB counts are not doubled.
 
+## Assembler device
+
+`AssemblerDevice` is a reusable assembler plus logistic requester/provider I/O. It deliberately stops
+below application policy: it does not decide what should be crafted, reserve inventory, or implement a
+mall scheduler.
+
+Its stable typed boundary is:
+
+- green inputs: `recipe` (Level vector), `enable` (`signal-E` Level scalar), and
+  `requester_demand` (Level vector);
+- red outputs: `ingredients`, `requester_contents`, `provider_contents` (Level vectors), `working`
+  (`signal-W` Level scalar), and `finished` (`signal-F` Event scalar).
+
+The requester demand is a steady circuit-request setpoint. The device sanitizes the assembler's
+current-recipe ingredient vector, exposes chest contents, reports working/finished state, and moves
+completed products to its active-provider chest. Higher-level reservation/promise accounting belongs
+outside the device.
+
+Generate the standalone in-game probes with:
+
+```bash
+uv run python examples/assembler_device_probe.py
+uv run python examples/assembler_device_anchor_probe.py
+```
+
+The second probe exercises the exact-overlap anchor ABI described in `device-anchoring.md`.
+
 ## Organization rule
 
 Add future fixed peripherals as sibling generator modules under `factorio_circuit.devices`. Shared raw
 blueprint encoding belongs in `devices/_blueprint.py`; compiler-owned logical/physical lowering stays
-in the existing frontend/lowering/synthesis pipeline.
+in the existing frontend/lowering/synthesis pipeline. Keep application policy out of reusable device
+generators.

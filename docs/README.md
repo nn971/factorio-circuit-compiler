@@ -13,6 +13,7 @@ Read these before changing semantics, lowering, or target-specific architecture.
 ## Current subsystem references
 
 - `devices.md` — external-device protocols and supported device abstractions.
+- `device-anchoring.md` — typed exact-overlap composition for independently generated devices.
 - `oracles.md` — external/non-deterministic oracle interfaces.
 - `state-cell-mapping.md` — physical state-cell realization.
 - `technology-mapping.md` — target-aware temporal technology mapping.
