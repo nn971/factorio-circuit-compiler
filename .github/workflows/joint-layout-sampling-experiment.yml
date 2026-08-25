@@ -13,19 +13,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - label: impl75
-            impl_share: "0.75"
-          - label: impl80
-            impl_share: "0.80"
-          - label: impl85
-            impl_share: "0.85"
-          - label: impl90
-            impl_share: "0.90"
-          - label: impl95
-            impl_share: "0.95"
-          - label: impl100
-            impl_share: "1.00"
+        variant:
+          - uniform
+          - impl90
+          - impl100
+        seed:
+          - 0
+          - 1
+          - 2
+          - 3
+          - 4
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -34,15 +31,30 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Patch proposal sampler
+      - name: Patch proposal sampler and annealing seed
         env:
-          IMPL_SHARE: ${{ matrix.impl_share }}
+          VARIANT: ${{ matrix.variant }}
+          SEED: ${{ matrix.seed }}
         run: |
           python - <<'PY'
           import os
           from pathlib import Path
 
-          share = float(os.environ["IMPL_SHARE"])
+          variant = os.environ["VARIANT"]
+          seed = int(os.environ["SEED"])
+
+          generate_path = Path("benchmarks/snake/generate.py")
+          generate = generate_path.read_text()
+          old_seed = "        retry_fill_scale=0.8,\n"
+          new_seed = old_seed + f"        random_seed={seed},\n"
+          if old_seed not in generate:
+              raise SystemExit("Snake placement option site not found")
+          generate_path.write_text(generate.replace(old_seed, new_seed, 1))
+
+          if variant == "uniform":
+              raise SystemExit(0)
+
+          share = {"impl90": 0.90, "impl100": 1.00}[variant]
           path = Path("src/factorio_circuit/synthesis/incremental_joint_layout.py")
           source = path.read_text()
           source = source.replace(
@@ -64,7 +76,8 @@ jobs:
         run: uv sync --extra dev
       - name: Run 1000-proposal Snake layout
         run: |
-          echo "BENCHMARK_VARIANT=${{ matrix.label }}"
+          echo "BENCHMARK_VARIANT=${{ matrix.variant }}"
+          echo "BENCHMARK_SEED=${{ matrix.seed }}"
           /usr/bin/time -f 'BENCHMARK_WALL_SECONDS=%e' \
             uv run python -m benchmarks.snake.generate \
               --annealing-layout \
