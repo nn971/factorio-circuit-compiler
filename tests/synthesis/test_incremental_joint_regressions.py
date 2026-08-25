@@ -1,4 +1,5 @@
 from dataclasses import replace
+from random import Random
 
 import pytest
 
@@ -38,6 +39,30 @@ def _constant_state_with_relay() -> exact._JointState:
     )
 
 
+def _constant_relay_routing() -> RoutingPlan:
+    return RoutingPlan(
+        relays=(BlueprintRelay(3, (1.5, 0.0), "relay"),),
+        wires=(
+            RoutedWire(1, 1, 3, 1, WireColor.RED),
+            RoutedWire(3, 1, 2, 1, WireColor.RED),
+        ),
+    )
+
+
+def _relay_proposal_grid() -> incremental.base_placement._GridGeometry:
+    unit_x_positions = tuple(index / 2 for index in range(-8, 17))
+    y_positions = tuple(float(index) for index in range(-6, 7))
+    return incremental.base_placement._GridGeometry(
+        slots=(),
+        unit_slots=tuple((x, y) for x in unit_x_positions for y in y_positions),
+        bounds=(-4.5, 8.5, -6.5, 6.5),
+        relay_forbidden_areas=(),
+        x_positions=(),
+        unit_x_positions=unit_x_positions,
+        y_positions=y_positions,
+    )
+
+
 def test_feasible_topology_materializes_current_relay_positions() -> None:
     state = _constant_state_with_relay()
     stale = RoutingPlan(
@@ -66,6 +91,57 @@ def test_joint_clearance_rejects_a_stale_serialized_relay_position() -> None:
 
     with pytest.raises(ValueError, match="relay positions disagree"):
         incremental._validate_joint_clearance(state, stale)
+
+
+def test_relay_proposals_stay_inside_cached_incident_wire_reach() -> None:
+    state = _constant_state_with_relay()
+    topology = incremental._FeasibleTopology.build(state, _constant_relay_routing())
+    grid = _relay_proposal_grid()
+    current = state.relay_positions[3]
+    preferred = topology.preferred_position(state, 3, current)
+    proposed: set[tuple[float, float]] = set()
+
+    for seed in range(64):
+        target = incremental._proposed_position(
+            state,
+            topology,
+            3,
+            grid,
+            preferred,
+            current,
+            Random(seed),
+            1.0,
+        )
+        proposed.add(target)
+        assert target in grid.unit_slots
+        assert topology.target_is_reach_safe(state, 3, target)
+        assert topology.proposal_delta(state, {3: target}) is not None
+
+    assert proposed != {current}
+
+
+def test_relay_proposal_falls_back_to_current_when_reach_region_is_one_site() -> None:
+    state = _constant_state_with_relay()
+    state.safe_span = 1.5
+    topology = incremental._FeasibleTopology.build(state, _constant_relay_routing())
+    grid = _relay_proposal_grid()
+    current = state.relay_positions[3]
+    preferred = topology.preferred_position(state, 3, current)
+
+    for seed in range(32):
+        assert (
+            incremental._proposed_position(
+                state,
+                topology,
+                3,
+                grid,
+                preferred,
+                current,
+                Random(seed),
+                1.0,
+            )
+            == current
+        )
 
 
 def test_porous_bootstrap_reanchors_automatic_io_after_grid_expansion() -> None:
