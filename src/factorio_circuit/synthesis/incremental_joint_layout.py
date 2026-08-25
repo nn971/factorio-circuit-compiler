@@ -986,7 +986,53 @@ def _expanded_bootstrap_grid(
     while len(expanded.slots) <= len(grid.slots):
         body_count += max(1, ceil(len(grid.slots) * options.target_fill))
         expanded = base_placement._candidate_grid(body_count, minimum_rows, options)
-    return expanded
+    # ``grid`` can contain explicit-anchor access sites in addition to the regular body lattice.
+    # Keep those sites on every capacity expansion: expanding the body must not strand a fixed
+    # public port outside the relay workspace that already reached it.
+    return replace(
+        expanded,
+        unit_slots=tuple(sorted(set(expanded.unit_slots) | set(grid.unit_slots))),
+    )
+
+
+def _with_explicit_anchor_access_sites(
+    grid: base_placement._GridGeometry,
+    positions: dict[int, Position],
+    options: PlacementOptions,
+    *,
+    safe_wire_span: float,
+) -> base_placement._GridGeometry:
+    """Add compact relay-only approach lanes from fixed external anchors to the body grid.
+
+    A component seam may pin a public marker outside the implementation envelope.  That marker is
+    intentionally not a movable body-grid occupant, but it still needs a legal relay neighbor.
+    Extend the common relay workspace with a finite half-tile chain to its nearest regular site;
+    every hop has conservative wire slack.  The regular implementation lattice and its reserved
+    corridors remain unchanged.
+    """
+
+    if not options.anchors:
+        return grid
+
+    access_sites = set(grid.unit_slots)
+    maximum_hop = safe_wire_span * 0.75
+    for entity_id in sorted(options.anchors):
+        anchor = positions[entity_id]
+        target = min(
+            grid.unit_slots,
+            key=lambda site: (_distance(anchor, site), site),
+        )
+        distance = _distance(anchor, target)
+        interior_count = max(0, ceil(distance / maximum_hop) - 1)
+        for index in range(1, interior_count + 1):
+            fraction = index / (interior_count + 1)
+            site = (
+                round((anchor[0] + (target[0] - anchor[0]) * fraction) * 2.0) / 2.0,
+                round((anchor[1] + (target[1] - anchor[1]) * fraction) * 2.0) / 2.0,
+            )
+            access_sites.add(site)
+
+    return replace(grid, unit_slots=tuple(sorted(access_sites)))
 
 
 def _porous_bootstrap_positions(
@@ -1083,6 +1129,12 @@ def refine_incremental_joint_layout(
     bootstrap_options = replace(options, iterations=0, restarts=1)
     preferred_positions = dict(positions)
     grid = exact._matching_candidate_grid(circuit, preferred_positions, bootstrap_options)
+    grid = _with_explicit_anchor_access_sites(
+        grid,
+        preferred_positions,
+        bootstrap_options,
+        safe_wire_span=safe_wire_span,
+    )
     state: exact._JointState | None = None
     topology: _FeasibleTopology | None = None
     last_error: ValueError | None = None
