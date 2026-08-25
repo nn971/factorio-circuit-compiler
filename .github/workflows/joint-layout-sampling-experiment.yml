@@ -14,16 +14,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: uniform
-            impl_share: "uniform"
-          - label: impl35
-            impl_share: "0.35"
-          - label: impl50
-            impl_share: "0.50"
-          - label: impl70
-            impl_share: "0.70"
+          - label: impl75
+            impl_share: "0.75"
+          - label: impl80
+            impl_share: "0.80"
           - label: impl85
             impl_share: "0.85"
+          - label: impl90
+            impl_share: "0.90"
+          - label: impl95
+            impl_share: "0.95"
+          - label: impl100
+            impl_share: "1.00"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -33,7 +35,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Patch proposal sampler
-        if: matrix.impl_share != 'uniform'
         env:
           IMPL_SHARE: ${{ matrix.impl_share }}
         run: |
