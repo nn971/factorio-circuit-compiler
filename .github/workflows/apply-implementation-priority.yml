@@ -1,0 +1,56 @@
+name: Apply implementation-priority sampler
+
+on:
+  push:
+    branches:
+      - agent/annealed-joint-layout-implementation-priority
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent/annealed-joint-layout-implementation-priority
+      - name: Prioritize implementation combinator proposals
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/factorio_circuit/synthesis/incremental_joint_layout.py")
+          source = path.read_text()
+          old_epoch = '''        movable_objects = sorted(set(movable_entities) | set(state.relay_positions))
+                  movable_set = set(movable_objects)
+                  if not movable_objects:
+                      break
+          '''
+          new_epoch = '''        movable_relays = sorted(state.relay_positions)
+                  movable_objects = sorted(set(movable_entities) | set(movable_relays))
+                  movable_set = set(movable_objects)
+                  if not movable_objects:
+                      break
+                  # Moving implementation combinators changes terminal geometry and can make
+                  # whole relay-chain segments redundant at the next epoch simplification.
+                  # Relays remain movable through legal swaps; relay-only layouts fall back
+                  # to proposing relays directly.
+                  proposal_pool = movable_entities if movable_entities else movable_relays
+          '''
+          old_pick = "            object_id = movable_objects[rng.randrange(len(movable_objects))]\n"
+          new_pick = "            object_id = proposal_pool[rng.randrange(len(proposal_pool))]\n"
+          if old_epoch not in source or old_pick not in source:
+              raise SystemExit("expected annealing proposal sampler was not found")
+          source = source.replace(old_epoch, new_epoch, 1)
+          source = source.replace(old_pick, new_pick, 1)
+          path.write_text(source)
+          PY
+      - name: Commit sampler change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/factorio_circuit/synthesis/incremental_joint_layout.py
+          git commit -m "Prioritize implementation moves during joint annealing"
+          git push origin HEAD:agent/annealed-joint-layout-implementation-priority
