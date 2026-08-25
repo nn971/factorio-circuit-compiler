@@ -37,6 +37,7 @@ from factorio_circuit.synthesis.placement import PlacementOptions, Position
 _EPOCH_PROPOSALS = 256
 _EPSILON = 1e-9
 _RELAY_HALF_EXTENT = (0.5, 0.5)
+_RELAY_PROPOSAL_ATTEMPTS = 8
 _SLACK_START = 0.85
 _BOOTSTRAP_EXPANSIONS = 4
 _BOOTSTRAP_ORDER_ATTEMPTS = 3
@@ -101,6 +102,19 @@ class _FeasibleTopology:
         if not peers:
             return fallback
         return _centroid([state.object_position(peer) for peer in peers])
+
+    def target_is_reach_safe(
+        self,
+        state: exact._JointState,
+        object_id: int,
+        target: Position,
+    ) -> bool:
+        """Check one object's cached incident-wire reach without rebuilding any topology."""
+
+        return all(
+            _distance(target, state.object_position(peer)) <= state.safe_span + _EPSILON
+            for peer in self.neighbors.get(object_id, ())
+        )
 
     def proposal_delta(
         self,
@@ -926,6 +940,7 @@ def _anneal_feasible(
             preferred = topology.preferred_position(state, object_id, center)
             target = _proposed_position(
                 state,
+                topology,
                 object_id,
                 grid,
                 preferred,
@@ -1019,6 +1034,7 @@ def _exact_score(
 
 def _proposed_position(
     state: exact._JointState,
+    topology: _FeasibleTopology,
     object_id: int,
     grid: base_placement._GridGeometry,
     preferred: Position,
@@ -1027,23 +1043,25 @@ def _proposed_position(
     normalized_temperature: float,
 ) -> Position:
     if object_id in state.relay_positions:
-        if rng.random() < 0.08:
-            return grid.unit_slots[rng.randrange(len(grid.unit_slots))]
-        if rng.random() < 0.35:
-            noise = max(1.0, state.safe_span * (0.8 * normalized_temperature + 0.05))
-            target = (
-                current[0] + rng.uniform(-noise, noise),
-                current[1] + rng.uniform(-noise, noise),
-            )
-        else:
-            noise = state.safe_span * (normalized_temperature + 0.03)
-            target = (
-                preferred[0] + rng.uniform(-noise, noise),
-                preferred[1] + rng.uniform(-noise, noise),
-            )
-        x = min(grid.unit_x_positions, key=lambda value: (abs(value - target[0]), value))
-        y = min(grid.y_positions, key=lambda value: (abs(value - target[1]), value))
-        return (x, y)
+        for _attempt in range(_RELAY_PROPOSAL_ATTEMPTS):
+            if rng.random() < 0.35:
+                noise = max(1.0, state.safe_span * (0.8 * normalized_temperature + 0.05))
+                raw = (
+                    current[0] + rng.uniform(-noise, noise),
+                    current[1] + rng.uniform(-noise, noise),
+                )
+            else:
+                noise = state.safe_span * (normalized_temperature + 0.03)
+                raw = (
+                    preferred[0] + rng.uniform(-noise, noise),
+                    preferred[1] + rng.uniform(-noise, noise),
+                )
+            x = min(grid.unit_x_positions, key=lambda value: (abs(value - raw[0]), value))
+            y = min(grid.y_positions, key=lambda value: (abs(value - raw[1]), value))
+            candidate = (x, y)
+            if topology.target_is_reach_safe(state, object_id, candidate):
+                return candidate
+        return current
 
     entity = state.circuit.entity_by_id(object_id)
     candidates = base_placement._candidate_positions(entity, grid)
