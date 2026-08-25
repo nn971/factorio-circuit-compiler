@@ -200,3 +200,48 @@ def test_new_joint_bootstrap_failure_is_retryable() -> None:
     )
 
     assert _retryable_layout_error(error)
+
+def test_simplifier_eliminates_redundant_degree_three_relay() -> None:
+    physical = PhysicalCircuit(
+        "degree_three_bypass",
+        entities=[ConstantCombinator(entity_id) for entity_id in (1, 2, 3)],
+    )
+    state = exact._JointState(
+        circuit=physical,
+        endpoints_by_group={
+            1: tuple(
+                abstract.Endpoint(entity_id, abstract.Connector.SINGLE)
+                for entity_id in (1, 2, 3)
+            )
+        },
+        colors_by_group={1: WireColor.RED},
+        positions={1: (0.0, 0.0), 2: (2.0, 0.0), 3: (1.0, 1.5)},
+        relay_positions={4: (1.0, 0.5)},
+        relay_groups={4: 1},
+        safe_span=2.1,
+        forbidden_areas=(),
+    )
+    routing = RoutingPlan(
+        relays=(BlueprintRelay(4, (1.0, 0.5), "relay"),),
+        wires=tuple(
+            RoutedWire(entity_id, 1, 4, 1, WireColor.RED)
+            for entity_id in (1, 2, 3)
+        ),
+    )
+    topology = incremental._FeasibleTopology.build(state, routing)
+
+    simplified = incremental._simplify_feasible_topology(state, topology)
+
+    assert state.relay_positions == {}
+    assert state.relay_groups == {}
+    assert simplified.routing.relays == ()
+    assert len(simplified.routing.wires) == 2
+    assert all(
+        incremental._distance(
+            state.object_position(wire.source_entity),
+            state.object_position(wire.target_entity),
+        )
+        <= state.safe_span
+        for wire in simplified.routing.wires
+    )
+

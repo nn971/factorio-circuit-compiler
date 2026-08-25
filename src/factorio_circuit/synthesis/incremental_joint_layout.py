@@ -37,6 +37,7 @@ from factorio_circuit.synthesis.placement import PlacementOptions, Position
 _EPOCH_PROPOSALS = 256
 _EPSILON = 1e-9
 _RELAY_HALF_EXTENT = (0.5, 0.5)
+_MAX_LOCAL_RELAY_DEGREE = 4
 _SLACK_START = 0.85
 _BOOTSTRAP_EXPANSIONS = 4
 _BOOTSTRAP_ORDER_ATTEMPTS = 3
@@ -642,7 +643,7 @@ def _simplify_feasible_topology(
         if relay_id not in state.relay_positions:
             continue
         relay_edges = tuple(incident.get(relay_id, ()))
-        if len(relay_edges) > 2:
+        if len(relay_edges) > _MAX_LOCAL_RELAY_DEGREE:
             continue
 
         if len(relay_edges) == 0:
@@ -658,37 +659,39 @@ def _simplify_feasible_topology(
             enqueue(remote)
             continue
 
-        first = wires[relay_edges[0]]
-        second = wires[relay_edges[1]]
-        if first.color is not second.color:
+        relay_wires = tuple(wires[key] for key in relay_edges)
+        color = relay_wires[0].color
+        if any(wire.color is not color for wire in relay_wires[1:]):
             continue
-        left_entity, left_connector = _remote_endpoint(first, relay_id)
-        right_entity, right_connector = _remote_endpoint(second, relay_id)
-        if (
-            _distance(
-                state.object_position(left_entity),
-                state.object_position(right_entity),
-            )
-            > state.safe_span + _EPSILON
-        ):
+        remote_endpoints = tuple(
+            sorted({_remote_endpoint(wire, relay_id) for wire in relay_wires})
+        )
+        bypass = exact._prim_tree(
+            remote_endpoints,
+            lambda endpoint: state.object_position(endpoint[0]),
+            maximum_span=state.safe_span,
+        )
+        if bypass is None:
             continue
 
-        remove_wire(relay_edges[0])
-        remove_wire(relay_edges[1])
-        if (left_entity, left_connector) != (right_entity, right_connector):
+        for key in relay_edges:
+            remove_wire(key)
+        for left, right in bypass[0]:
+            if left == right:
+                continue
             add_wire(
                 wire_routing.RoutedWire(
-                    left_entity,
-                    left_connector,
-                    right_entity,
-                    right_connector,
-                    first.color,
+                    left[0],
+                    left[1],
+                    right[0],
+                    right[1],
+                    color,
                 )
             )
         del state.relay_positions[relay_id]
         del state.relay_groups[relay_id]
-        enqueue(left_entity)
-        enqueue(right_entity)
+        for remote_entity, _connector in remote_endpoints:
+            enqueue(remote_entity)
 
     routing = wire_routing.RoutingPlan(
         relays=tuple(
