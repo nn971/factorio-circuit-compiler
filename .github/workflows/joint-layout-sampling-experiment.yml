@@ -9,11 +9,11 @@ permissions:
   contents: read
 
 jobs:
-  target-fill-sweep:
+  dense-envelope-sweep:
     strategy:
       fail-fast: false
       matrix:
-        target_fill: [0.60, 0.70, 0.80, 0.90, 1.00]
+        target_fill: [0.80, 0.85, 0.90, 0.95, 1.00]
         seed: [0, 2]
     runs-on: ubuntu-latest
     steps:
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Patch Snake seed
+      - name: Disable relay-capacity expansion and patch Snake seed
         env:
           SEED: ${{ matrix.seed }}
         run: |
@@ -32,6 +32,15 @@ jobs:
           from pathlib import Path
 
           seed = int(os.environ["SEED"])
+
+          path = Path("src/factorio_circuit/synthesis/open_vector.py")
+          source = path.read_text()
+          marker = '''    if relay_reserve <= 0:\n        return options.target_fill\n\n'''
+          replacement = '''    # Experiment: retain the requested global density and let the\n    # feasible bootstrap itself decide whether the workspace is sufficient.\n    return options.target_fill\n\n'''
+          if marker not in source:
+              raise SystemExit("joint capacity prepass site not found")
+          path.write_text(source.replace(marker, replacement, 1))
+
           generate = Path("benchmarks/snake/generate.py")
           source = generate.read_text()
           marker = "        retry_fill_scale=0.8,\n"
