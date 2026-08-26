@@ -7,8 +7,9 @@ The repository keeps permanent documentation for current contracts and current i
 - `data-contract.md` — logical Level/Event/clock/state semantics.
 - `compiler-pipeline.md` — compiler stages and ownership boundaries.
 - `factorio-2-circuit-mechanics.md` — verified Factorio 2.x mechanics that constrain architecture.
+- `roadmap.md` — current forward-looking engineering milestones and acceptance criteria.
 
-Read these before changing semantics, lowering, or target-specific architecture.
+Read the contract documents before changing semantics, lowering, or target-specific architecture; use the roadmap to coordinate future implementation work without turning temporary tuning notes into permanent contracts.
 
 ## Current subsystem references
 
