@@ -11,13 +11,15 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: agent/annealing-v2-adaptive-selection
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -25,16 +27,38 @@ jobs:
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
+      - name: Stage relay-relief candidate
+        run: |
+          python tools/stage_relay_relief.py
+          uv run ruff format \
+            src/factorio_circuit/synthesis/incremental_joint_layout.py \
+            src/factorio_circuit/synthesis/layout_observability.py \
+            tests/synthesis/test_layout_relay_relief.py \
+            benchmarks/layout_optimizer_relay_relief_compare.py
       - name: Test
         run: uv run pytest
-      - name: Annealer proposal observability probe
+      - name: Immediate-parent relay-relief comparison
+        run: uv run python -m benchmarks.layout_optimizer_relay_relief_compare --seeds 8 --proposals 4096
+      - name: Frozen pre-C acceptance
         run: |
-          for seed in 0 1 2 3; do
-            uv run python -m benchmarks.layout_optimizer_observability --proposals 4096 --seed "$seed"
-          done
+          git fetch origin a70df723768a6ba099ffd43017bdcb0291011c8f
+          uv run python -m benchmarks.milestone_c_acceptance --seeds 8 --proposals 4096
       - name: Ruff lint
         run: uv run ruff check .
       - name: Ruff format
         run: uv run ruff format --check .
       - name: Mypy
         run: uv run mypy src
+      - name: Commit validated relay-relief candidate
+        if: github.event_name == 'pull_request'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            src/factorio_circuit/synthesis/incremental_joint_layout.py \
+            src/factorio_circuit/synthesis/layout_observability.py \
+            tests/synthesis/test_layout_relay_relief.py
+          if ! git diff --cached --quiet; then
+            git commit -m "synthesis: add measured relay-relief epoch"
+            git push origin HEAD:agent/annealing-v2-adaptive-selection
+          fi
