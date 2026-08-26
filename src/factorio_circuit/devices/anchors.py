@@ -155,7 +155,7 @@ def compose_anchored_blueprints(
     left_wires = _wires(left_bp)
     right_wires = _wires(right_bp)
 
-    next_id = max((int(entity["entity_number"]) for entity in left_entities), default=0) + 1
+    next_id = max((_entity_number(entity) for entity in left_entities), default=0) + 1
     left_anchor_ids = {anchor.name: anchor.entity_number for anchor in left.anchors}
     bound_right_to_left = {
         right.anchor(binding.right).entity_number: left_anchor_ids[binding.left]
@@ -164,7 +164,7 @@ def compose_anchored_blueprints(
 
     right_id_map: dict[int, int] = {}
     for entity in right_entities:
-        old_id = int(entity["entity_number"])
+        old_id = _entity_number(entity)
         if old_id in bound_right_to_left:
             right_id_map[old_id] = bound_right_to_left[old_id]
             _merge_anchor_entity_metadata(
@@ -285,7 +285,7 @@ def _validate_compatible(left: AnchorSpec, right: AnchorSpec) -> None:
 
 def _validate_anchor_entities(component: AnchoredBlueprint) -> None:
     entities = _entities(component.blueprint)
-    by_id = {int(entity["entity_number"]): entity for entity in entities}
+    by_id = {_entity_number(entity): entity for entity in entities}
     for anchor in component.anchors:
         entity = by_id.get(anchor.entity_number)
         if entity is None:
@@ -406,7 +406,7 @@ def _entities(blueprint: Blueprint) -> list[dict[str, object]]:
     raw = blueprint.setdefault("entities", [])
     if not isinstance(raw, list) or not all(isinstance(entity, dict) for entity in raw):
         raise ValueError("blueprint entities must be dictionaries")
-    return raw  # type: ignore[return-value]
+    return raw
 
 
 def _wires(blueprint: Blueprint) -> list[object]:
@@ -416,8 +416,15 @@ def _wires(blueprint: Blueprint) -> list[object]:
     return raw
 
 
+def _entity_number(entity: Mapping[str, object]) -> int:
+    raw = entity.get("entity_number")
+    if not isinstance(raw, int):
+        raise ValueError(f"blueprint entity has invalid entity_number {raw!r}")
+    return raw
+
+
 def _entity_by_id(entities: Sequence[dict[str, object]], entity_number: int) -> dict[str, object]:
-    matches = [entity for entity in entities if int(entity["entity_number"]) == entity_number]
+    matches = [entity for entity in entities if _entity_number(entity) == entity_number]
     if len(matches) != 1:
         raise ValueError(f"expected entity {entity_number}, found {len(matches)}")
     return matches[0]
@@ -433,7 +440,9 @@ def _position(entity: Mapping[str, object]) -> tuple[float, float]:
 def _wire_tuple(raw: object) -> tuple[int, int, int, int]:
     if not isinstance(raw, (list, tuple)) or len(raw) != 4:
         raise ValueError(f"invalid blueprint wire {raw!r}")
-    return tuple(int(value) for value in raw)  # type: ignore[return-value]
+    if not all(isinstance(value, int) for value in raw):
+        raise ValueError(f"invalid blueprint wire {raw!r}")
+    return raw[0], raw[1], raw[2], raw[3]
 
 
 def _normalized_wire(
@@ -448,7 +457,7 @@ def _normalized_wire(
 
 
 def _validate_wire_references(blueprint: Blueprint) -> None:
-    ids = {int(entity["entity_number"]) for entity in _entities(blueprint)}
+    ids = {_entity_number(entity) for entity in _entities(blueprint)}
     for raw in _wires(blueprint):
         left, _lc, right, _rc = _wire_tuple(raw)
         if left not in ids or right not in ids:

@@ -9,10 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from factorio_circuit.devices._blueprint import Blueprint, encode_blueprint
 from factorio_circuit.ir.physical import SignalId, WireColor
 from factorio_circuit.ir.semantic import PayloadShape, TemporalModality
+
+if TYPE_CHECKING:
+    from factorio_circuit.devices.anchors import AnchoredBlueprint
 
 
 class DevicePortDirection(StrEnum):
@@ -155,7 +159,7 @@ class ExternalDeviceBlueprint:
     def blueprint_string(self) -> str:
         return encode_blueprint(self.blueprint)
 
-    def anchored(self):
+    def anchored(self) -> AnchoredBlueprint:
         """Return the generic exact-overlap anchoring view of this device."""
 
         from factorio_circuit.devices.anchors import device_as_anchored_blueprint

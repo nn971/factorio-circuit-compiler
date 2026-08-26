@@ -89,10 +89,10 @@ def compiled_module_as_anchored_blueprint(
         raise ValueError("compiled blueprint entities must be dictionaries")
     if not isinstance(raw_wires, list):
         raise ValueError("compiled blueprint wires must be a list")
-    entities: list[dict[str, object]] = raw_entities  # type: ignore[assignment]
+    entities: list[dict[str, object]] = raw_entities
     wires: list[object] = raw_wires
 
-    next_entity = max((int(entity["entity_number"]) for entity in entities), default=0) + 1
+    next_entity = max((_entity_number(entity) for entity in entities), default=0) + 1
     anchors: list[BoundAnchor] = []
     for binding in bindings:
         port = _resolve_port(result, binding)
@@ -304,7 +304,10 @@ def _entity_footprint(entity: dict[str, object]) -> tuple[float, float, float, f
     position = float(raw_position["x"]), float(raw_position["y"])
     name = str(entity.get("name", ""))
     if name in {"arithmetic-combinator", "decider-combinator", "selector-combinator"}:
-        direction = int(entity.get("direction", 0))
+        raw_direction = entity.get("direction", 0)
+        if not isinstance(raw_direction, int):
+            raise ValueError(f"blueprint entity has invalid direction {raw_direction!r}")
+        direction = raw_direction
         if direction in {0, 4}:
             return _footprint(position, 0.5, 1.0)
         return _footprint(position, 1.0, 0.5)
@@ -435,8 +438,15 @@ def _route_external_side(
     return next_entity
 
 
+def _entity_number(entity: dict[str, object]) -> int:
+    raw = entity.get("entity_number")
+    if not isinstance(raw, int):
+        raise ValueError(f"blueprint entity has invalid entity_number {raw!r}")
+    return raw
+
+
 def _entity_position(entities: Sequence[dict[str, object]], entity_id: int) -> tuple[float, float]:
-    matches = [entity for entity in entities if int(entity["entity_number"]) == entity_id]
+    matches = [entity for entity in entities if _entity_number(entity) == entity_id]
     if len(matches) != 1:
         raise ValueError(f"compiled marker entity {entity_id} resolved to {len(matches)} entities")
     position = matches[0].get("position")

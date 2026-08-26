@@ -359,7 +359,7 @@ def _entities(component: AnchoredBlueprint) -> list[dict[str, object]]:
     raw = component.blueprint.get("entities", [])
     if not isinstance(raw, list) or not all(isinstance(entity, dict) for entity in raw):
         raise ValueError("component blueprint entities must be dictionaries")
-    return raw  # type: ignore[return-value]
+    return raw
 
 
 def _position(entity: dict[str, object]) -> tuple[float, float]:
