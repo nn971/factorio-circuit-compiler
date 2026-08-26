@@ -5,9 +5,10 @@ rather than teaching one small language feature.
 
 ## Generic physical-layout corpus
 
-`benchmarks/layout_optimizer_corpus.py` is the opt-in structural corpus for the public routed-layout
-optimizer. Its cases are deliberately synthetic so that placement/routing behavior can be studied
-without coupling the benchmark to one compiler lowering strategy or application.
+`benchmarks/layout_optimizer_corpus.py` and `benchmarks/layout_optimizer_topology_corpus.py` form the
+opt-in structural corpus for the public routed-layout optimizer. Their cases are deliberately
+synthetic so that placement/routing behavior can be studied without coupling the benchmark to one
+compiler lowering strategy or application.
 
 The current corpus covers:
 
@@ -17,27 +18,44 @@ The current corpus covers:
 - one long routed span whose implementation endpoints are fixed anchors;
 - a one-tile routing corridor enforced by forbidden regions;
 - mixed 1x1 constant-combinator and 2x1 arithmetic-combinator footprints;
-- an anchor-heavy perimeter interface with fixed public terminals around movable body logic.
+- an anchor-heavy perimeter interface with fixed public terminals around movable body logic;
+- compact local clusters connected by a sparse inter-cluster cut net;
+- crossing red/green mesh connectivity;
+- an already-packed near-optimal starting embedding;
+- an explicitly opt-in 1,200-object sparse compaction case.
 
-Run one deterministic seed with:
+Run the first structural tranche with one deterministic seed:
 
 ```bash
 uv run python -m benchmarks.layout_optimizer_corpus --proposals 256 --seed 0
 ```
 
-Run a consecutive seed sweep with:
+Run the topology tranche with one deterministic seed:
+
+```bash
+uv run python -m benchmarks.layout_optimizer_topology_corpus --proposals 256 --seed 0
+```
+
+Run consecutive seed sweeps with `--seeds`, for example:
 
 ```bash
 uv run python -m benchmarks.layout_optimizer_corpus --proposals 256 --seed 0 --seeds 8
+uv run python -m benchmarks.layout_optimizer_topology_corpus --proposals 256 --seed 0 --seeds 8
+```
+
+The 1,200-object case is excluded from the default topology tranche and must be requested explicitly:
+
+```bash
+uv run python -m benchmarks.layout_optimizer_topology_corpus \
+  --proposals 256 --seed 0 --seeds 4 --include-scale
 ```
 
 Every run validates the supplied layout, optimizes through the same public API, validates the returned
 layout, and rejects any result whose lexicographic `(relay count, area, wire length)` objective is
 worse than its valid input. Multi-seed runs report best/worst objectives and median physical metrics.
-The corpus will grow along the structural dimensions recorded in `docs/roadmap.md`.
 
-Cheap CI tests validate that nontrivial corpus fixtures themselves are well formed and preserve exact
-zero-budget pass-through behavior. Full optimization sweeps remain opt-in.
+Cheap CI tests validate the nontrivial structural fixtures themselves and preserve exact zero-budget
+pass-through behavior. The 1k+ scale case and full stochastic optimization sweeps remain opt-in.
 
 ## Heavyweight end-to-end benchmark
 
