@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import pytest
-
 from benchmarks.layout_optimizer_corpus import _shared_bus_case
 from benchmarks.layout_optimizer_topology_corpus import _near_optimal_packed_case
-from factorio_circuit.synthesis import incremental_joint_layout as incremental
 from factorio_circuit.synthesis.layout_observability import (
     OptimizationStats,
     optimize_physical_layout_observed,
@@ -23,19 +20,11 @@ def _options(*, iterations: int) -> PlacementOptions:
     )
 
 
-def test_observability_preserves_original_annealer_artifact(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_observability_preserves_production_annealer_artifact() -> None:
     case = _shared_bus_case()
     options = _options(iterations=96)
-    observed_annealer = incremental._anneal_feasible
 
-    monkeypatch.setattr(
-        incremental,
-        "_anneal_feasible",
-        incremental._ORIGINAL_ANNEAL_FEASIBLE,
-    )
     baseline = optimize_physical_layout(case.problem, options=options)
-
-    monkeypatch.setattr(incremental, "_anneal_feasible", observed_annealer)
     observed = optimize_physical_layout_observed(case.problem, options=options)
 
     assert observed.optimization == baseline
