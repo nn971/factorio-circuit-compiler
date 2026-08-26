@@ -51,9 +51,7 @@ def _rectangular_lattice(
     forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
 ) -> LegalPlacementLattice:
     unit_sites = tuple(
-        (float(x), float(y))
-        for y in range(y_offset, y_offset + height)
-        for x in range(width)
+        (float(x), float(y)) for y in range(y_offset, y_offset + height) for x in range(width)
     )
     wide_sites = (
         tuple(
@@ -421,9 +419,7 @@ def _perimeter_anchor_case() -> _CorpusCase:
         ],
     )
     layout = Layout(circuit, positions, tuple(relays), tuple(wires), (), ())
-    fixed_positions = {
-        entity_id: positions[entity_id] for entity_id in (*left_ids, *right_ids)
-    }
+    fixed_positions = {entity_id: positions[entity_id] for entity_id in (*left_ids, *right_ids)}
     return _CorpusCase(
         "perimeter-anchors-12-plus-6-body-plus-24-relays",
         LayoutOptimizationProblem(
