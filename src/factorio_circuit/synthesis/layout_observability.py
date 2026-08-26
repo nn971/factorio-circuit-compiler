@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from math import ceil, exp
 from random import Random
+from threading import RLock
+from typing import Any
 
+from factorio_circuit.blueprint import routing as wire_routing
 from factorio_circuit.synthesis import incremental_joint_layout as incremental
 from factorio_circuit.synthesis import joint_layout as exact
 from factorio_circuit.synthesis import layout_optimizer as routed
@@ -17,6 +23,15 @@ from factorio_circuit.synthesis.layout_optimizer import (
 from factorio_circuit.synthesis.placement import PlacementOptions
 
 Objective = tuple[int, float, float]
+_HELPER_OBSERVATION_LOCK = RLock()
+_ACTIVE_WORK_STATS: ContextVar[_MutableOptimizationStats | None] = ContextVar(
+    "factorio_layout_observability_work_stats",
+    default=None,
+)
+_ROUTING_SEARCH_DEPTH: ContextVar[int] = ContextVar(
+    "factorio_layout_observability_routing_depth",
+    default=0,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,8 +39,10 @@ class OptimizationStats:
     """Observational counters for one joint-annealing run.
 
     Rejection counters are mutually exclusive and, together with accepted moves, account for every
-    proposal attempt. The history contains the best exact lexicographic physical objective before
-    the first epoch and after every completed epoch.
+    proposal attempt. Relay simplification counters classify every deletion performed by observed
+    simplifier calls. Routing queue pops count priority-queue work inside relay-path searches. The
+    history contains the best exact lexicographic physical objective before the first epoch and
+    after every completed epoch.
     """
 
     proposals_attempted: int = 0
@@ -41,8 +58,16 @@ class OptimizationStats:
     swap_attempts: int = 0
     swaps_accepted: int = 0
     relay_deletions: int = 0
+    relay_isolated_deletions: int = 0
+    relay_leaf_deletions: int = 0
+    relay_degree_two_bypasses: int = 0
+    simplification_calls: int = 0
     topology_rebuild_attempts: int = 0
     topology_rebuild_successes: int = 0
+    routing_search_calls: int = 0
+    negotiated_routing_search_calls: int = 0
+    routing_search_failures: int = 0
+    routing_queue_pops: int = 0
     epochs_completed: int = 0
     epochs_since_last_improvement: int = 0
     best_objective_history: tuple[Objective, ...] = ()
@@ -55,6 +80,14 @@ class OptimizationStats:
             + self.geometry_rejections
             + self.wire_reach_rejections
             + self.metropolis_rejections
+        )
+
+    @property
+    def classified_relay_deletions(self) -> int:
+        return (
+            self.relay_isolated_deletions
+            + self.relay_leaf_deletions
+            + self.relay_degree_two_bypasses
         )
 
 
@@ -81,8 +114,16 @@ class _MutableOptimizationStats:
     swap_attempts: int = 0
     swaps_accepted: int = 0
     relay_deletions: int = 0
+    relay_isolated_deletions: int = 0
+    relay_leaf_deletions: int = 0
+    relay_degree_two_bypasses: int = 0
+    simplification_calls: int = 0
     topology_rebuild_attempts: int = 0
     topology_rebuild_successes: int = 0
+    routing_search_calls: int = 0
+    negotiated_routing_search_calls: int = 0
+    routing_search_failures: int = 0
+    routing_queue_pops: int = 0
     epochs_completed: int = 0
     epochs_since_last_improvement: int = 0
     best_objective_history: list[Objective] = field(default_factory=list)
@@ -102,8 +143,16 @@ class _MutableOptimizationStats:
             swap_attempts=self.swap_attempts,
             swaps_accepted=self.swaps_accepted,
             relay_deletions=self.relay_deletions,
+            relay_isolated_deletions=self.relay_isolated_deletions,
+            relay_leaf_deletions=self.relay_leaf_deletions,
+            relay_degree_two_bypasses=self.relay_degree_two_bypasses,
+            simplification_calls=self.simplification_calls,
             topology_rebuild_attempts=self.topology_rebuild_attempts,
             topology_rebuild_successes=self.topology_rebuild_successes,
+            routing_search_calls=self.routing_search_calls,
+            negotiated_routing_search_calls=self.negotiated_routing_search_calls,
+            routing_search_failures=self.routing_search_failures,
+            routing_queue_pops=self.routing_queue_pops,
             epochs_completed=self.epochs_completed,
             epochs_since_last_improvement=self.epochs_since_last_improvement,
             best_objective_history=tuple(self.best_objective_history),
@@ -126,6 +175,184 @@ def _complete_epoch(
     else:
         stats.epochs_since_last_improvement += 1
     stats.best_objective_history.append(best_score)
+
+
+def _simplify_feasible_topology_observed(
+    state: exact._JointState,
+    topology: incremental._FeasibleTopology,
+    stats: _MutableOptimizationStats,
+) -> incremental._FeasibleTopology:
+    """Decision-equivalent relay simplifier that classifies each deletion cause."""
+
+    stats.simplification_calls += 1
+    wires: dict[incremental.WireKey, wire_routing.RoutedWire] = {
+        incremental._wire_key(wire): wire for wire in topology.routing.wires
+    }
+    incident: dict[int, set[incremental.WireKey]] = {}
+    for key, wire in wires.items():
+        incident.setdefault(wire.source_entity, set()).add(key)
+        incident.setdefault(wire.target_entity, set()).add(key)
+
+    queue = sorted(state.relay_positions, reverse=True)
+    queued = set(queue)
+
+    def enqueue(object_id: int) -> None:
+        if object_id in state.relay_positions and object_id not in queued:
+            queue.append(object_id)
+            queued.add(object_id)
+
+    def remove_wire(key: incremental.WireKey) -> wire_routing.RoutedWire:
+        wire = wires.pop(key)
+        incident.setdefault(wire.source_entity, set()).discard(key)
+        incident.setdefault(wire.target_entity, set()).discard(key)
+        return wire
+
+    def add_wire(wire: wire_routing.RoutedWire) -> None:
+        key = incremental._wire_key(wire)
+        if key in wires:
+            return
+        wires[key] = wire
+        incident.setdefault(wire.source_entity, set()).add(key)
+        incident.setdefault(wire.target_entity, set()).add(key)
+
+    while queue:
+        relay_id = queue.pop()
+        queued.discard(relay_id)
+        if relay_id not in state.relay_positions:
+            continue
+        if relay_id in state.fixed_objects:
+            continue
+        relay_edges = tuple(incident.get(relay_id, ()))
+        if len(relay_edges) > 2:
+            continue
+
+        if len(relay_edges) == 0:
+            del state.relay_positions[relay_id]
+            del state.relay_groups[relay_id]
+            stats.relay_deletions += 1
+            stats.relay_isolated_deletions += 1
+            continue
+
+        if len(relay_edges) == 1:
+            wire = remove_wire(relay_edges[0])
+            remote, _connector = incremental._remote_endpoint(wire, relay_id)
+            del state.relay_positions[relay_id]
+            del state.relay_groups[relay_id]
+            stats.relay_deletions += 1
+            stats.relay_leaf_deletions += 1
+            enqueue(remote)
+            continue
+
+        first = wires[relay_edges[0]]
+        second = wires[relay_edges[1]]
+        if first.color is not second.color:
+            continue
+        left_entity, left_connector = incremental._remote_endpoint(first, relay_id)
+        right_entity, right_connector = incremental._remote_endpoint(second, relay_id)
+        if (
+            incremental._distance(
+                state.object_position(left_entity),
+                state.object_position(right_entity),
+            )
+            > state.safe_span + incremental._EPSILON
+        ):
+            continue
+
+        remove_wire(relay_edges[0])
+        remove_wire(relay_edges[1])
+        if (left_entity, left_connector) != (right_entity, right_connector):
+            add_wire(
+                wire_routing.RoutedWire(
+                    left_entity,
+                    left_connector,
+                    right_entity,
+                    right_connector,
+                    first.color,
+                )
+            )
+        del state.relay_positions[relay_id]
+        del state.relay_groups[relay_id]
+        stats.relay_deletions += 1
+        stats.relay_degree_two_bypasses += 1
+        enqueue(left_entity)
+        enqueue(right_entity)
+
+    routing = wire_routing.RoutingPlan(
+        relays=tuple(
+            relay for relay in topology.routing.relays if relay.entity_id in state.relay_positions
+        ),
+        wires=tuple(wires[key] for key in sorted(wires, key=str)),
+    )
+    return incremental._FeasibleTopology.build(state, routing)
+
+
+@contextmanager
+def _observe_helper_work(stats: _MutableOptimizationStats) -> Iterator[None]:
+    """Count helper work while preserving helper return values and call ordering."""
+
+    with _HELPER_OBSERVATION_LOCK:
+        original_find = incremental._find_relay_chain
+        original_find_negotiated = incremental._find_negotiated_relay_chain
+        original_heappop = incremental.heappop
+        original_simplify = incremental._simplify_feasible_topology
+        stats_token = _ACTIVE_WORK_STATS.set(stats)
+
+        def counting_heappop(heap: list[Any]) -> Any:
+            active = _ACTIVE_WORK_STATS.get()
+            if active is not None and _ROUTING_SEARCH_DEPTH.get() > 0:
+                active.routing_queue_pops += 1
+            return original_heappop(heap)
+
+        def counting_find(*args: Any, **kwargs: Any) -> Any:
+            active = _ACTIVE_WORK_STATS.get()
+            if active is None:
+                return original_find(*args, **kwargs)
+            active.routing_search_calls += 1
+            depth_token = _ROUTING_SEARCH_DEPTH.set(_ROUTING_SEARCH_DEPTH.get() + 1)
+            try:
+                result = original_find(*args, **kwargs)
+            finally:
+                _ROUTING_SEARCH_DEPTH.reset(depth_token)
+            if result is None:
+                active.routing_search_failures += 1
+            return result
+
+        def counting_find_negotiated(*args: Any, **kwargs: Any) -> Any:
+            active = _ACTIVE_WORK_STATS.get()
+            if active is None:
+                return original_find_negotiated(*args, **kwargs)
+            active.routing_search_calls += 1
+            active.negotiated_routing_search_calls += 1
+            depth_token = _ROUTING_SEARCH_DEPTH.set(_ROUTING_SEARCH_DEPTH.get() + 1)
+            try:
+                result = original_find_negotiated(*args, **kwargs)
+            finally:
+                _ROUTING_SEARCH_DEPTH.reset(depth_token)
+            if result is None:
+                active.routing_search_failures += 1
+            return result
+
+        def counting_simplify(
+            state: exact._JointState,
+            topology: incremental._FeasibleTopology,
+        ) -> incremental._FeasibleTopology:
+            active = _ACTIVE_WORK_STATS.get()
+            if active is None:
+                return original_simplify(state, topology)
+            return _simplify_feasible_topology_observed(state, topology, active)
+
+        setattr(incremental, "heappop", counting_heappop)
+        setattr(incremental, "_find_relay_chain", counting_find)
+        setattr(incremental, "_find_negotiated_relay_chain", counting_find_negotiated)
+        setattr(incremental, "_simplify_feasible_topology", counting_simplify)
+        try:
+            yield
+        finally:
+            setattr(incremental, "_simplify_feasible_topology", original_simplify)
+            setattr(incremental, "_find_negotiated_relay_chain", original_find_negotiated)
+            setattr(incremental, "_find_relay_chain", original_find)
+            setattr(incremental, "heappop", original_heappop)
+            _ACTIVE_WORK_STATS.reset(stats_token)
 
 
 def _anneal_feasible_observed(
@@ -316,11 +543,10 @@ def _anneal_feasible_observed(
                 )
                 for item, position in targets.items()
             )
-            delta = (
-                wire_delta
-                + compact_delta
-                + incremental._ENVELOPE_OVERFLOW_WEIGHT * overflow_delta
+            weighted_overflow_delta = (
+                incremental._ENVELOPE_OVERFLOW_WEIGHT * overflow_delta
             )
+            delta = wire_delta + compact_delta + weighted_overflow_delta
             if delta > 0 and rng.random() >= exp(-delta / temperature):
                 stats.metropolis_rejections += 1
                 continue
@@ -341,9 +567,7 @@ def _anneal_feasible_observed(
             if other is not None:
                 stats.swaps_accepted += 1
 
-        relay_count_before = len(state.relay_positions)
         topology = incremental._simplify_feasible_topology(state, topology)
-        stats.relay_deletions += relay_count_before - len(state.relay_positions)
         if epoch_end in topology_rebuilds and epoch_end < iterations:
             can_rebuild = not bool(state.fixed_objects & state.relay_positions.keys())
             if can_rebuild:
@@ -385,14 +609,12 @@ def _finish(
     return ObservedLayoutOptimizationResult(result, stats.snapshot())
 
 
-def optimize_physical_layout_observed(
+def _optimize_physical_layout_observed_inner(
     problem: LayoutOptimizationProblem,
     *,
     options: PlacementOptions,
+    stats: _MutableOptimizationStats,
 ) -> ObservedLayoutOptimizationResult:
-    """Optimize with the production decisions while collecting an independent stats result."""
-
-    options.validate()
     validated = routed._validated_embedding(problem)
     before = routed.physical_layout_metrics(problem.layout)
     movable_count = sum(
@@ -401,7 +623,6 @@ def optimize_physical_layout_observed(
     proposal_budget = options.iterations
     if proposal_budget is None:
         proposal_budget = 0 if movable_count < 6 else min(20_000, 30 * movable_count)
-    stats = _MutableOptimizationStats()
     if options.iterations == 0:
         return _finish(
             LayoutOptimizationResult(problem.layout, before, before, proposal_budget),
@@ -489,6 +710,21 @@ def optimize_physical_layout_observed(
         ),
         stats,
     )
+
+
+def optimize_physical_layout_observed(
+    problem: LayoutOptimizationProblem,
+    *,
+    options: PlacementOptions,
+) -> ObservedLayoutOptimizationResult:
+    """Optimize with production-equivalent decisions while collecting observational stats."""
+
+    options.validate()
+    stats = _MutableOptimizationStats()
+    if options.iterations == 0:
+        return _optimize_physical_layout_observed_inner(problem, options=options, stats=stats)
+    with _observe_helper_work(stats):
+        return _optimize_physical_layout_observed_inner(problem, options=options, stats=stats)
 
 
 __all__ = [
