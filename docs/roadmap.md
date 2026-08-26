@@ -106,6 +106,13 @@ Prioritized experiments:
 4. targeted local repair around hard anchors and routing bottlenecks;
 5. only after measurement, lower-level performance work in occupancy, routing indexes, and proposal evaluation.
 
+### Experiment record
+
+- **Rejected: adaptive coarse retopology.** In 12 paired runs it produced 0 better / 12 equal / 0 worse physical objectives while adding four rebuilds per run and increasing routing work/runtime.
+- **Rejected: terminal + one adjacent relay translation.** In 18 paired runs it produced 0 better / 18 equal / 0 worse objectives. It attempted 13,096 rescues and accepted none; taut safe-span chains simply moved the over-span violation to the relay's far side.
+- **Rejected: seven-step reach backoff.** It produced 0 better / 17 equal / 1 worse objectives. It reduced reach rejections on some unconstrained cases but added 7-18% runtime there and 2.6-4.5x runtime on taut/fixed cases.
+- **Current: analytical implementation reach clipping.** Intersect incident-wire reach disks along the original proposal direction, then test only the grid sites bracketing the resulting continuous boundary. Relay proposals are excluded.
+
 ### C acceptance
 
 - Every accepted optimization is benchmarked across multiple seeds.
@@ -245,4 +252,4 @@ Milestone G should begin as soon as a small useful random-program generator exis
 
 ## Current step
 
-Begin **Milestone C** with adaptive coarse retopology at the existing safe epoch boundary. Preserve the fixed-fraction rebuild schedule as a baseline fallback, add conservative triggers for sustained objective stagnation or wire-reach pressure, and keep a cooldown between adaptive rebuilds. Use the Milestone B counters and the Milestone A corpus to compare quality and routing work across seeds before accepting broader proposal or compound-move changes.
+Continue **Milestone C** with analytical implementation reach clipping. Compare it against the current proposal generator on identical seeds and budgets. Accept it only if it improves the lexicographic physical objective or materially reduces wasted reach rejection without the broad runtime penalty observed in discrete backoff; otherwise remove it and move on to proposal-pool/local-repair strategies.

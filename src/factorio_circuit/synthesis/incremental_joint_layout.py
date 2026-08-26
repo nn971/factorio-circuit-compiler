@@ -32,10 +32,11 @@ evaluation remains local-degree and the annealer never leaves the feasible regio
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from heapq import heappop, heappush
-from math import ceil, exp, floor, hypot
+from math import ceil, exp, floor, hypot, sqrt
 from random import Random
 
 from factorio_circuit.blueprint import routing as wire_routing
@@ -1150,6 +1151,111 @@ def refine_incremental_joint_layout(
     return exact.JointLayoutResult(dict(state.positions), routing)
 
 
+def _maximum_reach_safe_fraction(
+    state: exact._JointState,
+    topology: _FeasibleTopology,
+    object_id: int,
+    desired: Position,
+) -> float:
+    """Return the largest continuous fraction of one move that preserves incident-wire reach."""
+
+    current = state.object_position(object_id)
+    dx = desired[0] - current[0]
+    dy = desired[1] - current[1]
+    quadratic = dx * dx + dy * dy
+    if quadratic <= _EPSILON:
+        return 0.0
+
+    maximum = 1.0
+    radius_squared = state.safe_span * state.safe_span
+    for wire in topology.incident_wires.get(object_id, ()):
+        remote = wire.target_entity if wire.source_entity == object_id else wire.source_entity
+        remote_position = state.object_position(remote)
+        rx = current[0] - remote_position[0]
+        ry = current[1] - remote_position[1]
+        linear = 2.0 * (dx * rx + dy * ry)
+        constant = rx * rx + ry * ry - radius_squared
+        discriminant = max(0.0, linear * linear - 4.0 * quadratic * constant)
+        positive_root = (-linear + sqrt(discriminant)) / (2.0 * quadratic)
+        maximum = min(maximum, positive_root)
+    return min(1.0, max(0.0, maximum))
+
+
+def _bracketing_axis_values(values: tuple[float, ...], coordinate: float) -> tuple[float, ...]:
+    """Return at most two sorted grid coordinates surrounding one continuous coordinate."""
+
+    if not values:
+        return ()
+    index = bisect_left(values, coordinate)
+    candidates: set[float] = set()
+    if index < len(values):
+        candidates.add(values[index])
+    if index > 0:
+        candidates.add(values[index - 1])
+    return tuple(sorted(candidates))
+
+
+def _reach_clipped_target(
+    state: exact._JointState,
+    topology: _FeasibleTopology,
+    object_id: int,
+    desired: Position,
+    occupancy: _SpatialOccupancy,
+    grid: base_placement._GridGeometry,
+    unit_sites: set[Position],
+    wide_sites: set[Position],
+) -> Position | None:
+    """Clip an over-reaching implementation proposal to its continuous reach boundary.
+
+    Relay proposals are intentionally excluded: the relay corpus shows that taut chains rarely have
+    a useful single-relay displacement. For an implementation entity, incident wire disks bound the
+    same proposed direction analytically. Only the at-most-four grid sites bracketing that clipped
+    continuous point are examined, so failed repair remains local and bounded.
+    """
+
+    if object_id in state.relay_positions:
+        return None
+    current = state.object_position(object_id)
+    fraction = _maximum_reach_safe_fraction(state, topology, object_id, desired)
+    if fraction <= _EPSILON or fraction >= 1.0 - _EPSILON:
+        return None
+    clipped = (
+        current[0] + (desired[0] - current[0]) * fraction,
+        current[1] + (desired[1] - current[1]) * fraction,
+    )
+    entity = state.circuit.entity_by_id(object_id)
+    x_axis = grid.unit_x_positions if isinstance(entity, ConstantCombinator) else grid.x_positions
+    x_values = _bracketing_axis_values(x_axis, clipped[0])
+    y_values = _bracketing_axis_values(grid.y_positions, clipped[1])
+    displacement = (desired[0] - current[0], desired[1] - current[1])
+    candidates = sorted(
+        ((x, y) for x in x_values for y in y_values),
+        key=lambda position: (
+            _distance(position, desired),
+            -(
+                (position[0] - current[0]) * displacement[0]
+                + (position[1] - current[1]) * displacement[1]
+            ),
+            position,
+        ),
+    )
+    for candidate in candidates:
+        if candidate == current:
+            continue
+        progress = (candidate[0] - current[0]) * displacement[0] + (
+            candidate[1] - current[1]
+        ) * displacement[1]
+        if progress <= _EPSILON:
+            continue
+        if not _position_is_legal(state, object_id, candidate, unit_sites, wide_sites):
+            continue
+        if occupancy.overlaps(object_id, candidate, ignored={object_id}):
+            continue
+        if topology.proposal_delta(state, {object_id: candidate}) is not None:
+            return candidate
+    return None
+
+
 def _anneal_feasible(
     state: exact._JointState,
     topology: _FeasibleTopology,
@@ -1282,6 +1388,21 @@ def _anneal_feasible(
             if other is not None:
                 targets[other] = current
             wire_delta = topology.proposal_delta(state, targets)
+            if wire_delta is None and other is None and object_id not in state.relay_positions:
+                clipped_target = _reach_clipped_target(
+                    state,
+                    topology,
+                    object_id,
+                    target,
+                    occupancy,
+                    grid,
+                    unit_sites,
+                    wide_sites,
+                )
+                if clipped_target is not None:
+                    target = clipped_target
+                    targets = {object_id: target}
+                    wire_delta = topology.proposal_delta(state, targets)
             if wire_delta is None:
                 continue
 
