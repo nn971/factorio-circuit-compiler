@@ -146,7 +146,8 @@ def _ensure_baseline(root: Path) -> None:
     if check.returncode != 0:
         raise SystemExit(
             "Frozen pre-C baseline is not available in this clone. Fetch commit "
-            f"{PRE_C_BASELINE} explicitly (for example `git fetch origin {PRE_C_BASELINE}`) and retry."
+            f"{PRE_C_BASELINE} explicitly "
+            f"(for example `git fetch origin {PRE_C_BASELINE}`) and retry."
         )
 
 
