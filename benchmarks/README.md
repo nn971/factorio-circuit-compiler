@@ -9,12 +9,15 @@ rather than teaching one small language feature.
 optimizer. Its cases are deliberately synthetic so that placement/routing behavior can be studied
 without coupling the benchmark to one compiler lowering strategy or application.
 
-The current first tranche covers:
+The current corpus covers:
 
 - sparse independent implementation entities;
 - many independent long relay chains;
 - one high-degree shared net with a shared long trunk;
-- one long routed span whose implementation endpoints are fixed anchors.
+- one long routed span whose implementation endpoints are fixed anchors;
+- a one-tile routing corridor enforced by forbidden regions;
+- mixed 1x1 constant-combinator and 2x1 arithmetic-combinator footprints;
+- an anchor-heavy perimeter interface with fixed public terminals around movable body logic.
 
 Run one deterministic seed with:
 
@@ -33,7 +36,7 @@ layout, and rejects any result whose lexicographic `(relay count, area, wire len
 worse than its valid input. Multi-seed runs report best/worst objectives and median physical metrics.
 The corpus will grow along the structural dimensions recorded in `docs/roadmap.md`.
 
-Cheap CI tests may validate that corpus fixtures themselves are well formed and preserve exact
+Cheap CI tests validate that nontrivial corpus fixtures themselves are well formed and preserve exact
 zero-budget pass-through behavior. Full optimization sweeps remain opt-in.
 
 ## Heavyweight end-to-end benchmark
