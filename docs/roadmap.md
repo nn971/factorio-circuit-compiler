@@ -106,6 +106,14 @@ Prioritized experiments:
 4. targeted local repair around hard anchors and routing bottlenecks;
 5. only after measurement, lower-level performance work in occupancy, routing indexes, and proposal evaluation.
 
+### Experiment record
+
+- **Rejected: adaptive coarse retopology.** In 12 paired runs it produced 0 better / 12 equal / 0 worse physical objectives while adding four rebuilds per run and increasing routing work/runtime.
+- **Rejected: terminal + one adjacent relay translation.** In 18 paired runs it produced 0 better / 18 equal / 0 worse objectives. It attempted 13,096 rescues and accepted none because taut safe-span chains transferred the violation to the relay's far side.
+- **Rejected: seven-step reach backoff.** In 18 paired runs it produced 0 better / 17 equal / 1 worse objectives. It reduced some reach rejections but made taut/fixed cases 2.6x-4.5x slower.
+- **Rejected: analytical implementation reach clipping.** In 18 paired runs it produced 0 better / 15 equal / 3 worse objectives. It cheaply removed many reach rejections, but every clustered sparse-cut seed became lexicographically worse by trading larger area for shorter wire.
+- **Accepted: incremental exact mid-epoch best tracking.** Full rescoring after every accepted move found transient lexicographic improvements without changing the search trajectory, but cost roughly 1.7x-2.3x on active cases. The retained implementation samples every accepted move while maintaining footprint extrema with lazy heaps and wire length through incident-wire deltas. After canonicalizing hash-sensitive wire and relay-edge traversals, an 8-seed × 6-case paired acceptance sweep produced 3 better / 45 equal / 0 worse outcomes with identical trajectory counters and a 1.014x median runtime ratio. All three gains were clustered sparse-cut cases, improving wire length at unchanged relay count and occupied area.
+
 ### C acceptance
 
 - Every accepted optimization is benchmarked across multiple seeds.
@@ -245,4 +253,4 @@ Milestone G should begin as soon as a small useful random-program generator exis
 
 ## Current step
 
-Begin **Milestone C** with adaptive coarse retopology at the existing safe epoch boundary. Preserve the fixed-fraction rebuild schedule as a baseline fallback, add conservative triggers for sustained objective stagnation or wire-reach pressure, and keep a cooldown between adaptive rebuilds. Use the Milestone B counters and the Milestone A corpus to compare quality and routing work across seeds before accepting broader proposal or compound-move changes.
+Continue **Milestone C** from the deterministic, incrementally scored annealer. Use the observability corpus to choose the next quality experiment—prefer adaptive proposal selection or targeted local repair where measured rejection/stagnation data identifies a concrete bottleneck. Keep the same paired, multi-seed, no-worse acceptance discipline used for exact mid-epoch best tracking.

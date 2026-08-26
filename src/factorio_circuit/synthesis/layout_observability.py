@@ -222,7 +222,7 @@ def _simplify_feasible_topology_observed(
             continue
         if relay_id in state.fixed_objects:
             continue
-        relay_edges = tuple(incident.get(relay_id, ()))
+        relay_edges = tuple(sorted(incident.get(relay_id, ()), key=incremental._wire_key_sort_key))
         if len(relay_edges) > 2:
             continue
 
@@ -409,6 +409,11 @@ def _anneal_feasible_observed(
     best_relays = dict(state.relay_positions)
     best_relay_groups = dict(state.relay_groups)
     best_routing = topology.routing
+    exact_tracker = (
+        incremental._ExactObjectiveTracker.build(state, topology)
+        if incremental._TRACK_EXACT_ACCEPTED_MOVES
+        else None
+    )
     topology_rebuilds = {
         min(
             iterations,
@@ -450,6 +455,7 @@ def _anneal_feasible_observed(
             _complete_epoch(stats, best_score=best_score, improved=False)
             continue
 
+        epoch_improved = False
         for step in range(epoch_start, epoch_end):
             stats.proposals_attempted += 1
             progress = step / max(1, iterations - 1)
@@ -531,6 +537,11 @@ def _anneal_feasible_observed(
             if wire_delta is None:
                 stats.wire_reach_rejections += 1
                 continue
+            exact_wire_delta = (
+                exact_tracker.proposal_wire_length_delta(state, topology, targets)
+                if exact_tracker is not None
+                else 0.0
+            )
 
             compact_delta = sum(
                 exact._compactness(position, center)
@@ -569,6 +580,22 @@ def _anneal_feasible_observed(
             if other is not None:
                 stats.swaps_accepted += 1
 
+            if exact_tracker is not None:
+                exact_tracker.accept_move(state, targets, exact_wire_delta)
+                accepted_score = incremental._accepted_move_exact_score(
+                    state,
+                    topology,
+                    center,
+                    exact_tracker,
+                )
+                if accepted_score < best_score:
+                    best_score = accepted_score
+                    best_positions = dict(state.positions)
+                    best_relays = dict(state.relay_positions)
+                    best_relay_groups = dict(state.relay_groups)
+                    best_routing = topology.routing
+                    epoch_improved = True
+
         topology = incremental._simplify_feasible_topology(state, topology)
         if epoch_end in topology_rebuilds and epoch_end < iterations:
             can_rebuild = not bool(state.fixed_objects & state.relay_positions.keys())
@@ -585,14 +612,16 @@ def _anneal_feasible_observed(
                 stats.topology_rebuild_successes += 1
         occupancy = incremental._SpatialOccupancy.build(state)
         score = incremental._exact_score(state, topology, center)
-        improved = score < best_score
-        if improved:
+        if score < best_score:
             best_score = score
             best_positions = dict(state.positions)
             best_relays = dict(state.relay_positions)
             best_relay_groups = dict(state.relay_groups)
             best_routing = topology.routing
-        _complete_epoch(stats, best_score=best_score, improved=improved)
+            epoch_improved = True
+        if exact_tracker is not None:
+            exact_tracker = incremental._ExactObjectiveTracker.build(state, topology)
+        _complete_epoch(stats, best_score=best_score, improved=epoch_improved)
 
     state.positions.clear()
     state.positions.update(best_positions)
