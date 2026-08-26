@@ -1,4 +1,4 @@
-"""Observational routed-layout optimization without changing annealer decisions."""
+"""Observational routed-layout optimization without changing the production annealer."""
 
 from __future__ import annotations
 
@@ -64,10 +64,6 @@ class OptimizationStats:
     simplification_calls: int = 0
     topology_rebuild_attempts: int = 0
     topology_rebuild_successes: int = 0
-    scheduled_topology_rebuild_attempts: int = 0
-    adaptive_topology_rebuild_attempts: int = 0
-    wire_reach_pressure_rebuild_attempts: int = 0
-    stagnation_rebuild_attempts: int = 0
     routing_search_calls: int = 0
     negotiated_routing_search_calls: int = 0
     routing_search_failures: int = 0
@@ -93,14 +89,6 @@ class OptimizationStats:
             + self.relay_leaf_deletions
             + self.relay_degree_two_bypasses
         )
-
-    @property
-    def classified_topology_rebuild_attempts(self) -> int:
-        return self.scheduled_topology_rebuild_attempts + self.adaptive_topology_rebuild_attempts
-
-    @property
-    def classified_adaptive_rebuild_attempts(self) -> int:
-        return self.wire_reach_pressure_rebuild_attempts + self.stagnation_rebuild_attempts
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,10 +120,6 @@ class _MutableOptimizationStats:
     simplification_calls: int = 0
     topology_rebuild_attempts: int = 0
     topology_rebuild_successes: int = 0
-    scheduled_topology_rebuild_attempts: int = 0
-    adaptive_topology_rebuild_attempts: int = 0
-    wire_reach_pressure_rebuild_attempts: int = 0
-    stagnation_rebuild_attempts: int = 0
     routing_search_calls: int = 0
     negotiated_routing_search_calls: int = 0
     routing_search_failures: int = 0
@@ -165,10 +149,6 @@ class _MutableOptimizationStats:
             simplification_calls=self.simplification_calls,
             topology_rebuild_attempts=self.topology_rebuild_attempts,
             topology_rebuild_successes=self.topology_rebuild_successes,
-            scheduled_topology_rebuild_attempts=self.scheduled_topology_rebuild_attempts,
-            adaptive_topology_rebuild_attempts=self.adaptive_topology_rebuild_attempts,
-            wire_reach_pressure_rebuild_attempts=self.wire_reach_pressure_rebuild_attempts,
-            stagnation_rebuild_attempts=self.stagnation_rebuild_attempts,
             routing_search_calls=self.routing_search_calls,
             negotiated_routing_search_calls=self.negotiated_routing_search_calls,
             routing_search_failures=self.routing_search_failures,
@@ -379,20 +359,6 @@ def _observe_helper_work(stats: _MutableOptimizationStats) -> Iterator[None]:
             _ACTIVE_WORK_STATS.reset(stats_token)
 
 
-def _record_rebuild_attempt(stats: _MutableOptimizationStats, reason: str) -> None:
-    stats.topology_rebuild_attempts += 1
-    if reason == "scheduled":
-        stats.scheduled_topology_rebuild_attempts += 1
-        return
-    stats.adaptive_topology_rebuild_attempts += 1
-    if reason == "wire-reach-pressure":
-        stats.wire_reach_pressure_rebuild_attempts += 1
-    elif reason == "stagnation":
-        stats.stagnation_rebuild_attempts += 1
-    else:
-        raise AssertionError(f"unknown adaptive retopology reason {reason!r}")
-
-
 def _anneal_feasible_observed(
     state: exact._JointState,
     topology: incremental._FeasibleTopology,
@@ -451,8 +417,6 @@ def _anneal_feasible_observed(
         )
         for fraction in incremental._ANNEAL_REBUILD_FRACTIONS
     }
-    epochs_since_improvement = 0
-    epochs_since_rebuild = incremental._ADAPTIVE_REBUILD_COOLDOWN_EPOCHS
 
     for epoch_start in range(0, iterations, incremental._EPOCH_PROPOSALS):
         epoch_end = min(iterations, epoch_start + incremental._EPOCH_PROPOSALS)
@@ -486,7 +450,6 @@ def _anneal_feasible_observed(
             _complete_epoch(stats, best_score=best_score, improved=False)
             continue
 
-        epoch_wire_reach_rejections = 0
         for step in range(epoch_start, epoch_end):
             stats.proposals_attempted += 1
             progress = step / max(1, iterations - 1)
@@ -567,7 +530,6 @@ def _anneal_feasible_observed(
             wire_delta = topology.proposal_delta(state, targets)
             if wire_delta is None:
                 stats.wire_reach_rejections += 1
-                epoch_wire_reach_rejections += 1
                 continue
 
             compact_delta = sum(
@@ -608,19 +570,10 @@ def _anneal_feasible_observed(
                 stats.swaps_accepted += 1
 
         topology = incremental._simplify_feasible_topology(state, topology)
-        rebuild_reason = incremental._anneal_rebuild_reason(
-            epoch_end=epoch_end,
-            iterations=iterations,
-            scheduled_rebuilds=topology_rebuilds,
-            epochs_since_improvement=epochs_since_improvement,
-            epochs_since_rebuild=epochs_since_rebuild,
-            epoch_proposals=epoch_end - epoch_start,
-            epoch_wire_reach_rejections=epoch_wire_reach_rejections,
-        )
-        if rebuild_reason is not None:
+        if epoch_end in topology_rebuilds and epoch_end < iterations:
             can_rebuild = not bool(state.fixed_objects & state.relay_positions.keys())
             if can_rebuild:
-                _record_rebuild_attempt(stats, rebuild_reason)
+                stats.topology_rebuild_attempts += 1
             prior_topology = topology
             topology = incremental._try_rebuild_annealed_topology(
                 state,
@@ -630,9 +583,6 @@ def _anneal_feasible_observed(
             )
             if can_rebuild and topology is not prior_topology:
                 stats.topology_rebuild_successes += 1
-            epochs_since_rebuild = 0
-        else:
-            epochs_since_rebuild += 1
         occupancy = incremental._SpatialOccupancy.build(state)
         score = incremental._exact_score(state, topology, center)
         improved = score < best_score
@@ -642,9 +592,6 @@ def _anneal_feasible_observed(
             best_relays = dict(state.relay_positions)
             best_relay_groups = dict(state.relay_groups)
             best_routing = topology.routing
-            epochs_since_improvement = 0
-        else:
-            epochs_since_improvement += 1
         _complete_epoch(stats, best_score=best_score, improved=improved)
 
     state.positions.clear()

@@ -25,10 +25,9 @@ Compiler-selected I/O markers may participate in that compaction; after annealin
 to ordered columns on the exact compacted perimeter and the shared-net topology is rebuilt at this
 coarse boundary. Explicit user anchors never participate in either move.
 
-A small fixed number of epoch boundaries try a full shared-net retopology, and additional rebuilds
-may be triggered by sustained objective stagnation or wire-reach pressure after a cooldown. Rebuilds
-remain outside the proposal hot loop and restore the prior explicit topology on failure, so ordinary
-move evaluation stays local-degree and the annealer never leaves the feasible region.
+A small fixed number of epoch boundaries also try a full shared-net retopology. These rebuilds are
+outside the proposal hot loop and restore the prior explicit topology on failure, so ordinary move
+evaluation remains local-degree and the annealer never leaves the feasible region.
 """
 
 from __future__ import annotations
@@ -53,10 +52,6 @@ _SLACK_START = 0.85
 _FINAL_ENVELOPE_SCALE = 0.40
 _ENVELOPE_OVERFLOW_WEIGHT = 4.0
 _ANNEAL_REBUILD_FRACTIONS = (0.25, 0.50, 0.75)
-_ADAPTIVE_REBUILD_STAGNATION_EPOCHS = 2
-_ADAPTIVE_REBUILD_COOLDOWN_EPOCHS = 2
-_ADAPTIVE_REBUILD_REACH_REJECTION_NUMERATOR = 1
-_ADAPTIVE_REBUILD_REACH_REJECTION_DENOMINATOR = 4
 _BOOTSTRAP_EXPANSIONS = 4
 _BOOTSTRAP_ORDER_ATTEMPTS = 3
 _NEGOTIATED_ROUTING_ROUNDS = 8
@@ -1155,35 +1150,6 @@ def refine_incremental_joint_layout(
     return exact.JointLayoutResult(dict(state.positions), routing)
 
 
-def _anneal_rebuild_reason(
-    *,
-    epoch_end: int,
-    iterations: int,
-    scheduled_rebuilds: set[int],
-    epochs_since_improvement: int,
-    epochs_since_rebuild: int,
-    epoch_proposals: int,
-    epoch_wire_reach_rejections: int,
-) -> str | None:
-    """Return the scheduled or adaptive reason for an epoch-boundary topology rebuild."""
-
-    if epoch_end >= iterations:
-        return None
-    if epoch_end in scheduled_rebuilds:
-        return "scheduled"
-    if epochs_since_rebuild < _ADAPTIVE_REBUILD_COOLDOWN_EPOCHS:
-        return None
-    if (
-        epoch_proposals > 0
-        and epoch_wire_reach_rejections * _ADAPTIVE_REBUILD_REACH_REJECTION_DENOMINATOR
-        >= epoch_proposals * _ADAPTIVE_REBUILD_REACH_REJECTION_NUMERATOR
-    ):
-        return "wire-reach-pressure"
-    if epochs_since_improvement >= _ADAPTIVE_REBUILD_STAGNATION_EPOCHS:
-        return "stagnation"
-    return None
-
-
 def _anneal_feasible(
     state: exact._JointState,
     topology: _FeasibleTopology,
@@ -1237,8 +1203,6 @@ def _anneal_feasible(
         )
         for fraction in _ANNEAL_REBUILD_FRACTIONS
     }
-    epochs_since_improvement = 0
-    epochs_since_rebuild = _ADAPTIVE_REBUILD_COOLDOWN_EPOCHS
 
     for epoch_start in range(0, iterations, _EPOCH_PROPOSALS):
         epoch_end = min(iterations, epoch_start + _EPOCH_PROPOSALS)
@@ -1271,7 +1235,6 @@ def _anneal_feasible(
         if not proposal_pool:
             continue
 
-        epoch_wire_reach_rejections = 0
         for step in range(epoch_start, epoch_end):
             progress = step / max(1, iterations - 1)
             normalized_temperature = 0.03**progress
@@ -1320,7 +1283,6 @@ def _anneal_feasible(
                 targets[other] = current
             wire_delta = topology.proposal_delta(state, targets)
             if wire_delta is None:
-                epoch_wire_reach_rejections += 1
                 continue
 
             compact_delta = sum(
@@ -1352,25 +1314,13 @@ def _anneal_feasible(
             topology.total_energy += wire_delta
 
         topology = _simplify_feasible_topology(state, topology)
-        rebuild_reason = _anneal_rebuild_reason(
-            epoch_end=epoch_end,
-            iterations=iterations,
-            scheduled_rebuilds=topology_rebuilds,
-            epochs_since_improvement=epochs_since_improvement,
-            epochs_since_rebuild=epochs_since_rebuild,
-            epoch_proposals=epoch_end - epoch_start,
-            epoch_wire_reach_rejections=epoch_wire_reach_rejections,
-        )
-        if rebuild_reason is not None:
+        if epoch_end in topology_rebuilds and epoch_end < iterations:
             topology = _try_rebuild_annealed_topology(
                 state,
                 topology,
                 grid,
                 diagnostics=diagnostics,
             )
-            epochs_since_rebuild = 0
-        else:
-            epochs_since_rebuild += 1
         occupancy = _SpatialOccupancy.build(state)
         score = _exact_score(state, topology, center)
         if score < best_score:
@@ -1379,9 +1329,6 @@ def _anneal_feasible(
             best_relays = dict(state.relay_positions)
             best_relay_groups = dict(state.relay_groups)
             best_routing = topology.routing
-            epochs_since_improvement = 0
-        else:
-            epochs_since_improvement += 1
 
     state.positions.clear()
     state.positions.update(best_positions)

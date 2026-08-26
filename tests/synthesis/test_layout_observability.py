@@ -20,12 +20,6 @@ def _options(*, iterations: int) -> PlacementOptions:
     )
 
 
-def _assert_rebuild_accounting(stats: OptimizationStats) -> None:
-    assert stats.classified_topology_rebuild_attempts == stats.topology_rebuild_attempts
-    assert stats.classified_adaptive_rebuild_attempts == stats.adaptive_topology_rebuild_attempts
-    assert stats.topology_rebuild_successes <= stats.topology_rebuild_attempts
-
-
 def test_observability_preserves_production_annealer_artifact() -> None:
     case = _shared_bus_case()
     options = _options(iterations=96)
@@ -49,7 +43,6 @@ def test_observability_accounts_for_every_proposal() -> None:
     assert stats.classified_relay_deletions == stats.relay_deletions
     assert stats.negotiated_routing_search_calls <= stats.routing_search_calls
     assert stats.routing_search_failures <= stats.routing_search_calls
-    _assert_rebuild_accounting(stats)
     assert len(stats.best_objective_history) == stats.epochs_completed + 1
     assert all(
         later <= earlier
@@ -74,9 +67,6 @@ def test_observability_reports_routing_search_work_without_changing_artifact() -
     assert stats.routing_search_calls > 0
     assert stats.routing_queue_pops >= stats.routing_search_calls
     assert stats.classified_relay_deletions == stats.relay_deletions
-    assert stats.scheduled_topology_rebuild_attempts == 1
-    assert stats.adaptive_topology_rebuild_attempts == 0
-    _assert_rebuild_accounting(stats)
 
 
 def test_zero_budget_observability_is_empty() -> None:
