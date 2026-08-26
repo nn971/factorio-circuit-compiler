@@ -1,4 +1,4 @@
-"""Compare epoch-only and accepted-move exact-best tracking on identical layout seeds."""
+"""Compare exact-best sampling strides on identical layout trajectories."""
 
 from __future__ import annotations
 
@@ -43,20 +43,16 @@ _TRAJECTORY_FIELDS = (
 
 
 @contextmanager
-def _mid_epoch_tracking_disabled() -> Iterator[None]:
-    original = incremental._accepted_move_exact_score
-
-    def disabled(*_args: Any, **_kwargs: Any) -> tuple[int, float, float]:
-        return (10**18, float("inf"), float("inf"))
-
-    incremental._accepted_move_exact_score = disabled
+def _exact_stride(stride: int) -> Iterator[None]:
+    original = incremental._EXACT_BEST_ACCEPTED_STRIDE
+    incremental._EXACT_BEST_ACCEPTED_STRIDE = stride
     try:
         yield
     finally:
-        incremental._accepted_move_exact_score = original
+        incremental._EXACT_BEST_ACCEPTED_STRIDE = original
 
 
-def _run(factory: CaseFactory, *, proposals: int, seed: int, tracking: bool):
+def _run(factory: CaseFactory, *, proposals: int, seed: int, stride: int):
     case = factory()
     options = PlacementOptions(
         anchor_io=False,
@@ -66,20 +62,17 @@ def _run(factory: CaseFactory, *, proposals: int, seed: int, tracking: bool):
         restarts=1,
     )
     started = perf_counter()
-    if tracking:
+    with _exact_stride(stride):
         observed = optimize_physical_layout_observed(case.problem, options=options)
-    else:
-        with _mid_epoch_tracking_disabled():
-            observed = optimize_physical_layout_observed(case.problem, options=options)
     elapsed = perf_counter() - started
     validate_physical_layout(replace(case.problem, layout=observed.optimization.layout))
     return observed, elapsed
 
 
-def _assert_same_trajectory(baseline: Any, tracked: Any) -> None:
+def _assert_same_trajectory(baseline: Any, candidate: Any) -> None:
     for field in _TRAJECTORY_FIELDS:
         left = getattr(baseline.stats, field)
-        right = getattr(tracked.stats, field)
+        right = getattr(candidate.stats, field)
         if left != right:
             raise AssertionError(f"trajectory counter {field} changed: {left} != {right}")
 
@@ -91,53 +84,52 @@ def _run_case(
     proposals: int,
     first_seed: int,
     seeds: int,
-) -> tuple[int, int, int]:
-    outcomes = {"better": 0, "equal": 0, "worse": 0}
-    relay_deltas: list[int] = []
-    area_deltas: list[float] = []
-    wire_deltas: list[float] = []
-    runtime_ratios: list[float] = []
-    accepted_moves: list[int] = []
+    strides: tuple[int, ...],
+) -> dict[int, tuple[int, int, int]]:
+    baseline_stride = 10**9
+    outcomes = {stride: {"better": 0, "equal": 0, "worse": 0} for stride in strides}
+    runtime_ratios = {stride: [] for stride in strides}
 
     for seed in range(first_seed, first_seed + seeds):
-        baseline, baseline_time = _run(factory, proposals=proposals, seed=seed, tracking=False)
-        tracked, tracked_time = _run(factory, proposals=proposals, seed=seed, tracking=True)
-        _assert_same_trajectory(baseline, tracked)
-        baseline_metrics = baseline.optimization.after
-        tracked_metrics = tracked.optimization.after
-        if tracked_metrics.objective < baseline_metrics.objective:
-            outcome = "better"
-        elif tracked_metrics.objective > baseline_metrics.objective:
-            outcome = "worse"
-        else:
-            outcome = "equal"
-        outcomes[outcome] += 1
-        if outcome == "worse":
-            raise AssertionError(
-                f"exact-best tracking lost a baseline state for {name} seed {seed}: "
-                f"{baseline_metrics.objective} -> {tracked_metrics.objective}"
-            )
-        relay_deltas.append(tracked_metrics.relay_count - baseline_metrics.relay_count)
-        area_deltas.append(tracked_metrics.occupied_area - baseline_metrics.occupied_area)
-        wire_deltas.append(tracked_metrics.wire_length - baseline_metrics.wire_length)
-        runtime_ratios.append(tracked_time / baseline_time if baseline_time else 1.0)
-        accepted_moves.append(tracked.stats.accepted_moves)
-        print(
-            f"{name} seed={seed}: baseline={baseline_metrics.objective}, "
-            f"tracked={tracked_metrics.objective}, outcome={outcome}, "
-            f"accepted={tracked.stats.accepted_moves}, "
-            f"runtime={baseline_time:.3f}s->{tracked_time:.3f}s"
+        baseline, baseline_time = _run(
+            factory, proposals=proposals, seed=seed, stride=baseline_stride
         )
+        baseline_metrics = baseline.optimization.after
+        for stride in strides:
+            candidate, candidate_time = _run(factory, proposals=proposals, seed=seed, stride=stride)
+            _assert_same_trajectory(baseline, candidate)
+            candidate_metrics = candidate.optimization.after
+            if candidate_metrics.objective < baseline_metrics.objective:
+                outcome = "better"
+            elif candidate_metrics.objective > baseline_metrics.objective:
+                outcome = "worse"
+            else:
+                outcome = "equal"
+            outcomes[stride][outcome] += 1
+            if outcome == "worse":
+                raise AssertionError(
+                    f"exact-best stride {stride} lost a baseline state for {name} seed {seed}: "
+                    f"{baseline_metrics.objective} -> {candidate_metrics.objective}"
+                )
+            runtime_ratios[stride].append(candidate_time / baseline_time if baseline_time else 1.0)
+            print(
+                f"{name} seed={seed} stride={stride}: baseline={baseline_metrics.objective}, "
+                f"candidate={candidate_metrics.objective}, outcome={outcome}, "
+                f"accepted={candidate.stats.accepted_moves}, "
+                f"runtime={baseline_time:.3f}s->{candidate_time:.3f}s"
+            )
 
-    outcome_text = "/".join(str(outcomes[key]) for key in ("better", "equal", "worse"))
-    print(
-        f"SUMMARY {name}: better/equal/worse={outcome_text}, "
-        f"median-delta(relays={median(relay_deltas):+.1f}, area={median(area_deltas):+.2f}, "
-        f"wire={median(wire_deltas):+.3f}), "
-        f"median-runtime-ratio={median(runtime_ratios):.3f}, "
-        f"median-accepted={median(accepted_moves):.1f}"
-    )
-    return outcomes["better"], outcomes["equal"], outcomes["worse"]
+    result: dict[int, tuple[int, int, int]] = {}
+    for stride in strides:
+        counts = outcomes[stride]
+        triple = (counts["better"], counts["equal"], counts["worse"])
+        result[stride] = triple
+        print(
+            f"SUMMARY {name} stride={stride}: better/equal/worse="
+            f"{triple[0]}/{triple[1]}/{triple[2]}, "
+            f"median-runtime-ratio={median(runtime_ratios[stride]):.3f}"
+        )
+    return result
 
 
 def main() -> None:
@@ -145,11 +137,15 @@ def main() -> None:
     parser.add_argument("--proposals", type=int, default=4096)
     parser.add_argument("--seed", type=int, default=0, help="first random seed")
     parser.add_argument("--seeds", type=int, default=3)
+    parser.add_argument("--strides", type=int, nargs="+", default=(8, 32, 128))
     args = parser.parse_args()
     if args.proposals <= 0:
         parser.error("--proposals must be positive")
     if args.seeds <= 0:
         parser.error("--seeds must be positive")
+    if any(stride <= 0 for stride in args.strides):
+        parser.error("--strides must be positive")
+    strides = tuple(dict.fromkeys(args.strides))
 
     cases: tuple[tuple[str, CaseFactory], ...] = (
         ("relay-forest", _relay_forest_case),
@@ -159,17 +155,23 @@ def main() -> None:
         ("perimeter-anchor", _perimeter_anchor_case),
         ("fixed-endpoint-span", _fixed_endpoint_span_case),
     )
-    totals = [0, 0, 0]
+    totals = {stride: [0, 0, 0] for stride in strides}
     for name, factory in cases:
-        result = _run_case(
+        case_results = _run_case(
             name,
             factory,
             proposals=args.proposals,
             first_seed=args.seed,
             seeds=args.seeds,
+            strides=strides,
         )
-        totals = [left + right for left, right in zip(totals, result, strict=True)]
-    print(f"OVERALL better/equal/worse={totals[0]}/{totals[1]}/{totals[2]}")
+        for stride, counts in case_results.items():
+            totals[stride] = [
+                left + right for left, right in zip(totals[stride], counts, strict=True)
+            ]
+    for stride in strides:
+        better, equal, worse = totals[stride]
+        print(f"OVERALL stride={stride}: better/equal/worse={better}/{equal}/{worse}")
 
 
 if __name__ == "__main__":

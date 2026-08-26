@@ -467,6 +467,7 @@ def test_annealer_retains_exact_best_state_seen_inside_an_epoch(
 
     monkeypatch.setattr(incremental, "_exact_score", exact_score)
     monkeypatch.setattr(incremental, "_accepted_move_exact_score", accepted_score)
+    monkeypatch.setattr(incremental, "_EXACT_BEST_ACCEPTED_STRIDE", 1)
 
     incremental._anneal_feasible(state, topology, options, grid)
 

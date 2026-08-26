@@ -46,6 +46,7 @@ from factorio_circuit.synthesis import placement as base_placement
 from factorio_circuit.synthesis.placement import PlacementOptions, Position
 
 _EPOCH_PROPOSALS = 256
+_EXACT_BEST_ACCEPTED_STRIDE = 32
 _EPSILON = 1e-9
 _RELAY_HALF_EXTENT = (0.5, 0.5)
 _SLACK_START = 0.85
@@ -1245,6 +1246,7 @@ def _anneal_feasible(
         if not proposal_pool:
             continue
 
+        accepted_since_exact = 0
         for step in range(epoch_start, epoch_end):
             progress = step / max(1, iterations - 1)
             normalized_temperature = 0.03**progress
@@ -1323,13 +1325,16 @@ def _anneal_feasible(
                 occupancy.add(other, current)
             topology.total_energy += wire_delta
 
-            accepted_score = _accepted_move_exact_score(state, topology, center)
-            if accepted_score < best_score:
-                best_score = accepted_score
-                best_positions = dict(state.positions)
-                best_relays = dict(state.relay_positions)
-                best_relay_groups = dict(state.relay_groups)
-                best_routing = topology.routing
+            accepted_since_exact += 1
+            if accepted_since_exact >= _EXACT_BEST_ACCEPTED_STRIDE:
+                accepted_since_exact = 0
+                accepted_score = _accepted_move_exact_score(state, topology, center)
+                if accepted_score < best_score:
+                    best_score = accepted_score
+                    best_positions = dict(state.positions)
+                    best_relays = dict(state.relay_positions)
+                    best_relay_groups = dict(state.relay_groups)
+                    best_routing = topology.routing
 
         topology = _simplify_feasible_topology(state, topology)
         if epoch_end in topology_rebuilds and epoch_end < iterations:

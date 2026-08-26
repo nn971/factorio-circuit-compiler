@@ -451,6 +451,7 @@ def _anneal_feasible_observed(
             continue
 
         epoch_improved = False
+        accepted_since_exact = 0
         for step in range(epoch_start, epoch_end):
             stats.proposals_attempted += 1
             progress = step / max(1, iterations - 1)
@@ -570,14 +571,17 @@ def _anneal_feasible_observed(
             if other is not None:
                 stats.swaps_accepted += 1
 
-            accepted_score = incremental._accepted_move_exact_score(state, topology, center)
-            if accepted_score < best_score:
-                best_score = accepted_score
-                best_positions = dict(state.positions)
-                best_relays = dict(state.relay_positions)
-                best_relay_groups = dict(state.relay_groups)
-                best_routing = topology.routing
-                epoch_improved = True
+            accepted_since_exact += 1
+            if accepted_since_exact >= incremental._EXACT_BEST_ACCEPTED_STRIDE:
+                accepted_since_exact = 0
+                accepted_score = incremental._accepted_move_exact_score(state, topology, center)
+                if accepted_score < best_score:
+                    best_score = accepted_score
+                    best_positions = dict(state.positions)
+                    best_relays = dict(state.relay_positions)
+                    best_relay_groups = dict(state.relay_groups)
+                    best_routing = topology.routing
+                    epoch_improved = True
 
         topology = incremental._simplify_feasible_topology(state, topology)
         if epoch_end in topology_rebuilds and epoch_end < iterations:
