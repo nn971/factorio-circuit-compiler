@@ -3,6 +3,39 @@
 `benchmarks/` contains workloads whose primary purpose is measuring or stress-testing the compiler,
 rather than teaching one small language feature.
 
+## Generic physical-layout corpus
+
+`benchmarks/layout_optimizer_corpus.py` is the opt-in structural corpus for the public routed-layout
+optimizer. Its cases are deliberately synthetic so that placement/routing behavior can be studied
+without coupling the benchmark to one compiler lowering strategy or application.
+
+The current first tranche covers:
+
+- sparse independent implementation entities;
+- many independent long relay chains;
+- one high-degree shared net with a shared long trunk;
+- one long routed span whose implementation endpoints are fixed anchors.
+
+Run one deterministic seed with:
+
+```bash
+uv run python -m benchmarks.layout_optimizer_corpus --proposals 256 --seed 0
+```
+
+Run a consecutive seed sweep with:
+
+```bash
+uv run python -m benchmarks.layout_optimizer_corpus --proposals 256 --seed 0 --seeds 8
+```
+
+Every run validates the supplied layout, optimizes through the same public API, validates the returned
+layout, and rejects any result whose lexicographic `(relay count, area, wire length)` objective is
+worse than its valid input. Multi-seed runs report best/worst objectives and median physical metrics.
+The corpus will grow along the structural dimensions recorded in `docs/roadmap.md`.
+
+Cheap CI tests may validate that corpus fixtures themselves are well formed and preserve exact
+zero-budget pass-through behavior. Full optimization sweeps remain opt-in.
+
 ## Heavyweight end-to-end benchmark
 
 `benchmarks/snake/` is the canonical large application/layout benchmark. It exercises periodic state,
