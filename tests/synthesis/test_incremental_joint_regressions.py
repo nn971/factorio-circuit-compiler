@@ -494,3 +494,39 @@ def test_annealer_retains_exact_best_state_seen_inside_an_epoch(
 
     assert first_accepted_positions
     assert state.positions == first_accepted_positions
+
+
+def test_reach_mobility_detects_taut_and_slack_relay_domains() -> None:
+    options = PlacementOptions(
+        iterations=0,
+        reserve_corridors=False,
+        target_fill=0.6,
+    )
+    grid = incremental.base_placement._candidate_grid(4, 2, options)
+
+    taut = _constant_state_with_relay()
+    taut.safe_span = 1.5
+    taut_topology = incremental._FeasibleTopology.build(
+        taut,
+        RoutingPlan(
+            relays=(BlueprintRelay(3, (1.5, 0.0), "relay"),),
+            wires=(
+                RoutedWire(1, 1, 3, 1, WireColor.RED),
+                RoutedWire(3, 1, 2, 1, WireColor.RED),
+            ),
+        ),
+    )
+    assert not incremental._has_reach_feasible_alternative(taut, taut_topology, 3, grid)
+
+    slack = _constant_state_with_relay()
+    slack_topology = incremental._FeasibleTopology.build(
+        slack,
+        RoutingPlan(
+            relays=(BlueprintRelay(3, (1.5, 0.0), "relay"),),
+            wires=(
+                RoutedWire(1, 1, 3, 1, WireColor.RED),
+                RoutedWire(3, 1, 2, 1, WireColor.RED),
+            ),
+        ),
+    )
+    assert incremental._has_reach_feasible_alternative(slack, slack_topology, 3, grid)

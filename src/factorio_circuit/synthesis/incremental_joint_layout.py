@@ -47,6 +47,7 @@ from factorio_circuit.synthesis.placement import PlacementOptions, Position
 
 _EPOCH_PROPOSALS = 256
 _TRACK_EXACT_ACCEPTED_MOVES = True
+_FILTER_REACH_IMMOBILE_PROPOSALS = True
 _EPSILON = 1e-9
 _RELAY_HALF_EXTENT = (0.5, 0.5)
 _SLACK_START = 0.85
@@ -1372,10 +1373,17 @@ def _anneal_feasible(
             or outliers
             or (movable_entities if movable_entities else movable_relays)
         )
-        if not proposal_pool:
+        proposal_pool = _reach_mobile_proposal_pool(
+            state,
+            topology,
+            proposal_pool,
+            grid,
+        )
+        if not proposal_pool and not _FILTER_REACH_IMMOBILE_PROPOSALS:
             continue
 
-        for step in range(epoch_start, epoch_end):
+        steps = range(epoch_start, epoch_end) if proposal_pool else ()
+        for step in steps:
             progress = step / max(1, iterations - 1)
             normalized_temperature = 0.03**progress
             temperature = max(0.02, state.safe_span * (0.8 * normalized_temperature + 0.01))
@@ -1689,6 +1697,75 @@ def _exact_score(
         for wire in topology.routing.wires
     )
     return (len(state.relay_positions), area, wire_length)
+
+
+def _has_reach_feasible_alternative(
+    state: exact._JointState,
+    topology: _FeasibleTopology,
+    object_id: int,
+    grid: base_placement._GridGeometry,
+) -> bool:
+    """Return whether this object has any other lattice site that preserves current wire reach."""
+
+    incident = topology.incident_wires.get(object_id, ())
+    if not incident:
+        return True
+    current = state.object_position(object_id)
+    if object_id in state.relay_positions:
+        candidates = grid.unit_slots
+    else:
+        candidates = base_placement._candidate_positions(
+            state.circuit.entity_by_id(object_id),
+            grid,
+        )
+
+    neighbors: list[Position] = []
+    for wire in incident:
+        remote, _connector = _remote_endpoint(wire, object_id)
+        if remote != object_id:
+            neighbors.append(state.object_position(remote))
+    if not neighbors:
+        return True
+
+    safe_span = state.safe_span
+    left = max(position[0] - safe_span for position in neighbors)
+    right = min(position[0] + safe_span for position in neighbors)
+    top = max(position[1] - safe_span for position in neighbors)
+    bottom = min(position[1] + safe_span for position in neighbors)
+    if left > right + _EPSILON or top > bottom + _EPSILON:
+        return False
+
+    for candidate in candidates:
+        if candidate == current:
+            continue
+        x, y = candidate
+        if (
+            x < left - _EPSILON
+            or x > right + _EPSILON
+            or y < top - _EPSILON
+            or y > bottom + _EPSILON
+        ):
+            continue
+        if all(_distance(candidate, neighbor) <= safe_span + _EPSILON for neighbor in neighbors):
+            return True
+    return False
+
+
+def _reach_mobile_proposal_pool(
+    state: exact._JointState,
+    topology: _FeasibleTopology,
+    proposal_pool: list[int],
+    grid: base_placement._GridGeometry,
+) -> list[int]:
+    """Drop objects whose current neighbors make every alternative lattice site over-span."""
+
+    if not _FILTER_REACH_IMMOBILE_PROPOSALS:
+        return proposal_pool
+    return [
+        object_id
+        for object_id in proposal_pool
+        if _has_reach_feasible_alternative(state, topology, object_id, grid)
+    ]
 
 
 def _proposed_position(
