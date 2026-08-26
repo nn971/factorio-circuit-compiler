@@ -135,7 +135,7 @@ class _FeasibleTopology:
             affected.update(self.incident_wires.get(object_id, ()))
 
         delta = 0.0
-        for wire in affected:
+        for wire in sorted(affected, key=_routed_wire_sort_key):
             source_before = state.object_position(wire.source_entity)
             target_before = state.object_position(wire.target_entity)
             source_after = targets.get(wire.source_entity, source_before)
@@ -204,7 +204,7 @@ class _ExactObjectiveTracker:
         for object_id in targets:
             affected.update(topology.incident_wires.get(object_id, ()))
         delta = 0.0
-        for wire in affected:
+        for wire in sorted(affected, key=_routed_wire_sort_key):
             source_before = state.object_position(wire.source_entity)
             target_before = state.object_position(wire.target_entity)
             source_after = targets.get(wire.source_entity, source_before)
@@ -956,6 +956,16 @@ def _wire_key(wire: wire_routing.RoutedWire) -> WireKey:
     return (left[0], left[1], right[0], right[1], wire.color)
 
 
+def _wire_key_sort_key(key: WireKey) -> tuple[int, int, int, int, str]:
+    return (key[0], key[1], key[2], key[3], key[4].value)
+
+
+def _routed_wire_sort_key(
+    wire: wire_routing.RoutedWire,
+) -> tuple[int, int, int, int, str]:
+    return _wire_key_sort_key(_wire_key(wire))
+
+
 def _remote_endpoint(
     wire: wire_routing.RoutedWire,
     relay_id: int,
@@ -1010,7 +1020,7 @@ def _simplify_feasible_topology(
             continue
         if relay_id in state.fixed_objects:
             continue
-        relay_edges = tuple(incident.get(relay_id, ()))
+        relay_edges = tuple(sorted(incident.get(relay_id, ()), key=_wire_key_sort_key))
         if len(relay_edges) > 2:
             continue
 

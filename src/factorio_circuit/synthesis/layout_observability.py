@@ -222,7 +222,7 @@ def _simplify_feasible_topology_observed(
             continue
         if relay_id in state.fixed_objects:
             continue
-        relay_edges = tuple(incident.get(relay_id, ()))
+        relay_edges = tuple(sorted(incident.get(relay_id, ()), key=incremental._wire_key_sort_key))
         if len(relay_edges) > 2:
             continue
 
