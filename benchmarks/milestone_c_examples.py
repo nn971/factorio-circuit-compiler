@@ -1,4 +1,4 @@
-"""Export before/after Milestone C layout examples as self-contained SVG files."""
+"""Export initial/pre-C/current Milestone C layout examples as self-contained SVG files."""
 
 from __future__ import annotations
 
@@ -6,7 +6,12 @@ import argparse
 from dataclasses import replace
 from html import escape
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
+from typing import Any
 
 from benchmarks.layout_optimizer_corpus import (
     _narrow_corridor_case,
@@ -18,7 +23,12 @@ from benchmarks.layout_optimizer_topology_corpus import (
     _large_sparse_case,
     _red_green_mesh_case,
 )
-from factorio_circuit.ir.physical import WireColor
+from benchmarks.milestone_c_acceptance import (
+    PRE_C_BASELINE,
+    _ensure_baseline,
+    _git,
+    _repo_root,
+)
 from factorio_circuit.synthesis import placement as base_placement
 from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.layout_optimizer import (
@@ -29,7 +39,6 @@ from factorio_circuit.synthesis.layout_optimizer import (
 )
 from factorio_circuit.synthesis.placement import PlacementOptions
 
-
 CASES = (
     ("relay-forest", _relay_forest_case),
     ("clustered-sparse-cut", _clustered_sparse_cut_case),
@@ -38,40 +47,145 @@ CASES = (
     ("perimeter-anchor", _perimeter_anchor_case),
 )
 
+_BASELINE_WORKER = r"""
+import json
+import sys
+from dataclasses import replace
 
-def _bounds(layout: Layout) -> tuple[float, float, float, float]:
+from benchmarks.layout_optimizer_corpus import (
+    _narrow_corridor_case,
+    _perimeter_anchor_case,
+    _relay_forest_case,
+)
+from benchmarks.layout_optimizer_topology_corpus import (
+    _clustered_sparse_cut_case,
+    _large_sparse_case,
+    _red_green_mesh_case,
+)
+from factorio_circuit.synthesis import placement as base_placement
+from factorio_circuit.synthesis.layout_optimizer import (
+    optimize_physical_layout,
+    physical_layout_metrics,
+    validate_physical_layout,
+)
+from factorio_circuit.synthesis.placement import PlacementOptions
+
+factories = {
+    "relay-forest": _relay_forest_case,
+    "clustered-sparse-cut": _clustered_sparse_cut_case,
+    "red-green-mesh": _red_green_mesh_case,
+    "narrow-corridor": _narrow_corridor_case,
+    "perimeter-anchor": _perimeter_anchor_case,
+    "large-sparse-1200": _large_sparse_case,
+}
+
+
+def snapshot(layout, problem):
     relay_ids = {relay.entity_id for relay in layout.relays}
     entities = {entity.id: entity for entity in layout.circuit.entities}
+    footprints = {}
+    for entity_id in layout.positions:
+        if entity_id in relay_ids:
+            footprints[str(entity_id)] = [0.5, 0.5]
+        else:
+            footprints[str(entity_id)] = list(
+                base_placement._entity_half_extent(entities[entity_id])
+            )
+    return {
+        "objective": list(physical_layout_metrics(layout).objective),
+        "positions": {str(key): list(value) for key, value in layout.positions.items()},
+        "relay_ids": sorted(relay_ids),
+        "footprints": footprints,
+        "fixed_ids": sorted(problem.fixed_positions),
+        "wires": [
+            {
+                "source": wire.source_entity,
+                "target": wire.target_entity,
+                "color": wire.color.name.lower(),
+            }
+            for wire in layout.wires
+        ],
+    }
+
+
+request = json.loads(sys.stdin.read())
+rows = {}
+for item in request:
+    case = factories[item["case"]]()
+    options = PlacementOptions(
+        anchor_io=False,
+        reserve_corridors=False,
+        iterations=item["proposals"],
+        random_seed=item["seed"],
+        restarts=1,
+    )
+    optimized = optimize_physical_layout(case.problem, options=options)
+    validate_physical_layout(replace(case.problem, layout=optimized.layout))
+    rows[item["case"]] = snapshot(optimized.layout, case.problem)
+
+print(json.dumps(rows, separators=(",", ":")))
+"""
+
+
+def _snapshot(layout: Layout, problem: LayoutOptimizationProblem) -> dict[str, Any]:
+    relay_ids = {relay.entity_id for relay in layout.relays}
+    entities = {entity.id: entity for entity in layout.circuit.entities}
+    footprints: dict[str, list[float]] = {}
+    for entity_id in layout.positions:
+        if entity_id in relay_ids:
+            footprints[str(entity_id)] = [0.5, 0.5]
+        else:
+            footprints[str(entity_id)] = list(
+                base_placement._entity_half_extent(entities[entity_id])
+            )
+    return {
+        "objective": list(physical_layout_metrics(layout).objective),
+        "positions": {str(key): list(value) for key, value in layout.positions.items()},
+        "relay_ids": sorted(relay_ids),
+        "footprints": footprints,
+        "fixed_ids": sorted(problem.fixed_positions),
+        "wires": [
+            {
+                "source": wire.source_entity,
+                "target": wire.target_entity,
+                "color": wire.color.name.lower(),
+            }
+            for wire in layout.wires
+        ],
+    }
+
+
+def _bounds(snapshot: dict[str, Any]) -> tuple[float, float, float, float]:
+    positions = snapshot["positions"]
+    if not positions:
+        return (0.0, 1.0, 0.0, 1.0)
     left = float("inf")
     right = float("-inf")
     top = float("inf")
     bottom = float("-inf")
-    for entity_id, (x, y) in layout.positions.items():
-        half_x, half_y = (
-            (0.5, 0.5)
-            if entity_id in relay_ids
-            else base_placement._entity_half_extent(entities[entity_id])
-        )
+    footprints = snapshot["footprints"]
+    for entity_id, position in positions.items():
+        x, y = position
+        half_x, half_y = footprints[entity_id]
         left = min(left, x - half_x)
         right = max(right, x + half_x)
         top = min(top, y - half_y)
         bottom = max(bottom, y + half_y)
-    if not layout.positions:
-        return (0.0, 1.0, 0.0, 1.0)
     return left, right, top, bottom
 
 
-def _svg(layout: Layout, problem: LayoutOptimizationProblem, *, title: str) -> str:
+def _svg(snapshot: dict[str, Any], *, title: str) -> str:
     scale = 24.0
     margin = 24.0
-    left, right, top, bottom = _bounds(layout)
+    left, right, top, bottom = _bounds(snapshot)
     width = max(1.0, right - left) * scale + 2 * margin
     height = max(1.0, bottom - top) * scale + 2 * margin
-    relay_ids = {relay.entity_id for relay in layout.relays}
-    entities = {entity.id: entity for entity in layout.circuit.entities}
-    fixed = set(problem.fixed_positions)
+    relay_ids = set(snapshot["relay_ids"])
+    fixed_ids = set(snapshot["fixed_ids"])
+    positions = snapshot["positions"]
+    footprints = snapshot["footprints"]
 
-    def point(position: tuple[float, float]) -> tuple[float, float]:
+    def point(position: list[float]) -> tuple[float, float]:
         return (
             margin + (position[0] - left) * scale,
             margin + (position[1] - top) * scale,
@@ -81,20 +195,21 @@ def _svg(layout: Layout, problem: LayoutOptimizationProblem, *, title: str) -> s
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0f}" height="{height:.0f}" '
         f'viewBox="0 0 {width:.3f} {height:.3f}">',
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<title>{escape(title)}</title>',
+        f"<title>{escape(title)}</title>",
     ]
 
-    for wire in layout.wires:
-        x1, y1 = point(layout.positions[wire.source_entity])
-        x2, y2 = point(layout.positions[wire.target_entity])
-        stroke = "#c62828" if wire.color == WireColor.RED else "#2e7d32"
+    for wire in snapshot["wires"]:
+        x1, y1 = point(positions[str(wire["source"])])
+        x2, y2 = point(positions[str(wire["target"])])
+        stroke = "#c62828" if wire["color"] == "red" else "#2e7d32"
         rows.append(
             f'<line x1="{x1:.3f}" y1="{y1:.3f}" x2="{x2:.3f}" y2="{y2:.3f}" '
             f'stroke="{stroke}" stroke-width="2" stroke-opacity="0.75"/>'
         )
 
-    show_labels = len(layout.positions) <= 100
-    for entity_id, position in sorted(layout.positions.items()):
+    show_labels = len(positions) <= 100
+    for entity_id_text, position in sorted(positions.items(), key=lambda item: int(item[0])):
+        entity_id = int(entity_id_text)
         cx, cy = point(position)
         if entity_id in relay_ids:
             rows.append(
@@ -102,11 +217,11 @@ def _svg(layout: Layout, problem: LayoutOptimizationProblem, *, title: str) -> s
                 'fill="#bdbdbd" stroke="#424242" stroke-width="1.5"/>'
             )
         else:
-            half_x, half_y = base_placement._entity_half_extent(entities[entity_id])
+            half_x, half_y = footprints[entity_id_text]
             x = cx - half_x * scale
             y = cy - half_y * scale
-            stroke = "#1565c0" if entity_id in fixed else "#424242"
-            stroke_width = 3 if entity_id in fixed else 1.5
+            stroke = "#1565c0" if entity_id in fixed_ids else "#424242"
+            stroke_width = 3 if entity_id in fixed_ids else 1.5
             rows.append(
                 f'<rect x="{x:.3f}" y="{y:.3f}" width="{2 * half_x * scale:.3f}" '
                 f'height="{2 * half_y * scale:.3f}" fill="#fafafa" stroke="{stroke}" '
@@ -116,15 +231,38 @@ def _svg(layout: Layout, problem: LayoutOptimizationProblem, *, title: str) -> s
             rows.append(
                 f'<text x="{cx:.3f}" y="{cy + 3.5:.3f}" text-anchor="middle" '
                 'font-family="monospace" font-size="9" fill="#111">'
-                f'{entity_id}</text>'
+                f"{entity_id}</text>"
             )
 
     rows.append("</svg>")
     return "\n".join(rows) + "\n"
 
 
-def _objective(layout: Layout) -> list[float]:
-    return list(physical_layout_metrics(layout).objective)
+def _run_baseline(
+    tree: Path,
+    request: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    env = dict(os.environ)
+    env["PYTHONHASHSEED"] = "0"
+    env["PYTHONPATH"] = os.pathsep.join((str(tree / "src"), str(tree)))
+    completed = subprocess.run(
+        [sys.executable, "-c", _BASELINE_WORKER],
+        cwd=tree,
+        env=env,
+        input=json.dumps(request),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def _outcome(baseline: list[float], current: list[float]) -> str:
+    if tuple(current) < tuple(baseline):
+        return "better"
+    if tuple(current) > tuple(baseline):
+        return "worse"
+    return "equal"
 
 
 def main() -> None:
@@ -137,20 +275,49 @@ def main() -> None:
     if args.proposals < 0:
         parser.error("--proposals must be non-negative")
 
+    root = _repo_root()
+    _ensure_baseline(root)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+
     cases = list(CASES)
     if args.include_scale:
         cases.append(("large-sparse-1200", _large_sparse_case))
+    request = [
+        {"case": name, "proposals": args.proposals, "seed": args.seed}
+        for name, _factory in cases
+    ]
 
-    manifest: list[dict[str, object]] = []
+    with tempfile.TemporaryDirectory(prefix="factorio-milestone-c-examples-") as temporary:
+        baseline_tree = Path(temporary) / "baseline"
+        _git(
+            root,
+            "worktree",
+            "add",
+            "--detach",
+            str(baseline_tree),
+            PRE_C_BASELINE,
+            capture=False,
+        )
+        try:
+            baseline_snapshots = _run_baseline(baseline_tree, request)
+        finally:
+            subprocess.run(
+                ["git", "-C", str(root), "worktree", "remove", "--force", str(baseline_tree)],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+
+    manifest: list[dict[str, Any]] = []
     html_rows = [
         "<!doctype html><meta charset='utf-8'>",
         "<title>Milestone C layout examples</title>",
-        "<style>body{font-family:sans-serif;max-width:1200px;margin:2rem auto} "
-        ".pair{display:grid;grid-template-columns:1fr 1fr;gap:1rem} "
-        "img{max-width:100%;border:1px solid #ccc}</style>",
+        "<style>body{font-family:sans-serif;max-width:1600px;margin:2rem auto} "
+        ".triple{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem} "
+        "img{max-width:100%;border:1px solid #ccc} code{font-size:.9em}</style>",
         "<h1>Milestone C layout examples</h1>",
+        f"<p>Frozen pre-C baseline: <code>{PRE_C_BASELINE}</code></p>",
     ]
     options = PlacementOptions(
         anchor_io=False,
@@ -163,44 +330,57 @@ def main() -> None:
     for name, factory in cases:
         case = factory()
         validate_physical_layout(case.problem)
+        initial = _snapshot(case.problem.layout, case.problem)
         optimized = optimize_physical_layout(case.problem, options=options)
         validate_physical_layout(replace(case.problem, layout=optimized.layout))
-        before_file = f"{name}-before.svg"
-        after_file = f"{name}-after.svg"
-        before_objective = _objective(case.problem.layout)
-        after_objective = _objective(optimized.layout)
-        (output / before_file).write_text(
-            _svg(case.problem.layout, case.problem, title=f"{name}: before")
-        )
-        (output / after_file).write_text(
-            _svg(optimized.layout, case.problem, title=f"{name}: after")
-        )
+        current = _snapshot(optimized.layout, case.problem)
+        baseline = baseline_snapshots[name]
+
+        files = {
+            "initial": f"{name}-initial.svg",
+            "pre_c": f"{name}-pre-c.svg",
+            "current": f"{name}-current.svg",
+        }
+        for label, snapshot in (
+            ("initial", initial),
+            ("pre_c", baseline),
+            ("current", current),
+        ):
+            (output / files[label]).write_text(
+                _svg(snapshot, title=f"{name}: {label.replace('_', ' ')}")
+            )
+
+        outcome = _outcome(baseline["objective"], current["objective"])
         manifest.append(
             {
                 "case": name,
                 "seed": args.seed,
                 "proposals": args.proposals,
-                "before": before_objective,
-                "after": after_objective,
-                "before_svg": before_file,
-                "after_svg": after_file,
+                "pre_c_baseline": PRE_C_BASELINE,
+                "outcome": outcome,
+                "initial": initial["objective"],
+                "pre_c": baseline["objective"],
+                "current": current["objective"],
+                "svg": files,
             }
         )
         html_rows.extend(
             [
-                f"<h2>{escape(name)}</h2>",
-                f"<p>objective: {escape(str(before_objective))} → "
-                f"{escape(str(after_objective))}</p>",
-                "<div class='pair'>",
-                f"<figure><figcaption>before</figcaption><img src='{before_file}'></figure>",
-                f"<figure><figcaption>after</figcaption><img src='{after_file}'></figure>",
+                f"<h2>{escape(name)} — C vs pre-C: {outcome}</h2>",
+                f"<p>initial <code>{escape(str(initial['objective']))}</code>; "
+                f"pre-C <code>{escape(str(baseline['objective']))}</code>; "
+                f"current <code>{escape(str(current['objective']))}</code></p>",
+                "<div class='triple'>",
+                f"<figure><figcaption>initial</figcaption><img src='{files['initial']}'></figure>",
+                f"<figure><figcaption>pre-C optimized</figcaption><img src='{files['pre_c']}'></figure>",
+                f"<figure><figcaption>current optimized</figcaption><img src='{files['current']}'></figure>",
                 "</div>",
             ]
         )
 
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (output / "index.html").write_text("\n".join(html_rows) + "\n")
-    print(f"wrote {len(manifest)} example pairs to {output}")
+    print(f"wrote {len(manifest)} three-way example sets to {output}")
 
 
 if __name__ == "__main__":
