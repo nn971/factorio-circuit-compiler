@@ -68,7 +68,7 @@ def test_milestone_c_compare_reports_lexicographic_and_component_outcomes() -> N
         _row("b", proposals=1, seed=0, objective=(2, 10.0, 11.0)),
     ]
 
-    passed, summary = acceptance._compare(baseline, current)
+    passed, summary = acceptance._compare(baseline, current)  # type: ignore[arg-type]
 
     assert not passed
     assert summary["lexicographic"] == {"better": 1, "equal": 0, "worse": 1}
