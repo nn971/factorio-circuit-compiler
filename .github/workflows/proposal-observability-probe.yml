@@ -5,12 +5,8 @@ on:
     branches:
       - main
 
-permissions:
-  contents: write
-
 jobs:
-  apply-and-validate:
-    if: "${{ github.event.pull_request.head.sha == github.sha || github.event_name == 'pull_request' }}"
+  validate-and-compare:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -23,14 +19,10 @@ jobs:
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Apply experiment
-        run: uv run python tools/_apply_reach_mobile_pool_experiment.py
+      - name: Bound reach-domain scan
+        run: uv run python tools/_optimize_reach_mobile_pool_experiment.py
       - name: Format touched code
-        run: >-
-          uv run ruff format
-          src/factorio_circuit/synthesis/incremental_joint_layout.py
-          src/factorio_circuit/synthesis/layout_observability.py
-          tests/synthesis/test_incremental_joint_regressions.py
+        run: uv run ruff format src/factorio_circuit/synthesis/incremental_joint_layout.py
       - name: Targeted tests
         run: >-
           uv run pytest
@@ -43,14 +35,10 @@ jobs:
           src/factorio_circuit/synthesis/incremental_joint_layout.py
           src/factorio_circuit/synthesis/layout_observability.py
           tests/synthesis/test_incremental_joint_regressions.py
+          benchmarks/layout_optimizer_reach_pool_compare.py
       - name: Mypy
         run: uv run mypy src
-      - name: Commit experiment
-        run: |
-          git config user.name nn971
-          git config user.email 60208623+nn971@users.noreply.github.com
-          git add src/factorio_circuit/synthesis/incremental_joint_layout.py \
-                  src/factorio_circuit/synthesis/layout_observability.py \
-                  tests/synthesis/test_incremental_joint_regressions.py
-          git commit -m 'experiment: filter reach-immobile proposal objects'
-          git push origin HEAD:agent/annealing-v2-adaptive-proposals
+      - name: Compare baseline and reach-mobile pool
+        run: >-
+          uv run python -m benchmarks.layout_optimizer_reach_pool_compare
+          --proposals 4096 --seeds 8
