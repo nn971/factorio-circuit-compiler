@@ -324,7 +324,9 @@ def main() -> None:
     if min(result.after.occupied_area for result in sparse) >= sparse[0].before.occupied_area / 2:
         raise AssertionError("sparse generic case did not compact substantially in any seed")
     if min(result.after.relay_count for result in forest) >= forest[0].before.relay_count / 2:
-        raise AssertionError("hand-routed forest did not remove substantial relay topology in any seed")
+        raise AssertionError(
+            "hand-routed forest did not remove substantial relay topology in any seed"
+        )
 
 
 if __name__ == "__main__":
