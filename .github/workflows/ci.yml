@@ -29,6 +29,13 @@ jobs:
         run: uv sync --extra dev
       - name: Stage relay-relief candidate
         run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tools/stage_relay_relief.py")
+          text = path.read_text()
+          path.write_text(text.replace("'''\\n    )", "'''\n    )"))
+          PY
           python tools/stage_relay_relief.py
           uv run ruff format \
             src/factorio_circuit/synthesis/incremental_joint_layout.py \
