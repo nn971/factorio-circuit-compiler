@@ -49,6 +49,8 @@ def _run_case(case, *, proposals: int, seed: int) -> None:
         f"reach={stats.wire_reach_rejections}, metropolis={stats.metropolis_rejections}), "
         f"proposal-kind(implementation={stats.implementation_proposals}, "
         f"relay={stats.relay_proposals}), swaps={stats.swaps_accepted}/{stats.swap_attempts}, "
+        f"backoff={stats.reach_backoff_moves_accepted}/"
+        f"{stats.reach_backoff_feasible_targets}/{stats.reach_backoff_attempts}, "
         f"simplify(calls={stats.simplification_calls}, total={stats.relay_deletions}, "
         f"isolated={stats.relay_isolated_deletions}, leaf={stats.relay_leaf_deletions}, "
         f"bypass={stats.relay_degree_two_bypasses}), "

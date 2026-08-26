@@ -106,6 +106,12 @@ Prioritized experiments:
 4. targeted local repair around hard anchors and routing bottlenecks;
 5. only after measurement, lower-level performance work in occupancy, routing indexes, and proposal evaluation.
 
+### Experiment record
+
+- **Rejected: adaptive coarse retopology.** In 12 paired runs it produced 0 better / 12 equal / 0 worse physical objectives while adding four rebuilds per run and increasing routing work/runtime.
+- **Rejected: terminal + one adjacent relay translation.** In 18 paired runs it produced 0 better / 18 equal / 0 worse objectives. It attempted 13,096 rescues and accepted none; taut safe-span chains simply moved the over-span violation to the relay's far side.
+- **Current: reach-safe proposal backoff.** When an ordinary non-swap proposal exceeds wire reach, try progressively shorter snapped steps along the same direction before counting a reach rejection. This adds no RNG calls and caps repair work at seven local feasibility checks.
+
 ### C acceptance
 
 - Every accepted optimization is benchmarked across multiple seeds.
@@ -245,4 +251,4 @@ Milestone G should begin as soon as a small useful random-program generator exis
 
 ## Current step
 
-Begin **Milestone C** with adaptive coarse retopology at the existing safe epoch boundary. Preserve the fixed-fraction rebuild schedule as a baseline fallback, add conservative triggers for sustained objective stagnation or wire-reach pressure, and keep a cooldown between adaptive rebuilds. Use the Milestone B counters and the Milestone A corpus to compare quality and routing work across seeds before accepting broader proposal or compound-move changes.
+Continue **Milestone C** with reach-safe proposal backoff. Compare the current proposal generator against deterministic shorter-step repair on identical seeds and budgets. Accept it only if it either improves the lexicographic physical objective or materially reduces wasted reach-rejection work without an offsetting runtime cost; otherwise remove it and proceed to a different proposal/local-repair strategy.

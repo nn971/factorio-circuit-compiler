@@ -57,6 +57,9 @@ class OptimizationStats:
     relay_moves_accepted: int = 0
     swap_attempts: int = 0
     swaps_accepted: int = 0
+    reach_backoff_attempts: int = 0
+    reach_backoff_feasible_targets: int = 0
+    reach_backoff_moves_accepted: int = 0
     relay_deletions: int = 0
     relay_isolated_deletions: int = 0
     relay_leaf_deletions: int = 0
@@ -113,6 +116,9 @@ class _MutableOptimizationStats:
     relay_moves_accepted: int = 0
     swap_attempts: int = 0
     swaps_accepted: int = 0
+    reach_backoff_attempts: int = 0
+    reach_backoff_feasible_targets: int = 0
+    reach_backoff_moves_accepted: int = 0
     relay_deletions: int = 0
     relay_isolated_deletions: int = 0
     relay_leaf_deletions: int = 0
@@ -142,6 +148,9 @@ class _MutableOptimizationStats:
             relay_moves_accepted=self.relay_moves_accepted,
             swap_attempts=self.swap_attempts,
             swaps_accepted=self.swaps_accepted,
+            reach_backoff_attempts=self.reach_backoff_attempts,
+            reach_backoff_feasible_targets=self.reach_backoff_feasible_targets,
+            reach_backoff_moves_accepted=self.reach_backoff_moves_accepted,
             relay_deletions=self.relay_deletions,
             relay_isolated_deletions=self.relay_isolated_deletions,
             relay_leaf_deletions=self.relay_leaf_deletions,
@@ -528,6 +537,25 @@ def _anneal_feasible_observed(
             if other is not None:
                 targets[other] = current
             wire_delta = topology.proposal_delta(state, targets)
+            backoff_used = False
+            if wire_delta is None and other is None:
+                stats.reach_backoff_attempts += 1
+                backoff_target = incremental._reach_safe_backoff_target(
+                    state,
+                    topology,
+                    object_id,
+                    target,
+                    occupancy,
+                    grid,
+                    unit_sites,
+                    wide_sites,
+                )
+                if backoff_target is not None:
+                    stats.reach_backoff_feasible_targets += 1
+                    backoff_used = True
+                    target = backoff_target
+                    targets = {object_id: target}
+                    wire_delta = topology.proposal_delta(state, targets)
             if wire_delta is None:
                 stats.wire_reach_rejections += 1
                 continue
@@ -568,6 +596,8 @@ def _anneal_feasible_observed(
                 stats.implementation_moves_accepted += 1
             if other is not None:
                 stats.swaps_accepted += 1
+            if backoff_used:
+                stats.reach_backoff_moves_accepted += 1
 
         topology = incremental._simplify_feasible_topology(state, topology)
         if epoch_end in topology_rebuilds and epoch_end < iterations:

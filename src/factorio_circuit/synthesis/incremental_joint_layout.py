@@ -52,6 +52,7 @@ _SLACK_START = 0.85
 _FINAL_ENVELOPE_SCALE = 0.40
 _ENVELOPE_OVERFLOW_WEIGHT = 4.0
 _ANNEAL_REBUILD_FRACTIONS = (0.25, 0.50, 0.75)
+_REACH_BACKOFF_FRACTIONS = (0.875, 0.75, 0.625, 0.5, 0.375, 0.25, 0.125)
 _BOOTSTRAP_EXPANSIONS = 4
 _BOOTSTRAP_ORDER_ATTEMPTS = 3
 _NEGOTIATED_ROUTING_ROUNDS = 8
@@ -1150,6 +1151,58 @@ def refine_incremental_joint_layout(
     return exact.JointLayoutResult(dict(state.positions), routing)
 
 
+def _snap_backoff_candidate(
+    state: exact._JointState,
+    object_id: int,
+    target: Position,
+    grid: base_placement._GridGeometry,
+) -> Position:
+    if object_id in state.relay_positions:
+        x = min(grid.unit_x_positions, key=lambda value: (abs(value - target[0]), value))
+        y = min(grid.y_positions, key=lambda value: (abs(value - target[1]), value))
+        return (x, y)
+    entity = state.circuit.entity_by_id(object_id)
+    return base_placement._nearest_candidate(entity, target, grid)
+
+
+def _reach_safe_backoff_target(
+    state: exact._JointState,
+    topology: _FeasibleTopology,
+    object_id: int,
+    desired: Position,
+    occupancy: _SpatialOccupancy,
+    grid: base_placement._GridGeometry,
+    unit_sites: set[Position],
+    wide_sites: set[Position],
+) -> Position | None:
+    """Back off an over-reaching single-object proposal along the same direction.
+
+    The original proposal remains authoritative. This helper is consulted only after that target
+    fails wire reach and only for a non-swap move. It adds no random choices: progressively shorter
+    fractions of the same displacement are snapped to the object's legal grid and the first empty,
+    reach-safe candidate is returned.
+    """
+
+    current = state.object_position(object_id)
+    seen = {current, desired}
+    for fraction in _REACH_BACKOFF_FRACTIONS:
+        interpolated = (
+            current[0] + (desired[0] - current[0]) * fraction,
+            current[1] + (desired[1] - current[1]) * fraction,
+        )
+        candidate = _snap_backoff_candidate(state, object_id, interpolated, grid)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if not _position_is_legal(state, object_id, candidate, unit_sites, wide_sites):
+            continue
+        if occupancy.overlaps(object_id, candidate, ignored={object_id}):
+            continue
+        if topology.proposal_delta(state, {object_id: candidate}) is not None:
+            return candidate
+    return None
+
+
 def _anneal_feasible(
     state: exact._JointState,
     topology: _FeasibleTopology,
@@ -1282,6 +1335,21 @@ def _anneal_feasible(
             if other is not None:
                 targets[other] = current
             wire_delta = topology.proposal_delta(state, targets)
+            if wire_delta is None and other is None:
+                backoff_target = _reach_safe_backoff_target(
+                    state,
+                    topology,
+                    object_id,
+                    target,
+                    occupancy,
+                    grid,
+                    unit_sites,
+                    wide_sites,
+                )
+                if backoff_target is not None:
+                    target = backoff_target
+                    targets = {object_id: target}
+                    wire_delta = topology.proposal_delta(state, targets)
             if wire_delta is None:
                 continue
 
