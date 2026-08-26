@@ -24,11 +24,12 @@ jobs:
       - name: Apply determinism patch
         run: uv run python tools/_apply_layout_determinism_fix.py
       - name: Format
-        run: >-
-          uv run ruff format
-          src/factorio_circuit/synthesis/incremental_joint_layout.py
-          src/factorio_circuit/synthesis/layout_observability.py
-          tests/synthesis/test_layout_hash_determinism.py
+        run: |
+          uv run ruff check --fix tests/synthesis/test_layout_hash_determinism.py
+          uv run ruff format \
+            src/factorio_circuit/synthesis/incremental_joint_layout.py \
+            src/factorio_circuit/synthesis/layout_observability.py \
+            tests/synthesis/test_layout_hash_determinism.py
       - name: Targeted tests
         run: >-
           uv run pytest
