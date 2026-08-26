@@ -41,6 +41,10 @@ def _run_case(case, *, proposals: int, seed: int) -> None:
         )
     if stats.classified_relay_deletions != stats.relay_deletions:
         raise AssertionError(f"{case.name} relay simplification counters are inconsistent")
+    if stats.classified_topology_rebuild_attempts != stats.topology_rebuild_attempts:
+        raise AssertionError(f"{case.name} topology rebuild counters are inconsistent")
+    if stats.classified_adaptive_rebuild_attempts != stats.adaptive_topology_rebuild_attempts:
+        raise AssertionError(f"{case.name} adaptive rebuild counters are inconsistent")
 
     print(
         f"{case.name} seed={seed}: "
@@ -55,7 +59,11 @@ def _run_case(case, *, proposals: int, seed: int) -> None:
         f"routing(searches={stats.routing_search_calls}, "
         f"negotiated={stats.negotiated_routing_search_calls}, "
         f"failed={stats.routing_search_failures}, queue-pops={stats.routing_queue_pops}), "
-        f"rebuilds={stats.topology_rebuild_successes}/{stats.topology_rebuild_attempts}, "
+        f"rebuilds={stats.topology_rebuild_successes}/{stats.topology_rebuild_attempts} "
+        f"(scheduled={stats.scheduled_topology_rebuild_attempts}, "
+        f"adaptive={stats.adaptive_topology_rebuild_attempts}, "
+        f"pressure={stats.wire_reach_pressure_rebuild_attempts}, "
+        f"stagnation={stats.stagnation_rebuild_attempts}), "
         f"epochs={stats.epochs_completed}, stagnation={stats.epochs_since_last_improvement}, "
         f"objective={result.before.objective}->{result.after.objective}"
     )
