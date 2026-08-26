@@ -1,15 +1,21 @@
-name: Proposal observability probe
+name: Reach-mobile proposal experiment
 
 on:
   pull_request:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
-  probe:
+  apply-and-validate:
+    if: "${{ github.event.pull_request.head.sha == github.sha || github.event_name == 'pull_request' }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: agent/annealing-v2-adaptive-proposals
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -17,80 +23,34 @@ jobs:
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Measure proposal waste
+      - name: Apply experiment
+        run: uv run python tools/_apply_reach_mobile_pool_experiment.py
+      - name: Format touched code
+        run: >-
+          uv run ruff format
+          src/factorio_circuit/synthesis/incremental_joint_layout.py
+          src/factorio_circuit/synthesis/layout_observability.py
+          tests/synthesis/test_incremental_joint_regressions.py
+      - name: Targeted tests
+        run: >-
+          uv run pytest
+          tests/synthesis/test_incremental_joint_regressions.py
+          tests/synthesis/test_layout_observability.py
+          tests/synthesis/test_layout_hash_determinism.py
+      - name: Ruff lint
+        run: >-
+          uv run ruff check
+          src/factorio_circuit/synthesis/incremental_joint_layout.py
+          src/factorio_circuit/synthesis/layout_observability.py
+          tests/synthesis/test_incremental_joint_regressions.py
+      - name: Mypy
+        run: uv run mypy src
+      - name: Commit experiment
         run: |
-          uv run python - <<'PY'
-          from dataclasses import replace
-          from statistics import mean
-
-          from benchmarks.layout_optimizer_corpus import (
-              _fixed_endpoint_span_case,
-              _narrow_corridor_case,
-              _perimeter_anchor_case,
-              _relay_forest_case,
-              _shared_bus_case,
-          )
-          from benchmarks.layout_optimizer_topology_corpus import (
-              _clustered_sparse_cut_case,
-              _near_optimal_packed_case,
-              _red_green_mesh_case,
-          )
-          from factorio_circuit.synthesis.layout_observability import optimize_physical_layout_observed
-          from factorio_circuit.synthesis.layout_optimizer import validate_physical_layout
-          from factorio_circuit.synthesis.placement import PlacementOptions
-
-          cases = (
-              ("relay-forest", _relay_forest_case),
-              ("shared-bus", _shared_bus_case),
-              ("clustered-sparse-cut", _clustered_sparse_cut_case),
-              ("red-green-mesh", _red_green_mesh_case),
-              ("near-optimal-packed", _near_optimal_packed_case),
-              ("narrow-corridor", _narrow_corridor_case),
-              ("perimeter-anchor", _perimeter_anchor_case),
-              ("fixed-endpoint-span", _fixed_endpoint_span_case),
-          )
-          proposals = 4096
-          seeds = range(8)
-
-          for name, factory in cases:
-              rows = []
-              for seed in seeds:
-                  case = factory()
-                  observed = optimize_physical_layout_observed(
-                      case.problem,
-                      options=PlacementOptions(
-                          anchor_io=False,
-                          reserve_corridors=False,
-                          iterations=proposals,
-                          random_seed=seed,
-                          restarts=1,
-                      ),
-                  )
-                  validate_physical_layout(replace(case.problem, layout=observed.optimization.layout))
-                  s = observed.stats
-                  if s.accounted_proposals != s.proposals_attempted:
-                      raise AssertionError((name, seed, s.accounted_proposals, s.proposals_attempted))
-                  rows.append(s)
-
-              attempted = sum(s.proposals_attempted for s in rows)
-              def ratio(field):
-                  return sum(getattr(s, field) for s in rows) / attempted if attempted else 0.0
-              accepted = ratio("accepted_moves")
-              noop = ratio("noop_rejections")
-              geometry = ratio("geometry_rejections")
-              reach = ratio("wire_reach_rejections")
-              metro = ratio("metropolis_rejections")
-              impl = sum(s.implementation_proposals for s in rows) / attempted if attempted else 0.0
-              relay = sum(s.relay_proposals for s in rows) / attempted if attempted else 0.0
-              swaps = sum(s.swaps_accepted for s in rows)
-              swap_attempts = sum(s.swap_attempts for s in rows)
-              queue_pops = sum(s.routing_queue_pops for s in rows)
-              rebuilds = sum(s.topology_rebuild_attempts for s in rows)
-              stagnation = mean(s.epochs_since_last_improvement for s in rows)
-              print(
-                  f"SUMMARY {name}: attempted={attempted}, accepted={accepted:.3f}, "
-                  f"noop={noop:.3f}, geometry={geometry:.3f}, reach={reach:.3f}, metropolis={metro:.3f}, "
-                  f"proposal-kind=impl:{impl:.3f}/relay:{relay:.3f}, swaps={swaps}/{swap_attempts}, "
-                  f"queue-pops={queue_pops}, rebuild-attempts={rebuilds}, mean-final-stagnation={stagnation:.2f}"
-              )
-          PY
+          git config user.name nn971
+          git config user.email 60208623+nn971@users.noreply.github.com
+          git add src/factorio_circuit/synthesis/incremental_joint_layout.py \
+                  src/factorio_circuit/synthesis/layout_observability.py \
+                  tests/synthesis/test_incremental_joint_regressions.py
+          git commit -m 'experiment: filter reach-immobile proposal objects'
+          git push origin HEAD:agent/annealing-v2-adaptive-proposals
