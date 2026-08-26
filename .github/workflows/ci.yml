@@ -27,6 +27,8 @@ jobs:
         run: uv sync --extra dev
       - name: Test
         run: uv run pytest
+      - name: Adaptive layout comparison
+        run: uv run python -m benchmarks.layout_optimizer_adaptive_compare --proposals 4096 --seeds 3
       - name: Ruff lint
         run: uv run ruff check .
       - name: Ruff format
