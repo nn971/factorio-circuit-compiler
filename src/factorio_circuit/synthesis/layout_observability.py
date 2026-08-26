@@ -547,9 +547,7 @@ def _anneal_feasible_observed(
                 )
                 for item, position in targets.items()
             )
-            weighted_overflow_delta = (
-                incremental._ENVELOPE_OVERFLOW_WEIGHT * overflow_delta
-            )
+            weighted_overflow_delta = incremental._ENVELOPE_OVERFLOW_WEIGHT * overflow_delta
             delta = wire_delta + compact_delta + weighted_overflow_delta
             if delta > 0 and rng.random() >= exp(-delta / temperature):
                 stats.metropolis_rejections += 1
