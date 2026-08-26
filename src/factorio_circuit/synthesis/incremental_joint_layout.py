@@ -1150,6 +1150,88 @@ def refine_incremental_joint_layout(
     return exact.JointLayoutResult(dict(state.positions), routing)
 
 
+def _terminal_relay_compound_targets(
+    state: exact._JointState,
+    topology: _FeasibleTopology,
+    object_id: int,
+    target: Position,
+    occupancy: _SpatialOccupancy,
+    unit_sites: set[Position],
+) -> dict[int, Position] | None:
+    """Translate reach-blocking adjacent relays with one implementation terminal.
+
+    This is a rescue for an otherwise wire-reach-rejected implementation move, not a new random
+    proposal. Only directly incident movable relays whose current positions would become over-span
+    move with the terminal. Every moved relay receives the terminal's exact displacement, and the
+    full affected topology is revalidated before the transaction can be accepted.
+    """
+
+    if object_id in state.relay_positions:
+        return None
+    current = state.positions[object_id]
+    displacement = (target[0] - current[0], target[1] - current[1])
+    offending_relays: set[int] = set()
+    for wire in topology.incident_wires.get(object_id, ()):
+        remote = wire.target_entity if wire.source_entity == object_id else wire.source_entity
+        if _distance(target, state.object_position(remote)) <= state.safe_span + _EPSILON:
+            continue
+        if remote not in state.relay_positions or remote in state.fixed_objects:
+            return None
+        offending_relays.add(remote)
+    if not offending_relays:
+        return None
+
+    targets = {object_id: target}
+    for relay_id in sorted(offending_relays):
+        current_relay = state.relay_positions[relay_id]
+        relay_target = (
+            current_relay[0] + displacement[0],
+            current_relay[1] + displacement[1],
+        )
+        if relay_target not in unit_sites:
+            return None
+        targets[relay_id] = relay_target
+
+    moving = set(targets)
+    for moving_id, moving_target in targets.items():
+        if occupancy.overlaps(moving_id, moving_target, ignored=moving):
+            return None
+
+    moving_ids = sorted(targets)
+    for index, left_id in enumerate(moving_ids):
+        for right_id in moving_ids[index + 1 :]:
+            if base_placement._boxes_overlap(
+                targets[left_id],
+                state.object_half_extent(left_id),
+                targets[right_id],
+                state.object_half_extent(right_id),
+            ):
+                return None
+
+    if topology.proposal_delta(state, targets) is None:
+        return None
+    return targets
+
+
+def _apply_compound_targets(
+    state: exact._JointState,
+    occupancy: _SpatialOccupancy,
+    targets: dict[int, Position],
+) -> None:
+    """Apply one already-validated multi-object translation transaction."""
+
+    previous = {object_id: state.object_position(object_id) for object_id in targets}
+    for object_id, position in previous.items():
+        occupancy.remove(object_id, position)
+    for object_id, position in targets.items():
+        if object_id in state.relay_positions:
+            state.relay_positions[object_id] = position
+        else:
+            state.positions[object_id] = position
+    for object_id, position in targets.items():
+        occupancy.add(object_id, position)
+
+
 def _anneal_feasible(
     state: exact._JointState,
     topology: _FeasibleTopology,
@@ -1282,6 +1364,19 @@ def _anneal_feasible(
             if other is not None:
                 targets[other] = current
             wire_delta = topology.proposal_delta(state, targets)
+            compound_targets: dict[int, Position] | None = None
+            if wire_delta is None and other is None and object_id not in state.relay_positions:
+                compound_targets = _terminal_relay_compound_targets(
+                    state,
+                    topology,
+                    object_id,
+                    target,
+                    occupancy,
+                    unit_sites,
+                )
+                if compound_targets is not None:
+                    targets = compound_targets
+                    wire_delta = topology.proposal_delta(state, targets)
             if wire_delta is None:
                 continue
 
@@ -1304,13 +1399,16 @@ def _anneal_feasible(
             if delta > 0 and rng.random() >= exp(-delta / temperature):
                 continue
 
-            occupancy.remove(object_id, current)
-            if other is not None:
-                occupancy.remove(other, target)
-            exact._apply_move(state, object_id, target, other)
-            occupancy.add(object_id, target)
-            if other is not None:
-                occupancy.add(other, current)
+            if compound_targets is None:
+                occupancy.remove(object_id, current)
+                if other is not None:
+                    occupancy.remove(other, target)
+                exact._apply_move(state, object_id, target, other)
+                occupancy.add(object_id, target)
+                if other is not None:
+                    occupancy.add(other, current)
+            else:
+                _apply_compound_targets(state, occupancy, compound_targets)
             topology.total_energy += wire_delta
 
         topology = _simplify_feasible_topology(state, topology)

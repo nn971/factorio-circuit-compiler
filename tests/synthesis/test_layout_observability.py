@@ -40,6 +40,8 @@ def test_observability_accounts_for_every_proposal() -> None:
     assert stats.implementation_proposals + stats.relay_proposals == stats.proposals_attempted
     assert stats.implementation_moves_accepted + stats.relay_moves_accepted == stats.accepted_moves
     assert stats.swaps_accepted <= stats.swap_attempts
+    assert stats.compound_moves_accepted <= stats.compound_move_attempts
+    assert stats.compound_relays_moved >= stats.compound_moves_accepted
     assert stats.classified_relay_deletions == stats.relay_deletions
     assert stats.negotiated_routing_search_calls <= stats.routing_search_calls
     assert stats.routing_search_failures <= stats.routing_search_calls

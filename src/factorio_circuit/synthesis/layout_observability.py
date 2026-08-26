@@ -57,6 +57,9 @@ class OptimizationStats:
     relay_moves_accepted: int = 0
     swap_attempts: int = 0
     swaps_accepted: int = 0
+    compound_move_attempts: int = 0
+    compound_moves_accepted: int = 0
+    compound_relays_moved: int = 0
     relay_deletions: int = 0
     relay_isolated_deletions: int = 0
     relay_leaf_deletions: int = 0
@@ -113,6 +116,9 @@ class _MutableOptimizationStats:
     relay_moves_accepted: int = 0
     swap_attempts: int = 0
     swaps_accepted: int = 0
+    compound_move_attempts: int = 0
+    compound_moves_accepted: int = 0
+    compound_relays_moved: int = 0
     relay_deletions: int = 0
     relay_isolated_deletions: int = 0
     relay_leaf_deletions: int = 0
@@ -142,6 +148,9 @@ class _MutableOptimizationStats:
             relay_moves_accepted=self.relay_moves_accepted,
             swap_attempts=self.swap_attempts,
             swaps_accepted=self.swaps_accepted,
+            compound_move_attempts=self.compound_move_attempts,
+            compound_moves_accepted=self.compound_moves_accepted,
+            compound_relays_moved=self.compound_relays_moved,
             relay_deletions=self.relay_deletions,
             relay_isolated_deletions=self.relay_isolated_deletions,
             relay_leaf_deletions=self.relay_leaf_deletions,
@@ -528,6 +537,20 @@ def _anneal_feasible_observed(
             if other is not None:
                 targets[other] = current
             wire_delta = topology.proposal_delta(state, targets)
+            compound_targets: dict[int, base_placement.Position] | None = None
+            if wire_delta is None and other is None and not selected_is_relay:
+                stats.compound_move_attempts += 1
+                compound_targets = incremental._terminal_relay_compound_targets(
+                    state,
+                    topology,
+                    object_id,
+                    target,
+                    occupancy,
+                    unit_sites,
+                )
+                if compound_targets is not None:
+                    targets = compound_targets
+                    wire_delta = topology.proposal_delta(state, targets)
             if wire_delta is None:
                 stats.wire_reach_rejections += 1
                 continue
@@ -553,15 +576,21 @@ def _anneal_feasible_observed(
                 stats.metropolis_rejections += 1
                 continue
 
-            occupancy.remove(object_id, current)
-            if other is not None:
-                occupancy.remove(other, target)
-            exact._apply_move(state, object_id, target, other)
-            occupancy.add(object_id, target)
-            if other is not None:
-                occupancy.add(other, current)
+            if compound_targets is None:
+                occupancy.remove(object_id, current)
+                if other is not None:
+                    occupancy.remove(other, target)
+                exact._apply_move(state, object_id, target, other)
+                occupancy.add(object_id, target)
+                if other is not None:
+                    occupancy.add(other, current)
+            else:
+                incremental._apply_compound_targets(state, occupancy, compound_targets)
             topology.total_energy += wire_delta
             stats.accepted_moves += 1
+            if compound_targets is not None:
+                stats.compound_moves_accepted += 1
+                stats.compound_relays_moved += len(compound_targets) - 1
             if selected_is_relay:
                 stats.relay_moves_accepted += 1
             else:
