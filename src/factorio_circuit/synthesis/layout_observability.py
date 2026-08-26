@@ -297,7 +297,7 @@ def _observe_helper_work(stats: _MutableOptimizationStats) -> Iterator[None]:
     with _HELPER_OBSERVATION_LOCK:
         original_find = incremental._find_relay_chain
         original_find_negotiated = incremental._find_negotiated_relay_chain
-        original_heappop = incremental.heappop
+        original_heappop = getattr(incremental, "heappop")
         original_simplify = incremental._simplify_feasible_topology
         stats_token = _ACTIVE_WORK_STATS.set(stats)
 
