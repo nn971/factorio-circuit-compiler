@@ -106,6 +106,14 @@ Prioritized experiments:
 4. targeted local repair around hard anchors and routing bottlenecks;
 5. only after measurement, lower-level performance work in occupancy, routing indexes, and proposal evaluation.
 
+### Experiment record
+
+- **Rejected: adaptive coarse retopology.** In 12 paired runs it produced 0 better / 12 equal / 0 worse physical objectives while adding four rebuilds per run and increasing routing work/runtime.
+- **Rejected: terminal + one adjacent relay translation.** In 18 paired runs it produced 0 better / 18 equal / 0 worse objectives. It attempted 13,096 rescues and accepted none because taut safe-span chains transferred the violation to the relay's far side.
+- **Rejected: seven-step reach backoff.** In 18 paired runs it produced 0 better / 17 equal / 1 worse objectives. It reduced some reach rejections but made taut/fixed cases 2.6x-4.5x slower.
+- **Rejected: analytical implementation reach clipping.** In 18 paired runs it produced 0 better / 15 equal / 3 worse objectives. It cheaply removed many reach rejections, but every clustered sparse-cut seed became lexicographically worse by trading larger area for shorter wire.
+- **Current: exact mid-epoch best tracking.** The annealer currently samples the true `(relay_count, occupied_area, wire_length)` objective only at epoch boundaries. Record any better exact state immediately after an accepted move without changing the proposal, RNG, or acceptance trajectory.
+
 ### C acceptance
 
 - Every accepted optimization is benchmarked across multiple seeds.
@@ -245,4 +253,4 @@ Milestone G should begin as soon as a small useful random-program generator exis
 
 ## Current step
 
-Begin **Milestone C** with adaptive coarse retopology at the existing safe epoch boundary. Preserve the fixed-fraction rebuild schedule as a baseline fallback, add conservative triggers for sustained objective stagnation or wire-reach pressure, and keep a cooldown between adaptive rebuilds. Use the Milestone B counters and the Milestone A corpus to compare quality and routing work across seeds before accepting broader proposal or compound-move changes.
+Continue **Milestone C** with exact mid-epoch best tracking. This experiment deliberately leaves the visited annealing trajectory unchanged and only samples the public lexicographic objective after accepted moves, so a fixed seed cannot lose a state the baseline would have returned. Keep it only if the corpus shows useful objective gains at acceptable scoring overhead; if the idea is valuable but expensive, optimize the exact-score update incrementally rather than weakening the objective check.

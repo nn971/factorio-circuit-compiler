@@ -450,6 +450,7 @@ def _anneal_feasible_observed(
             _complete_epoch(stats, best_score=best_score, improved=False)
             continue
 
+        epoch_improved = False
         for step in range(epoch_start, epoch_end):
             stats.proposals_attempted += 1
             progress = step / max(1, iterations - 1)
@@ -569,6 +570,15 @@ def _anneal_feasible_observed(
             if other is not None:
                 stats.swaps_accepted += 1
 
+            accepted_score = incremental._accepted_move_exact_score(state, topology, center)
+            if accepted_score < best_score:
+                best_score = accepted_score
+                best_positions = dict(state.positions)
+                best_relays = dict(state.relay_positions)
+                best_relay_groups = dict(state.relay_groups)
+                best_routing = topology.routing
+                epoch_improved = True
+
         topology = incremental._simplify_feasible_topology(state, topology)
         if epoch_end in topology_rebuilds and epoch_end < iterations:
             can_rebuild = not bool(state.fixed_objects & state.relay_positions.keys())
@@ -585,14 +595,14 @@ def _anneal_feasible_observed(
                 stats.topology_rebuild_successes += 1
         occupancy = incremental._SpatialOccupancy.build(state)
         score = incremental._exact_score(state, topology, center)
-        improved = score < best_score
-        if improved:
+        if score < best_score:
             best_score = score
             best_positions = dict(state.positions)
             best_relays = dict(state.relay_positions)
             best_relay_groups = dict(state.relay_groups)
             best_routing = topology.routing
-        _complete_epoch(stats, best_score=best_score, improved=improved)
+            epoch_improved = True
+        _complete_epoch(stats, best_score=best_score, improved=epoch_improved)
 
     state.positions.clear()
     state.positions.update(best_positions)

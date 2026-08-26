@@ -1150,6 +1150,16 @@ def refine_incremental_joint_layout(
     return exact.JointLayoutResult(dict(state.positions), routing)
 
 
+def _accepted_move_exact_score(
+    state: exact._JointState,
+    topology: _FeasibleTopology,
+    center: Position,
+) -> tuple[int, float, float]:
+    """Measure the public lexicographic objective after one accepted hot-loop move."""
+
+    return _exact_score(state, topology, center)
+
+
 def _anneal_feasible(
     state: exact._JointState,
     topology: _FeasibleTopology,
@@ -1312,6 +1322,14 @@ def _anneal_feasible(
             if other is not None:
                 occupancy.add(other, current)
             topology.total_energy += wire_delta
+
+            accepted_score = _accepted_move_exact_score(state, topology, center)
+            if accepted_score < best_score:
+                best_score = accepted_score
+                best_positions = dict(state.positions)
+                best_relays = dict(state.relay_positions)
+                best_relay_groups = dict(state.relay_groups)
+                best_routing = topology.routing
 
         topology = _simplify_feasible_topology(state, topology)
         if epoch_end in topology_rebuilds and epoch_end < iterations:

@@ -389,3 +389,86 @@ def test_rectangle_overflow_penalty_is_quadratic_and_local() -> None:
     assert inside == 0.0
     assert one_row_below == pytest.approx(1.0)
     assert two_rows_below == pytest.approx(4.0)
+
+
+def test_annealer_retains_exact_best_state_seen_inside_an_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    physical = PhysicalCircuit(
+        "mid_epoch_best",
+        entities=[ConstantCombinator(entity_id) for entity_id in (1, 2)],
+    )
+    state = exact._JointState(
+        circuit=physical,
+        endpoints_by_group={},
+        colors_by_group={},
+        positions={1: (0.0, 0.0), 2: (10.0, 0.0)},
+        relay_positions={},
+        relay_groups={},
+        safe_span=100.0,
+        forbidden_areas=(),
+    )
+    topology = incremental._FeasibleTopology.build(
+        state,
+        RoutingPlan(relays=(), wires=()),
+    )
+    options = PlacementOptions(
+        anchor_io=False,
+        iterations=2,
+        reserve_corridors=False,
+        target_fill=0.6,
+    )
+    grid = incremental.base_placement._candidate_grid(8, 1, options)
+    proposed = iter(((1.0, 0.0), (2.0, 0.0)))
+    exact_scores = iter(
+        (
+            (0, 100.0, 100.0),
+            (0, 50.0, 50.0),
+            (0, 80.0, 80.0),
+        )
+    )
+    first_accepted_positions: dict[int, tuple[float, float]] = {}
+
+    monkeypatch.setattr(
+        incremental,
+        "_proposed_position",
+        lambda *_args, **_kwargs: next(proposed),
+    )
+    monkeypatch.setattr(incremental, "_position_is_legal", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(incremental, "_rectangle_overflow", lambda *_args, **_kwargs: 0.0)
+    monkeypatch.setattr(exact, "_compactness", lambda *_args, **_kwargs: 0.0)
+    monkeypatch.setattr(
+        incremental,
+        "_exact_score",
+        lambda *_args, **_kwargs: (0, 80.0, 80.0),
+    )
+
+    def accepted_score(
+        observed_state: exact._JointState,
+        _topology: incremental._FeasibleTopology,
+        _center: tuple[float, float],
+    ) -> tuple[int, float, float]:
+        score = next(exact_scores)
+        if score == (0, 50.0, 50.0):
+            first_accepted_positions.update(observed_state.positions)
+        return score
+
+    # The initial exact best is supplied separately so the helper sequence describes accepted moves.
+    initial_calls = 0
+
+    def exact_score(
+        _state: exact._JointState,
+        _topology: incremental._FeasibleTopology,
+        _center: tuple[float, float],
+    ) -> tuple[int, float, float]:
+        nonlocal initial_calls
+        initial_calls += 1
+        return (0, 100.0, 100.0) if initial_calls == 1 else (0, 80.0, 80.0)
+
+    monkeypatch.setattr(incremental, "_exact_score", exact_score)
+    monkeypatch.setattr(incremental, "_accepted_move_exact_score", accepted_score)
+
+    incremental._anneal_feasible(state, topology, options, grid)
+
+    assert first_accepted_positions
+    assert state.positions == first_accepted_positions
