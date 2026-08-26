@@ -36,7 +36,9 @@ def _run_case(case, *, proposals: int, seed: int) -> None:
     stats = observed.stats
     validate_physical_layout(replace(case.problem, layout=result.layout))
     if stats.accounted_proposals != stats.proposals_attempted:
-        raise AssertionError(f"{case.name} observability counters do not account for every proposal")
+        raise AssertionError(
+            f"{case.name} observability counters do not account for every proposal"
+        )
 
     print(
         f"{case.name} seed={seed}: "
