@@ -79,7 +79,6 @@ def _run_case(
     queue_pop_deltas: list[int] = []
     runtime_ratios: list[float] = []
     adaptive_attempts = 0
-    adaptive_successes = 0
 
     for seed in range(first_seed, first_seed + seeds):
         fixed, fixed_time = _run(factory, proposals=proposals, seed=seed, adaptive=False)
@@ -101,12 +100,12 @@ def _run_case(
         )
         runtime_ratios.append(adaptive_time / fixed_time if fixed_time else 1.0)
         adaptive_attempts += adaptive.stats.adaptive_topology_rebuild_attempts
-        adaptive_successes += adaptive.stats.adaptive_topology_rebuild_successes
         print(
             f"{name} seed={seed}: fixed={fixed_metrics.objective}, "
             f"adaptive={adaptive_metrics.objective}, outcome={outcome}, "
-            f"adaptive-rebuilds={adaptive.stats.adaptive_topology_rebuild_successes}/"
-            f"{adaptive.stats.adaptive_topology_rebuild_attempts}, "
+            f"adaptive-rebuild-attempts={adaptive.stats.adaptive_topology_rebuild_attempts}, "
+            f"all-rebuild-successes={adaptive.stats.topology_rebuild_successes}/"
+            f"{adaptive.stats.topology_rebuild_attempts}, "
             f"queue-pops={fixed.stats.routing_queue_pops}->{adaptive.stats.routing_queue_pops}, "
             f"runtime={fixed_time:.3f}s->{adaptive_time:.3f}s"
         )
@@ -117,7 +116,7 @@ def _run_case(
         f"median-delta(relays={median(relay_deltas):+.1f}, area={median(area_deltas):+.2f}, "
         f"wire={median(wire_deltas):+.3f}, queue-pops={median(queue_pop_deltas):+.1f}), "
         f"median-runtime-ratio={median(runtime_ratios):.3f}, "
-        f"adaptive-rebuilds={adaptive_successes}/{adaptive_attempts}"
+        f"adaptive-rebuild-attempts={adaptive_attempts}"
     )
 
 
