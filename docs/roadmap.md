@@ -106,6 +106,11 @@ Prioritized experiments:
 4. targeted local repair around hard anchors and routing bottlenecks;
 5. only after measurement, lower-level performance work in occupancy, routing indexes, and proposal evaluation.
 
+### C experiment log
+
+- **Adaptive coarse retopology: rejected.** A conservative stagnation/wire-reach trigger was measured against the fixed 25/50/75% schedule on four representative corpus families, three identical seeds each, at 4,096 proposals. All 12 paired runs produced the same physical objective, while adaptive runs performed four extra rebuilds each. Routing cases increased deterministic search work (`63 -> 147` queue pops on the fixed-span case and `21 -> 49` in the narrow corridor), with roughly 2–9% runtime overhead. The experiment was removed from production rather than threshold-tuned without a quality signal.
+- **Terminal + adjacent-relay compound rescue: current experiment.** When an implementation move would otherwise fail only on wire reach, translate the directly offending movable relays by the same displacement as one transaction. Fixed relays, illegal sites, stationary collisions, moving-object collisions, or a broken far-side hop reject the rescue. The proposal uses the original random target and Metropolis decision, so the experiment adds no new RNG path.
+
 ### C acceptance
 
 - Every accepted optimization is benchmarked across multiple seeds.
@@ -245,4 +250,4 @@ Milestone G should begin as soon as a small useful random-program generator exis
 
 ## Current step
 
-Begin **Milestone C** with adaptive coarse retopology at the existing safe epoch boundary. Preserve the fixed-fraction rebuild schedule as a baseline fallback, add conservative triggers for sustained objective stagnation or wire-reach pressure, and keep a cooldown between adaptive rebuilds. Use the Milestone B counters and the Milestone A corpus to compare quality and routing work across seeds before accepting broader proposal or compound-move changes.
+Evaluate **terminal + adjacent-relay compound rescue** as the second Milestone C experiment. First preserve the production/observed decision equivalence and prove local transactional safety. Then measure compound attempts/accepts and compare compound-enabled runs against the same seeds with rescue disabled. Keep the change only if the corpus shows a quality or work benefit; otherwise remove it and advance to the next proposal-family experiment.
