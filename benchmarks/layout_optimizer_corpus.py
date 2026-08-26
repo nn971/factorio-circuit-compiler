@@ -13,9 +13,14 @@ from statistics import median
 from time import monotonic
 
 from factorio_circuit.ir.physical import (
+    ArithmeticCombinator,
     Connector,
     ConstantCombinator,
+    InputPort,
+    Operand,
+    OutputPort,
     PhysicalCircuit,
+    SignalId,
     WireColor,
     WireConnection,
     WireEndpoint,
@@ -28,7 +33,7 @@ from factorio_circuit.synthesis.layout_optimizer import (
     optimize_physical_layout,
     validate_physical_layout,
 )
-from factorio_circuit.synthesis.placement import PlacementOptions
+from factorio_circuit.synthesis.placement import PlacementOptions, RelayForbiddenArea
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,10 +42,32 @@ class _CorpusCase:
     problem: LayoutOptimizationProblem
 
 
-def _constant_lattice(width: int, height: int) -> LegalPlacementLattice:
+def _rectangular_lattice(
+    width: int,
+    height: int,
+    *,
+    y_offset: int = 0,
+    include_wide: bool = False,
+    forbidden_areas: tuple[RelayForbiddenArea, ...] = (),
+) -> LegalPlacementLattice:
+    unit_sites = tuple(
+        (float(x), float(y))
+        for y in range(y_offset, y_offset + height)
+        for x in range(width)
+    )
+    wide_sites = (
+        tuple(
+            (float(x), float(y))
+            for y in range(y_offset, y_offset + height)
+            for x in range(1, width - 1)
+        )
+        if include_wide
+        else ()
+    )
     return LegalPlacementLattice(
-        unit_sites=tuple((float(x), float(y)) for y in range(height) for x in range(width)),
-        wide_sites=(),
+        unit_sites=unit_sites,
+        wide_sites=wide_sites,
+        forbidden_areas=forbidden_areas,
     )
 
 
@@ -58,7 +85,7 @@ def _sparse_independent_case() -> _CorpusCase:
         "sparse-independent-300",
         LayoutOptimizationProblem(
             layout,
-            _constant_lattice(columns * 4, rows * 4),
+            _rectangular_lattice(columns * 4, rows * 4),
             safe_wire_span=7.0,
         ),
     )
@@ -116,7 +143,7 @@ def _relay_forest_case() -> _CorpusCase:
         "hand-routed-forest-200-plus-1900-relays",
         LayoutOptimizationProblem(
             layout,
-            _constant_lattice(endpoint_distance + 1, pair_count * row_pitch),
+            _rectangular_lattice(endpoint_distance + 1, pair_count * row_pitch),
             safe_wire_span=safe_span,
         ),
     )
@@ -176,7 +203,7 @@ def _shared_bus_case() -> _CorpusCase:
         "shared-bus-65-plus-19-relays",
         LayoutOptimizationProblem(
             layout,
-            _constant_lattice(endpoint_distance + 1, leaf_count * row_pitch),
+            _rectangular_lattice(endpoint_distance + 1, leaf_count * row_pitch),
             safe_wire_span=safe_span,
         ),
     )
@@ -223,9 +250,187 @@ def _fixed_endpoint_span_case() -> _CorpusCase:
         "fixed-endpoint-span-2-plus-19-relays",
         LayoutOptimizationProblem(
             layout,
-            _constant_lattice(endpoint_distance + 1, 3),
+            _rectangular_lattice(endpoint_distance + 1, 3),
             safe_wire_span=safe_span,
             fixed_positions={1: positions[1], 2: positions[2]},
+        ),
+    )
+
+
+def _narrow_corridor_case() -> _CorpusCase:
+    """A fixed long span whose only legal short-hop path crosses a one-tile corridor."""
+
+    endpoint_distance = 42
+    safe_span = 7.0
+    forbidden_areas: tuple[RelayForbiddenArea, ...] = (
+        (8.5, 33.5, -4.5, -0.5),
+        (8.5, 33.5, 0.5, 4.5),
+    )
+    entities = [ConstantCombinator(1), ConstantCombinator(2)]
+    positions: dict[int, tuple[float, float]] = {1: (0.0, 0.0), 2: (42.0, 0.0)}
+    relays: list[LayoutRelay] = []
+    chain = [1]
+    next_relay_id = 3
+    for x in range(7, endpoint_distance, 7):
+        relay_id = next_relay_id
+        next_relay_id += 1
+        position = (float(x), 0.0)
+        positions[relay_id] = position
+        relays.append(LayoutRelay(relay_id, position, "one-tile corridor red chain"))
+        chain.append(relay_id)
+    chain.append(2)
+    wires = tuple(
+        LayoutWire(left, 1, right, 1, WireColor.RED)
+        for left, right in zip(chain, chain[1:], strict=False)
+    )
+    circuit = PhysicalCircuit(
+        "generic_narrow_corridor_span",
+        entities=entities,
+        connections=[
+            WireConnection(
+                WireEndpoint(1, Connector.SINGLE),
+                WireEndpoint(2, Connector.SINGLE),
+                WireColor.RED,
+            )
+        ],
+    )
+    layout = Layout(circuit, positions, tuple(relays), wires, (), ())
+    return _CorpusCase(
+        "narrow-corridor-span-2-plus-5-relays",
+        LayoutOptimizationProblem(
+            layout,
+            _rectangular_lattice(
+                endpoint_distance + 1,
+                9,
+                y_offset=-4,
+                forbidden_areas=forbidden_areas,
+            ),
+            safe_wire_span=safe_span,
+            fixed_positions={1: positions[1], 2: positions[2]},
+        ),
+    )
+
+
+def _mixed_footprint_case() -> _CorpusCase:
+    """Independent 1x1 constants and 2x1 arithmetic combinators on one shared lattice."""
+
+    signal = SignalId("virtual", "signal-A")
+    constants = [ConstantCombinator(entity_id) for entity_id in range(1, 13)]
+    arithmetic = [
+        ArithmeticCombinator(
+            entity_id,
+            "+",
+            Operand(constant=1),
+            Operand(constant=1),
+            output_each=False,
+            output_signal=signal,
+        )
+        for entity_id in range(13, 21)
+    ]
+    positions: dict[int, tuple[float, float]] = {}
+    for index, entity in enumerate(constants):
+        positions[entity.id] = (float(1 + (index % 6) * 3), float(8 + index // 6 * 2))
+    for index, entity in enumerate(arithmetic):
+        positions[entity.id] = (float(2 + (index % 4) * 4), float(2 + index // 4 * 3))
+    circuit = PhysicalCircuit("generic_mixed_footprints", entities=[*constants, *arithmetic])
+    layout = Layout(circuit, positions, (), (), (), ())
+    return _CorpusCase(
+        "mixed-footprints-12-unit-plus-8-wide",
+        LayoutOptimizationProblem(
+            layout,
+            _rectangular_lattice(20, 12, include_wide=True),
+            safe_wire_span=7.0,
+        ),
+    )
+
+
+def _perimeter_anchor_case() -> _CorpusCase:
+    """Many fixed public terminals surrounding movable internal implementation entities."""
+
+    lane_count = 6
+    endpoint_distance = 42
+    safe_span = 7.0
+    left_ids = list(range(1, lane_count + 1))
+    right_ids = list(range(lane_count + 1, lane_count * 2 + 1))
+    body_ids = list(range(lane_count * 2 + 1, lane_count * 3 + 1))
+    entities = [
+        *[ConstantCombinator(entity_id, annotation_only=True) for entity_id in left_ids],
+        *[ConstantCombinator(entity_id, annotation_only=True) for entity_id in right_ids],
+        *[ConstantCombinator(entity_id) for entity_id in body_ids],
+    ]
+    positions: dict[int, tuple[float, float]] = {}
+    connections: list[WireConnection] = []
+    relays: list[LayoutRelay] = []
+    wires: list[LayoutWire] = []
+    next_relay_id = lane_count * 3 + 1
+
+    for lane, (left_id, right_id, body_id) in enumerate(
+        zip(left_ids, right_ids, body_ids, strict=True)
+    ):
+        y = float(1 + lane * 2)
+        color = WireColor.RED if lane % 2 == 0 else WireColor.GREEN
+        connector_id = 1 if color is WireColor.RED else 2
+        positions[left_id] = (0.0, y)
+        positions[body_id] = (21.0, y)
+        positions[right_id] = (42.0, y)
+        connections.extend(
+            (
+                WireConnection(
+                    WireEndpoint(left_id, Connector.SINGLE),
+                    WireEndpoint(body_id, Connector.SINGLE),
+                    color,
+                ),
+                WireConnection(
+                    WireEndpoint(body_id, Connector.SINGLE),
+                    WireEndpoint(right_id, Connector.SINGLE),
+                    color,
+                ),
+            )
+        )
+
+        chain = [left_id]
+        for x in (7, 14):
+            relay_id = next_relay_id
+            next_relay_id += 1
+            position = (float(x), y)
+            positions[relay_id] = position
+            relays.append(LayoutRelay(relay_id, position, "anchored interface relay"))
+            chain.append(relay_id)
+        chain.append(body_id)
+        for x in (28, 35):
+            relay_id = next_relay_id
+            next_relay_id += 1
+            position = (float(x), y)
+            positions[relay_id] = position
+            relays.append(LayoutRelay(relay_id, position, "anchored interface relay"))
+            chain.append(relay_id)
+        chain.append(right_id)
+        wires.extend(
+            LayoutWire(left, connector_id, right, connector_id, color)
+            for left, right in zip(chain, chain[1:], strict=False)
+        )
+
+    circuit = PhysicalCircuit(
+        "generic_perimeter_anchors",
+        entities=entities,
+        connections=connections,
+        inputs=[InputPort(f"input-{lane}", left_id, None) for lane, left_id in enumerate(left_ids)],
+        outputs=[
+            OutputPort(f"output-{lane}", right_id, None, 0)
+            for lane, right_id in enumerate(right_ids)
+        ],
+    )
+    layout = Layout(circuit, positions, tuple(relays), tuple(wires), (), ())
+    fixed_positions = {
+        entity_id: positions[entity_id] for entity_id in (*left_ids, *right_ids)
+    }
+    return _CorpusCase(
+        "perimeter-anchors-12-plus-6-body-plus-24-relays",
+        LayoutOptimizationProblem(
+            layout,
+            _rectangular_lattice(endpoint_distance + 1, lane_count * 2 + 1),
+            safe_wire_span=safe_span,
+            fixed_positions=fixed_positions,
         ),
     )
 
@@ -308,6 +513,9 @@ def main() -> None:
         _relay_forest_case(),
         _shared_bus_case(),
         _fixed_endpoint_span_case(),
+        _narrow_corridor_case(),
+        _mixed_footprint_case(),
+        _perimeter_anchor_case(),
     )
     results = {
         case.name: _run_seed_sweep(
