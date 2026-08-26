@@ -39,6 +39,8 @@ def _run_case(case, *, proposals: int, seed: int) -> None:
         raise AssertionError(
             f"{case.name} observability counters do not account for every proposal"
         )
+    if stats.classified_relay_deletions != stats.relay_deletions:
+        raise AssertionError(f"{case.name} relay simplification counters are inconsistent")
 
     print(
         f"{case.name} seed={seed}: "
@@ -47,7 +49,12 @@ def _run_case(case, *, proposals: int, seed: int) -> None:
         f"reach={stats.wire_reach_rejections}, metropolis={stats.metropolis_rejections}), "
         f"proposal-kind(implementation={stats.implementation_proposals}, "
         f"relay={stats.relay_proposals}), swaps={stats.swaps_accepted}/{stats.swap_attempts}, "
-        f"relay-deletions={stats.relay_deletions}, "
+        f"simplify(calls={stats.simplification_calls}, total={stats.relay_deletions}, "
+        f"isolated={stats.relay_isolated_deletions}, leaf={stats.relay_leaf_deletions}, "
+        f"bypass={stats.relay_degree_two_bypasses}), "
+        f"routing(searches={stats.routing_search_calls}, "
+        f"negotiated={stats.negotiated_routing_search_calls}, "
+        f"failed={stats.routing_search_failures}, queue-pops={stats.routing_queue_pops}), "
         f"rebuilds={stats.topology_rebuild_successes}/{stats.topology_rebuild_attempts}, "
         f"epochs={stats.epochs_completed}, stagnation={stats.epochs_since_last_improvement}, "
         f"objective={result.before.objective}->{result.after.objective}"
