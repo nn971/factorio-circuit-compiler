@@ -46,16 +46,8 @@ def test_milestone_c_full_request_adds_curves_without_duplicates() -> None:
         }
     ]
     for case in acceptance.CURVE_CASES:
-        keys = {
-            (row["proposals"], row["seed"])
-            for row in request
-            if row["case"] == case
-        }
-        assert keys == {
-            (budget, seed)
-            for budget in acceptance.CURVE_BUDGETS
-            for seed in (0, 1)
-        }
+        keys = {(row["proposals"], row["seed"]) for row in request if row["case"] == case}
+        assert keys == {(budget, seed) for budget in acceptance.CURVE_BUDGETS for seed in (0, 1)}
 
 
 def test_milestone_c_compare_reports_lexicographic_and_component_outcomes() -> None:
