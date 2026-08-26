@@ -391,6 +391,38 @@ def test_rectangle_overflow_penalty_is_quadratic_and_local() -> None:
     assert two_rows_below == pytest.approx(4.0)
 
 
+def test_incremental_exact_objective_tracker_matches_full_score_after_moves() -> None:
+    state = _constant_state_with_relay()
+    topology = incremental._FeasibleTopology.build(
+        state,
+        RoutingPlan(
+            relays=(BlueprintRelay(3, (1.5, 0.0), "relay"),),
+            wires=(
+                RoutedWire(1, 1, 3, 1, WireColor.RED),
+                RoutedWire(3, 1, 2, 1, WireColor.RED),
+            ),
+        ),
+    )
+    tracker = incremental._ExactObjectiveTracker.build(state, topology)
+    center = (0.0, 0.0)
+
+    assert tracker.score(state) == pytest.approx(incremental._exact_score(state, topology, center))
+
+    targets = {1: (-1.0, 0.0)}
+    wire_delta = tracker.proposal_wire_length_delta(state, topology, targets)
+    exact._apply_move(state, 1, targets[1], None)
+    tracker.accept_move(state, targets, wire_delta)
+
+    assert tracker.score(state) == pytest.approx(incremental._exact_score(state, topology, center))
+
+    targets = {1: (3.0, 0.0), 2: (-1.0, 0.0)}
+    wire_delta = tracker.proposal_wire_length_delta(state, topology, targets)
+    exact._apply_move(state, 1, targets[1], 2)
+    tracker.accept_move(state, targets, wire_delta)
+
+    assert tracker.score(state) == pytest.approx(incremental._exact_score(state, topology, center))
+
+
 def test_annealer_retains_exact_best_state_seen_inside_an_epoch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -420,13 +452,7 @@ def test_annealer_retains_exact_best_state_seen_inside_an_epoch(
     )
     grid = incremental.base_placement._candidate_grid(8, 1, options)
     proposed = iter(((1.0, 0.0), (2.0, 0.0)))
-    exact_scores = iter(
-        (
-            (0, 100.0, 100.0),
-            (0, 50.0, 50.0),
-            (0, 80.0, 80.0),
-        )
-    )
+    accepted_scores = iter(((0, 50.0, 50.0), (0, 80.0, 80.0)))
     first_accepted_positions: dict[int, tuple[float, float]] = {}
 
     monkeypatch.setattr(
@@ -437,23 +463,8 @@ def test_annealer_retains_exact_best_state_seen_inside_an_epoch(
     monkeypatch.setattr(incremental, "_position_is_legal", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(incremental, "_rectangle_overflow", lambda *_args, **_kwargs: 0.0)
     monkeypatch.setattr(exact, "_compactness", lambda *_args, **_kwargs: 0.0)
-    monkeypatch.setattr(
-        incremental,
-        "_exact_score",
-        lambda *_args, **_kwargs: (0, 80.0, 80.0),
-    )
+    monkeypatch.setattr(incremental, "_TRACK_EXACT_ACCEPTED_MOVES", True)
 
-    def accepted_score(
-        observed_state: exact._JointState,
-        _topology: incremental._FeasibleTopology,
-        _center: tuple[float, float],
-    ) -> tuple[int, float, float]:
-        score = next(exact_scores)
-        if score == (0, 50.0, 50.0):
-            first_accepted_positions.update(observed_state.positions)
-        return score
-
-    # The initial exact best is supplied separately so the helper sequence describes accepted moves.
     initial_calls = 0
 
     def exact_score(
@@ -465,9 +476,19 @@ def test_annealer_retains_exact_best_state_seen_inside_an_epoch(
         initial_calls += 1
         return (0, 100.0, 100.0) if initial_calls == 1 else (0, 80.0, 80.0)
 
+    def accepted_score(
+        observed_state: exact._JointState,
+        _topology: incremental._FeasibleTopology,
+        _center: tuple[float, float],
+        _tracker: incremental._ExactObjectiveTracker,
+    ) -> tuple[int, float, float]:
+        score = next(accepted_scores)
+        if score == (0, 50.0, 50.0):
+            first_accepted_positions.update(observed_state.positions)
+        return score
+
     monkeypatch.setattr(incremental, "_exact_score", exact_score)
     monkeypatch.setattr(incremental, "_accepted_move_exact_score", accepted_score)
-    monkeypatch.setattr(incremental, "_EXACT_BEST_ACCEPTED_STRIDE", 1)
 
     incremental._anneal_feasible(state, topology, options, grid)
 

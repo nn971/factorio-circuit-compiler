@@ -112,7 +112,7 @@ Prioritized experiments:
 - **Rejected: terminal + one adjacent relay translation.** In 18 paired runs it produced 0 better / 18 equal / 0 worse objectives. It attempted 13,096 rescues and accepted none because taut safe-span chains transferred the violation to the relay's far side.
 - **Rejected: seven-step reach backoff.** In 18 paired runs it produced 0 better / 17 equal / 1 worse objectives. It reduced some reach rejections but made taut/fixed cases 2.6x-4.5x slower.
 - **Rejected: analytical implementation reach clipping.** In 18 paired runs it produced 0 better / 15 equal / 3 worse objectives. It cheaply removed many reach rejections, but every clustered sparse-cut seed became lexicographically worse by trading larger area for shorter wire.
-- **Current: exact mid-epoch best tracking.** The annealer currently samples the true `(relay_count, occupied_area, wire_length)` objective only at epoch boundaries. Record any better exact state immediately after an accepted move without changing the proposal, RNG, or acceptance trajectory.
+- **Promising: exact mid-epoch best tracking.** Full rescoring after every accepted move found transient lexicographic improvements without changing the search trajectory, but cost roughly 1.7x-2.3x on active cases. Sampling every 4 accepted moves preserved the observed gain in the short-stride matrix but still cost up to about 33%; stride 8 and above missed it. The current experiment keeps every-move sampling while maintaining footprint extrema and incident-wire length incrementally.
 
 ### C acceptance
 
@@ -253,4 +253,4 @@ Milestone G should begin as soon as a small useful random-program generator exis
 
 ## Current step
 
-Continue **Milestone C** with exact mid-epoch best tracking. This experiment deliberately leaves the visited annealing trajectory unchanged and only samples the public lexicographic objective after accepted moves, so a fixed seed cannot lose a state the baseline would have returned. Keep it only if the corpus shows useful objective gains at acceptable scoring overhead; if the idea is valuable but expensive, optimize the exact-score update incrementally rather than weakening the objective check.
+Continue **Milestone C** with incremental exact mid-epoch best tracking. Preserve every accepted-move sampling of the public lexicographic objective, but maintain footprint extrema with lazy heaps and wire length through incident-wire deltas so scoring stays local. Accept this only if paired corpus runs keep the same proposal/acceptance trajectory, never lose a baseline objective, retain useful transient improvements, and reduce the prior full-rescan overhead to a small fraction.

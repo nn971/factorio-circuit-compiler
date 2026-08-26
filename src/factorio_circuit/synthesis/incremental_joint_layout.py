@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
-from heapq import heappop, heappush
+from heapq import heapify, heappop, heappush
 from math import ceil, exp, floor, hypot
 from random import Random
 
@@ -46,7 +46,7 @@ from factorio_circuit.synthesis import placement as base_placement
 from factorio_circuit.synthesis.placement import PlacementOptions, Position
 
 _EPOCH_PROPOSALS = 256
-_EXACT_BEST_ACCEPTED_STRIDE = 32
+_TRACK_EXACT_ACCEPTED_MOVES = True
 _EPSILON = 1e-9
 _RELAY_HALF_EXTENT = (0.5, 0.5)
 _SLACK_START = 0.85
@@ -146,6 +146,120 @@ class _FeasibleTopology:
             delta += _wire_energy(after_distance, state.safe_span)
             delta -= _wire_energy(_distance(source_before, target_before), state.safe_span)
         return delta
+
+
+@dataclass(slots=True)
+class _ExactObjectiveTracker:
+    """Incrementally maintain the public lexicographic objective inside one topology epoch."""
+
+    bounds: dict[int, tuple[float, float, float, float]]
+    left_heap: list[tuple[float, int]]
+    right_heap: list[tuple[float, int]]
+    top_heap: list[tuple[float, int]]
+    bottom_heap: list[tuple[float, int]]
+    wire_length: float
+
+    @classmethod
+    def build(
+        cls,
+        state: exact._JointState,
+        topology: _FeasibleTopology,
+    ) -> _ExactObjectiveTracker:
+        bounds: dict[int, tuple[float, float, float, float]] = {}
+        for object_id in [*state.positions, *state.relay_positions]:
+            x, y = state.object_position(object_id)
+            half_x, half_y = state.object_half_extent(object_id)
+            bounds[object_id] = (x - half_x, x + half_x, y - half_y, y + half_y)
+        left_heap = [(value[0], object_id) for object_id, value in bounds.items()]
+        right_heap = [(-value[1], object_id) for object_id, value in bounds.items()]
+        top_heap = [(value[2], object_id) for object_id, value in bounds.items()]
+        bottom_heap = [(-value[3], object_id) for object_id, value in bounds.items()]
+        heapify(left_heap)
+        heapify(right_heap)
+        heapify(top_heap)
+        heapify(bottom_heap)
+        wire_length = sum(
+            _distance(
+                state.object_position(wire.source_entity),
+                state.object_position(wire.target_entity),
+            )
+            for wire in topology.routing.wires
+        )
+        return cls(
+            bounds,
+            left_heap,
+            right_heap,
+            top_heap,
+            bottom_heap,
+            wire_length,
+        )
+
+    def proposal_wire_length_delta(
+        self,
+        state: exact._JointState,
+        topology: _FeasibleTopology,
+        targets: dict[int, Position],
+    ) -> float:
+        affected: set[wire_routing.RoutedWire] = set()
+        for object_id in targets:
+            affected.update(topology.incident_wires.get(object_id, ()))
+        delta = 0.0
+        for wire in affected:
+            source_before = state.object_position(wire.source_entity)
+            target_before = state.object_position(wire.target_entity)
+            source_after = targets.get(wire.source_entity, source_before)
+            target_after = targets.get(wire.target_entity, target_before)
+            delta += _distance(source_after, target_after)
+            delta -= _distance(source_before, target_before)
+        return delta
+
+    def accept_move(
+        self,
+        state: exact._JointState,
+        targets: dict[int, Position],
+        wire_length_delta: float,
+    ) -> None:
+        self.wire_length += wire_length_delta
+        for object_id in targets:
+            x, y = state.object_position(object_id)
+            half_x, half_y = state.object_half_extent(object_id)
+            bounds = (x - half_x, x + half_x, y - half_y, y + half_y)
+            self.bounds[object_id] = bounds
+            heappush(self.left_heap, (bounds[0], object_id))
+            heappush(self.right_heap, (-bounds[1], object_id))
+            heappush(self.top_heap, (bounds[2], object_id))
+            heappush(self.bottom_heap, (-bounds[3], object_id))
+
+    def _clean_heap(
+        self,
+        heap: list[tuple[float, int]],
+        *,
+        bound_index: int,
+        sign: float,
+    ) -> None:
+        while heap:
+            stored, object_id = heap[0]
+            bounds = self.bounds.get(object_id)
+            if bounds is not None and stored == sign * bounds[bound_index]:
+                return
+            heappop(heap)
+
+    def score(self, state: exact._JointState) -> tuple[int, float, float]:
+        if not self.bounds:
+            return (len(state.relay_positions), 0.0, self.wire_length)
+        self._clean_heap(self.left_heap, bound_index=0, sign=1.0)
+        self._clean_heap(self.right_heap, bound_index=1, sign=-1.0)
+        self._clean_heap(self.top_heap, bound_index=2, sign=1.0)
+        self._clean_heap(self.bottom_heap, bound_index=3, sign=-1.0)
+        left = self.left_heap[0][0]
+        right = -self.right_heap[0][0]
+        top = self.top_heap[0][0]
+        bottom = -self.bottom_heap[0][0]
+        return (
+            len(state.relay_positions),
+            (right - left) * (bottom - top),
+            self.wire_length,
+        )
 
 
 @dataclass(slots=True)
@@ -1155,10 +1269,12 @@ def _accepted_move_exact_score(
     state: exact._JointState,
     topology: _FeasibleTopology,
     center: Position,
+    tracker: _ExactObjectiveTracker,
 ) -> tuple[int, float, float]:
-    """Measure the public lexicographic objective after one accepted hot-loop move."""
+    """Read the exact public objective from local accepted-move bookkeeping."""
 
-    return _exact_score(state, topology, center)
+    _ = topology, center
+    return tracker.score(state)
 
 
 def _anneal_feasible(
@@ -1207,6 +1323,9 @@ def _anneal_feasible(
     best_relays = dict(state.relay_positions)
     best_relay_groups = dict(state.relay_groups)
     best_routing = topology.routing
+    exact_tracker = (
+        _ExactObjectiveTracker.build(state, topology) if _TRACK_EXACT_ACCEPTED_MOVES else None
+    )
     topology_rebuilds = {
         min(
             iterations,
@@ -1246,7 +1365,6 @@ def _anneal_feasible(
         if not proposal_pool:
             continue
 
-        accepted_since_exact = 0
         for step in range(epoch_start, epoch_end):
             progress = step / max(1, iterations - 1)
             normalized_temperature = 0.03**progress
@@ -1296,6 +1414,11 @@ def _anneal_feasible(
             wire_delta = topology.proposal_delta(state, targets)
             if wire_delta is None:
                 continue
+            exact_wire_delta = (
+                exact_tracker.proposal_wire_length_delta(state, topology, targets)
+                if exact_tracker is not None
+                else 0.0
+            )
 
             compact_delta = sum(
                 exact._compactness(position, center)
@@ -1325,10 +1448,14 @@ def _anneal_feasible(
                 occupancy.add(other, current)
             topology.total_energy += wire_delta
 
-            accepted_since_exact += 1
-            if accepted_since_exact >= _EXACT_BEST_ACCEPTED_STRIDE:
-                accepted_since_exact = 0
-                accepted_score = _accepted_move_exact_score(state, topology, center)
+            if exact_tracker is not None:
+                exact_tracker.accept_move(state, targets, exact_wire_delta)
+                accepted_score = _accepted_move_exact_score(
+                    state,
+                    topology,
+                    center,
+                    exact_tracker,
+                )
                 if accepted_score < best_score:
                     best_score = accepted_score
                     best_positions = dict(state.positions)
@@ -1352,6 +1479,8 @@ def _anneal_feasible(
             best_relays = dict(state.relay_positions)
             best_relay_groups = dict(state.relay_groups)
             best_routing = topology.routing
+        if exact_tracker is not None:
+            exact_tracker = _ExactObjectiveTracker.build(state, topology)
 
     state.positions.clear()
     state.positions.update(best_positions)

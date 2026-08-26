@@ -1,4 +1,4 @@
-"""Compare exact-best sampling strides on identical layout trajectories."""
+"""Compare epoch-only best tracking with local exact accepted-move tracking."""
 
 from __future__ import annotations
 
@@ -43,16 +43,16 @@ _TRAJECTORY_FIELDS = (
 
 
 @contextmanager
-def _exact_stride(stride: int) -> Iterator[None]:
-    original = incremental._EXACT_BEST_ACCEPTED_STRIDE
-    incremental._EXACT_BEST_ACCEPTED_STRIDE = stride
+def _tracking(enabled: bool) -> Iterator[None]:
+    original = incremental._TRACK_EXACT_ACCEPTED_MOVES
+    incremental._TRACK_EXACT_ACCEPTED_MOVES = enabled
     try:
         yield
     finally:
-        incremental._EXACT_BEST_ACCEPTED_STRIDE = original
+        incremental._TRACK_EXACT_ACCEPTED_MOVES = original
 
 
-def _run(factory: CaseFactory, *, proposals: int, seed: int, stride: int):
+def _run(factory: CaseFactory, *, proposals: int, seed: int, tracking: bool):
     case = factory()
     options = PlacementOptions(
         anchor_io=False,
@@ -62,7 +62,7 @@ def _run(factory: CaseFactory, *, proposals: int, seed: int, stride: int):
         restarts=1,
     )
     started = perf_counter()
-    with _exact_stride(stride):
+    with _tracking(tracking):
         observed = optimize_physical_layout_observed(case.problem, options=options)
     elapsed = perf_counter() - started
     validate_physical_layout(replace(case.problem, layout=observed.optimization.layout))
@@ -77,75 +77,16 @@ def _assert_same_trajectory(baseline: Any, candidate: Any) -> None:
             raise AssertionError(f"trajectory counter {field} changed: {left} != {right}")
 
 
-def _run_case(
-    name: str,
-    factory: CaseFactory,
-    *,
-    proposals: int,
-    first_seed: int,
-    seeds: int,
-    strides: tuple[int, ...],
-) -> dict[int, tuple[int, int, int]]:
-    baseline_stride = 10**9
-    outcomes = {stride: {"better": 0, "equal": 0, "worse": 0} for stride in strides}
-    runtime_ratios = {stride: [] for stride in strides}
-
-    for seed in range(first_seed, first_seed + seeds):
-        baseline, baseline_time = _run(
-            factory, proposals=proposals, seed=seed, stride=baseline_stride
-        )
-        baseline_metrics = baseline.optimization.after
-        for stride in strides:
-            candidate, candidate_time = _run(factory, proposals=proposals, seed=seed, stride=stride)
-            _assert_same_trajectory(baseline, candidate)
-            candidate_metrics = candidate.optimization.after
-            if candidate_metrics.objective < baseline_metrics.objective:
-                outcome = "better"
-            elif candidate_metrics.objective > baseline_metrics.objective:
-                outcome = "worse"
-            else:
-                outcome = "equal"
-            outcomes[stride][outcome] += 1
-            if outcome == "worse":
-                raise AssertionError(
-                    f"exact-best stride {stride} lost a baseline state for {name} seed {seed}: "
-                    f"{baseline_metrics.objective} -> {candidate_metrics.objective}"
-                )
-            runtime_ratios[stride].append(candidate_time / baseline_time if baseline_time else 1.0)
-            print(
-                f"{name} seed={seed} stride={stride}: baseline={baseline_metrics.objective}, "
-                f"candidate={candidate_metrics.objective}, outcome={outcome}, "
-                f"accepted={candidate.stats.accepted_moves}, "
-                f"runtime={baseline_time:.3f}s->{candidate_time:.3f}s"
-            )
-
-    result: dict[int, tuple[int, int, int]] = {}
-    for stride in strides:
-        counts = outcomes[stride]
-        triple = (counts["better"], counts["equal"], counts["worse"])
-        result[stride] = triple
-        print(
-            f"SUMMARY {name} stride={stride}: better/equal/worse="
-            f"{triple[0]}/{triple[1]}/{triple[2]}, "
-            f"median-runtime-ratio={median(runtime_ratios[stride]):.3f}"
-        )
-    return result
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--proposals", type=int, default=4096)
     parser.add_argument("--seed", type=int, default=0, help="first random seed")
     parser.add_argument("--seeds", type=int, default=3)
-    parser.add_argument("--strides", type=int, nargs="+", default=(8, 32, 128))
     args = parser.parse_args()
     if args.proposals <= 0:
         parser.error("--proposals must be positive")
     if args.seeds <= 0:
         parser.error("--seeds must be positive")
-    if any(stride <= 0 for stride in args.strides):
-        parser.error("--strides must be positive")
-    strides = tuple(dict.fromkeys(args.strides))
 
     cases: tuple[tuple[str, CaseFactory], ...] = (
         ("relay-forest", _relay_forest_case),
@@ -155,23 +96,57 @@ def main() -> None:
         ("perimeter-anchor", _perimeter_anchor_case),
         ("fixed-endpoint-span", _fixed_endpoint_span_case),
     )
-    totals = {stride: [0, 0, 0] for stride in strides}
+    totals = {"better": 0, "equal": 0, "worse": 0}
+    ratios: list[float] = []
     for name, factory in cases:
-        case_results = _run_case(
-            name,
-            factory,
-            proposals=args.proposals,
-            first_seed=args.seed,
-            seeds=args.seeds,
-            strides=strides,
+        case_ratios: list[float] = []
+        case_counts = {"better": 0, "equal": 0, "worse": 0}
+        for seed in range(args.seed, args.seed + args.seeds):
+            baseline, baseline_time = _run(
+                factory,
+                proposals=args.proposals,
+                seed=seed,
+                tracking=False,
+            )
+            candidate, candidate_time = _run(
+                factory,
+                proposals=args.proposals,
+                seed=seed,
+                tracking=True,
+            )
+            _assert_same_trajectory(baseline, candidate)
+            before = baseline.optimization.after.objective
+            after = candidate.optimization.after.objective
+            if after < before:
+                outcome = "better"
+            elif after > before:
+                outcome = "worse"
+            else:
+                outcome = "equal"
+            if outcome == "worse":
+                raise AssertionError(
+                    f"incremental exact tracking lost a baseline state for {name} seed {seed}: "
+                    f"{before} -> {after}"
+                )
+            ratio = candidate_time / baseline_time if baseline_time else 1.0
+            case_ratios.append(ratio)
+            ratios.append(ratio)
+            case_counts[outcome] += 1
+            totals[outcome] += 1
+            print(
+                f"{name} seed={seed}: baseline={before}, tracked={after}, outcome={outcome}, "
+                f"accepted={candidate.stats.accepted_moves}, "
+                f"runtime={baseline_time:.3f}s->{candidate_time:.3f}s"
+            )
+        print(
+            f"SUMMARY {name}: better/equal/worse={case_counts['better']}/"
+            f"{case_counts['equal']}/{case_counts['worse']}, "
+            f"median-runtime-ratio={median(case_ratios):.3f}"
         )
-        for stride, counts in case_results.items():
-            totals[stride] = [
-                left + right for left, right in zip(totals[stride], counts, strict=True)
-            ]
-    for stride in strides:
-        better, equal, worse = totals[stride]
-        print(f"OVERALL stride={stride}: better/equal/worse={better}/{equal}/{worse}")
+    print(
+        f"OVERALL better/equal/worse={totals['better']}/{totals['equal']}/{totals['worse']}, "
+        f"median-runtime-ratio={median(ratios):.3f}"
+    )
 
 
 if __name__ == "__main__":
