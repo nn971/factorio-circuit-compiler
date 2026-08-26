@@ -1,0 +1,60 @@
+name: Reach clipping experiment
+
+on:
+  push:
+    branches:
+      - agent/annealing-v2-reach-clipping
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    if: "${{ github.event.head_commit.message == 'ci: apply reach-clipping experiment' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Apply experiment patch
+        run: uv run python tools/_apply_reach_clipping_experiment.py
+      - name: Format
+        run: >-
+          uv run ruff format
+          src/factorio_circuit/synthesis/incremental_joint_layout.py
+          src/factorio_circuit/synthesis/layout_observability.py
+          tests/synthesis/test_reach_clipping.py
+          tests/synthesis/test_layout_observability.py
+          benchmarks/layout_optimizer_observability.py
+      - name: Targeted tests
+        run: >-
+          uv run pytest
+          tests/synthesis/test_reach_clipping.py
+          tests/synthesis/test_layout_observability.py
+      - name: Lint changed files
+        run: >-
+          uv run ruff check
+          src/factorio_circuit/synthesis/incremental_joint_layout.py
+          src/factorio_circuit/synthesis/layout_observability.py
+          tests/synthesis/test_reach_clipping.py
+          tests/synthesis/test_layout_observability.py
+          benchmarks/layout_optimizer_observability.py
+      - name: Type check
+        run: uv run mypy src
+      - name: Commit experiment
+        run: |
+          git config user.name nn971
+          git config user.email 60208623+nn971@users.noreply.github.com
+          git add src/factorio_circuit/synthesis/incremental_joint_layout.py \
+                  src/factorio_circuit/synthesis/layout_observability.py \
+                  tests/synthesis/test_reach_clipping.py \
+                  tests/synthesis/test_layout_observability.py \
+                  benchmarks/layout_optimizer_observability.py \
+                  docs/roadmap.md
+          git commit -m 'feat: try analytical reach clipping'
+          git push origin HEAD:agent/annealing-v2-reach-clipping
