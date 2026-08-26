@@ -26,6 +26,12 @@ optimizers in separate Python processes so modules from the two revisions cannot
 another. Both subprocesses use a fixed `PYTHONHASHSEED`, every produced layout is validated, and the
 command exits non-zero if the current optimizer loses any required public lexicographic objective.
 
+If the frozen commit is not present in a shallow clone, fetch it explicitly before running the gate:
+
+```bash
+git fetch origin a70df723768a6ba099ffd43017bdcb0291011c8f
+```
+
 Run the heavier budget-curve and scale gate with:
 
 ```bash
