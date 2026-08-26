@@ -57,6 +57,29 @@ worse than its valid input. Multi-seed runs report best/worst objectives and med
 Cheap CI tests validate the nontrivial structural fixtures themselves and preserve exact zero-budget
 pass-through behavior. The 1k+ scale case and full stochastic optimization sweeps remain opt-in.
 
+## Annealer observability
+
+`benchmarks/layout_optimizer_observability.py` runs representative corpus cases through the opt-in
+observed optimizer while preserving the production optimizer's deterministic artifact. It reports
+proposal acceptance/rejection categories, implementation-vs-relay move mix, swaps, topology rebuilds,
+best-objective stagnation, relay simplification causes, and deterministic relay-routing search work.
+
+Use at least 257 proposals when you specifically want the scheduled coarse-retopology path to execute;
+512 is a convenient inspection budget:
+
+```bash
+uv run python -m benchmarks.layout_optimizer_observability --proposals 512 --seed 0
+```
+
+Routing work is reported as relay-path search calls and priority-queue pops rather than elapsed time,
+so it is suitable for cross-machine regression comparisons. Runtime remains useful as an
+informational benchmark measurement, but it is not an optimizer contract. Relay deletions are split
+into isolated removals, leaf removals, and degree-two bypasses, with an aggregate consistency check.
+
+The observed optimizer is intentionally opt-in. Routine physical synthesis continues to use the
+production annealer directly; CI checks that a fixed seed and proposal budget produce the same final
+optimization result through both paths.
+
 ## Heavyweight end-to-end benchmark
 
 `benchmarks/snake/` is the canonical large application/layout benchmark. It exercises periodic state,
