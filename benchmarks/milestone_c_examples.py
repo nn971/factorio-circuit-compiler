@@ -372,8 +372,10 @@ def main() -> None:
                 f"current <code>{escape(str(current['objective']))}</code></p>",
                 "<div class='triple'>",
                 f"<figure><figcaption>initial</figcaption><img src='{files['initial']}'></figure>",
-                f"<figure><figcaption>pre-C optimized</figcaption><img src='{files['pre_c']}'></figure>",
-                f"<figure><figcaption>current optimized</figcaption><img src='{files['current']}'></figure>",
+                "<figure><figcaption>pre-C optimized</figcaption>"
+                f"<img src='{files['pre_c']}'></figure>",
+                "<figure><figcaption>current optimized</figcaption>"
+                f"<img src='{files['current']}'></figure>",
                 "</div>",
             ]
         )
