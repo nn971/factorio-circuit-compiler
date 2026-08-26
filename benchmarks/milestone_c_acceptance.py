@@ -9,11 +9,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
-from statistics import median
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
+from statistics import median
 from typing import Any
 
 PRE_C_BASELINE = "a70df723768a6ba099ffd43017bdcb0291011c8f"
