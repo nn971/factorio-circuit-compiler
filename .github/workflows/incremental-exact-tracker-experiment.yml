@@ -52,7 +52,6 @@ jobs:
                   src/factorio_circuit/synthesis/layout_observability.py \
                   tests/synthesis/test_incremental_joint_regressions.py \
                   benchmarks/layout_optimizer_exact_best_compare.py \
-                  docs/roadmap.md \
-                  .github/workflows/exact-best-comparison.yml
+                  docs/roadmap.md
           git commit -m 'perf: track exact layout objective incrementally'
           git push origin HEAD:agent/annealing-v2-exact-best-tracking
