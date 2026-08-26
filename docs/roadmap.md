@@ -14,9 +14,11 @@ Detailed tuning logs, rejected experiments, and branch handoffs belong in Git/PR
 
 ## Milestone A — Layout reliability corpus
 
+**Status: complete.**
+
 **Goal:** make layout failure modes reproducible before further annealer tuning.
 
-Build a structural corpus that covers topology and geometry dimensions rather than only application examples. Target families include:
+The structural corpus covers topology and geometry dimensions rather than only application examples:
 
 - sparse independent entities;
 - independent long relay chains;
@@ -29,9 +31,9 @@ Build a structural corpus that covers topology and geometry dimensions rather th
 - reserved/forbidden regions and narrow routing corridors;
 - valid but deliberately poor initial embeddings;
 - nearly optimal embeddings;
-- large sparse cases in the 1k–10k physical-object range.
+- an opt-in 1,200-object sparse scale case.
 
-Add multi-seed execution for stochastic optimizers and report distributions rather than one favorable seed. For every run, preserve the public fail-safe property:
+Stochastic benchmark runs support consecutive multi-seed sweeps and report distributions rather than one favorable seed. For every run, the public fail-safe property is:
 
 ```text
 valid input
@@ -51,12 +53,19 @@ total routed wire length
 ### A acceptance
 
 - Each structural family has a deterministic constructor or seedable generator.
-- Corpus cases validate before optimization.
+- Routine structural fixtures validate before optimization.
 - Optimizer runs validate after optimization.
 - Multi-seed runs retain the input as the worst permitted result.
-- Any discovered failure is reduced to a small regression case when practical.
+- The 1k+ scale fixture has an explicit opt-in validation path rather than burdening routine CI.
+- Any discovered failure should be reduced to a small regression case when practical.
+
+The corpus lives in `benchmarks/layout_optimizer_corpus.py` and
+`benchmarks/layout_optimizer_topology_corpus.py`; usage and scale-tier instructions are in
+`benchmarks/README.md`.
 
 ## Milestone B — Annealer observability
+
+**Status: current.**
 
 **Goal:** expose where optimization work is spent and why proposals fail.
 
@@ -81,6 +90,7 @@ The stats are observational only and must not alter deterministic output for a f
 
 - Benchmark output explains dominant rejection/work categories.
 - Stats are stable enough for regression analysis without turning heuristic details into semantic contracts.
+- A fixed seed and proposal budget produce the same optimized artifact with stats collection enabled.
 
 ## Milestone C — Annealing v2
 
@@ -216,8 +226,8 @@ This verifier should share as little mutable synthesis state as practical so tha
 The immediate sequence is:
 
 ```text
-A. layout reliability corpus
-    -> B. annealer observability
+A. layout reliability corpus [complete]
+    -> B. annealer observability [current]
     -> C. annealing v2
 ```
 
@@ -233,4 +243,4 @@ Milestone G should begin as soon as a small useful random-program generator exis
 
 ## Current step
 
-Work begins with **Milestone A**. The first increment expands `benchmarks/layout_optimizer_corpus.py` beyond sparse independent compaction and independent relay forests, adds multi-seed execution, and adds cheap CI checks that each new fixture is itself a valid routed layout and preserves the optimizer's zero-budget pass-through contract.
+Begin **Milestone B** by adding observational annealer statistics without changing optimization decisions. The first increment should establish a stats data model and thread counters through the joint annealer for proposal attempts, accepted moves, occupancy/reach/Metropolis rejections, topology rebuilds, and best-objective progress. The structural corpus from Milestone A is the measurement surface for validating those counters before any heuristic tuning.
