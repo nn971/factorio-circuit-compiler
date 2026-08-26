@@ -286,6 +286,10 @@ def _simplify_feasible_topology_observed(
     return incremental._FeasibleTopology.build(state, routing)
 
 
+def _replace_incremental_helper(name: str, value: Any) -> None:
+    setattr(incremental, name, value)
+
+
 @contextmanager
 def _observe_helper_work(stats: _MutableOptimizationStats) -> Iterator[None]:
     """Count helper work while preserving helper return values and call ordering."""
@@ -341,17 +345,17 @@ def _observe_helper_work(stats: _MutableOptimizationStats) -> Iterator[None]:
                 return original_simplify(state, topology)
             return _simplify_feasible_topology_observed(state, topology, active)
 
-        setattr(incremental, "heappop", counting_heappop)
-        setattr(incremental, "_find_relay_chain", counting_find)
-        setattr(incremental, "_find_negotiated_relay_chain", counting_find_negotiated)
-        setattr(incremental, "_simplify_feasible_topology", counting_simplify)
+        _replace_incremental_helper("heappop", counting_heappop)
+        _replace_incremental_helper("_find_relay_chain", counting_find)
+        _replace_incremental_helper("_find_negotiated_relay_chain", counting_find_negotiated)
+        _replace_incremental_helper("_simplify_feasible_topology", counting_simplify)
         try:
             yield
         finally:
-            setattr(incremental, "_simplify_feasible_topology", original_simplify)
-            setattr(incremental, "_find_negotiated_relay_chain", original_find_negotiated)
-            setattr(incremental, "_find_relay_chain", original_find)
-            setattr(incremental, "heappop", original_heappop)
+            _replace_incremental_helper("_simplify_feasible_topology", original_simplify)
+            _replace_incremental_helper("_find_negotiated_relay_chain", original_find_negotiated)
+            _replace_incremental_helper("_find_relay_chain", original_find)
+            _replace_incremental_helper("heappop", original_heappop)
             _ACTIVE_WORK_STATS.reset(stats_token)
 
 
