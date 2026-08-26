@@ -113,12 +113,16 @@ Prioritized experiments:
 - **Rejected: seven-step reach backoff.** In 18 paired runs it produced 0 better / 17 equal / 1 worse objectives. It reduced some reach rejections but made taut/fixed cases 2.6x-4.5x slower.
 - **Rejected: analytical implementation reach clipping.** In 18 paired runs it produced 0 better / 15 equal / 3 worse objectives. It cheaply removed many reach rejections, but every clustered sparse-cut seed became lexicographically worse by trading larger area for shorter wire.
 - **Accepted: incremental exact mid-epoch best tracking.** Full rescoring after every accepted move found transient lexicographic improvements without changing the search trajectory, but cost roughly 1.7x-2.3x on active cases. The retained implementation samples every accepted move while maintaining footprint extrema with lazy heaps and wire length through incident-wire deltas. After canonicalizing hash-sensitive wire and relay-edge traversals, an 8-seed × 6-case paired acceptance sweep produced 3 better / 45 equal / 0 worse outcomes with identical trajectory counters and a 1.014x median runtime ratio. All three gains were clustered sparse-cut cases, improving wire length at unchanged relay count and occupied area.
+- **Withdrawn before acceptance: reach-immobile proposal filtering.** A bounded candidate was prepared to avoid spending proposals on objects whose current wired neighbours admit no alternative safe-span lattice site, but the required paired multi-seed acceptance run could not be collected in the connected runner environment. The production changes and experiment-only probes were removed rather than retaining an unmeasured heuristic. This is not a benchmark rejection and should not be cited as performance evidence.
 
 ### C acceptance
 
 - Every accepted optimization is benchmarked across multiple seeds.
 - Improvements are reported separately for relay count, area, wire length, and work/runtime.
 - Recoverable search failures return the best validated candidate; invariant violations remain visible as bugs.
+- Final Milestone C is compared against the frozen pre-C baseline `a70df723768a6ba099ffd43017bdcb0291011c8f`, not merely against the immediately previous experiment.
+- The standard frozen-baseline check, full budget/scale sweep, hash-determinism target, and manual three-way layout examples are documented in `milestone-c-acceptance.md` and exposed as reproducible commands.
+- Heavy multi-seed and 1k+ scale checks remain opt-in; lightweight verifier regressions stay in routine pytest.
 
 ## Milestone D — Physical ABI completion and placement integration
 
@@ -253,4 +257,4 @@ Milestone G should begin as soon as a small useful random-program generator exis
 
 ## Current step
 
-Continue **Milestone C** from the deterministic, incrementally scored annealer. Use the observability corpus to choose the next quality experiment—prefer adaptive proposal selection or targeted local repair where measured rejection/stagnation data identifies a concrete bottleneck. Keep the same paired, multi-seed, no-worse acceptance discipline used for exact mid-epoch best tracking.
+Land and validate the **Milestone C verification harness** before attempting another optimizer heuristic. The harness must keep the pre-C baseline frozen, provide multi-seed and budget/scale comparisons, preserve deterministic checks, and export directly inspectable pre-C/current layout examples. After that gate is trustworthy, resume Milestone C from the deterministic incrementally scored annealer and choose the next quality experiment from measured observability data. No candidate becomes production behavior without paired multi-seed evidence.
