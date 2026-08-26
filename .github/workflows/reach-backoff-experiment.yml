@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   apply-and-validate:
-    if: github.event.head_commit.message == 'ci: apply reach-backoff experiment'
+    if: "${{ github.event.head_commit.message == 'ci: apply reach-backoff experiment' || github.event.head_commit.message == 'ci: fix reach-backoff workflow condition' }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
