@@ -65,34 +65,36 @@ The corpus lives in `benchmarks/layout_optimizer_corpus.py` and
 
 ## Milestone B — Annealer observability
 
-**Status: current.**
+**Status: complete.**
 
 **Goal:** expose where optimization work is spent and why proposals fail.
 
-Add an `OptimizationStats`-style result containing at least:
+The opt-in `OptimizationStats` surface records:
 
-- proposals attempted;
-- accepted moves;
-- Metropolis rejections;
-- overlap/occupancy rejections;
-- wire-reach rejections;
+- proposals attempted and accepted moves;
+- Metropolis, geometry/occupancy, and wire-reach rejections;
 - implementation moves vs relay moves;
-- swaps/compound moves when present;
-- relay deletions and bypasses;
+- swaps;
+- relay simplification classified as isolated deletion, leaf deletion, or degree-two bypass;
 - topology rebuild attempts/successes;
-- routing search work;
+- routing search calls/failures and deterministic priority-queue work;
 - best-objective history by epoch;
 - epochs since last improvement.
 
-The stats are observational only and must not alter deterministic output for a fixed seed and work budget.
+The stats are observational only. The production annealer remains authoritative, and regression tests require a fixed seed and work budget to produce the same optimized artifact through the observed path.
 
 ### B acceptance
 
 - Benchmark output explains dominant rejection/work categories.
 - Stats are stable enough for regression analysis without turning heuristic details into semantic contracts.
 - A fixed seed and proposal budget produce the same optimized artifact with stats collection enabled.
+- Routing-work and relay-simplification counters have accounting regressions rather than relying on elapsed wall-clock time.
+
+The opt-in report is `benchmarks/layout_optimizer_observability.py`.
 
 ## Milestone C — Annealing v2
+
+**Status: current.**
 
 **Goal:** improve quality and speed while preserving feasible-first behavior.
 
@@ -227,8 +229,8 @@ The immediate sequence is:
 
 ```text
 A. layout reliability corpus [complete]
-    -> B. annealer observability [current]
-    -> C. annealing v2
+    -> B. annealer observability [complete]
+    -> C. annealing v2 [current]
 ```
 
 Milestone D can proceed in parallel, but new layout constraints should be introduced only with structural benchmark coverage. Then:
@@ -243,4 +245,4 @@ Milestone G should begin as soon as a small useful random-program generator exis
 
 ## Current step
 
-Begin **Milestone B** by adding observational annealer statistics without changing optimization decisions. The first increment should establish a stats data model and thread counters through the joint annealer for proposal attempts, accepted moves, occupancy/reach/Metropolis rejections, topology rebuilds, and best-objective progress. The structural corpus from Milestone A is the measurement surface for validating those counters before any heuristic tuning.
+Begin **Milestone C** with adaptive coarse retopology at the existing safe epoch boundary. Preserve the fixed-fraction rebuild schedule as a baseline fallback, add conservative triggers for sustained objective stagnation or wire-reach pressure, and keep a cooldown between adaptive rebuilds. Use the Milestone B counters and the Milestone A corpus to compare quality and routing work across seeds before accepting broader proposal or compound-move changes.
