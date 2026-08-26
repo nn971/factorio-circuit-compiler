@@ -23,13 +23,20 @@ uv run python -m benchmarks.milestone_c_acceptance
 
 The command creates a detached git worktree at the frozen baseline and runs baseline/current
 optimizers in separate Python processes so modules from the two revisions cannot contaminate one
-another. It validates every produced layout and exits non-zero if the current optimizer loses any
-required public lexicographic objective.
+another. Both subprocesses use a fixed `PYTHONHASHSEED`, every produced layout is validated, and the
+command exits non-zero if the current optimizer loses any required public lexicographic objective.
 
 Run the heavier budget-curve and scale gate with:
 
 ```bash
 uv run python -m benchmarks.milestone_c_acceptance --full
+```
+
+To retain the complete rows and summary for later inspection, add for example:
+
+```bash
+uv run python -m benchmarks.milestone_c_acceptance \
+  --json-report /tmp/milestone-c-acceptance.json
 ```
 
 The report keeps these measurements separate rather than inventing one weighted score:
@@ -41,6 +48,9 @@ The report keeps these measurements separate rather than inventing one weighted 
 - routing-search work;
 - runtime;
 - better / equal / worse counts under the public lexicographic objective.
+
+It also reports relay-count, occupied-area, and wire-length outcomes independently. The public pass/fail
+criterion remains the existing lexicographic objective rather than those independent component counts.
 
 ## Fixed structural corpus
 
@@ -70,7 +80,8 @@ The `--full` gate additionally compares representative cases at proposal budgets
 - 16,384.
 
 This distinguishes genuine search-efficiency improvement from a result that happens only at one
-chosen budget. Report quality-versus-work rather than only final wall-clock time.
+chosen budget. Report quality-versus-work rather than only final wall-clock time. Runtime ratios use
+the statistical median; routing/proposal work counters are the more reproducible performance signal.
 
 ## Determinism
 
@@ -85,14 +96,15 @@ uv run pytest tests/synthesis/test_layout_hash_determinism.py
 
 ## Manual inspection bundle
 
-Generate directly inspectable before/after layouts with:
+Generate directly inspectable three-way layouts with:
 
 ```bash
 uv run python -m benchmarks.milestone_c_examples /tmp/milestone-c-layouts
 ```
 
-This writes self-contained SVG files, `manifest.json` with the exact before/after public objectives,
-and an `index.html` showing each pair side by side. The default set contains:
+For each case this writes **initial**, **frozen pre-C optimized**, and **current optimized** SVGs,
+plus `manifest.json` with exact objectives and an `index.html` showing the three artifacts side by
+side. The default set contains:
 
 - relay forest;
 - clustered sparse cut;
@@ -107,8 +119,20 @@ uv run python -m benchmarks.milestone_c_examples /tmp/milestone-c-layouts --incl
 ```
 
 The SVGs preserve actual entity/relay coordinates and physical red/green wires. They are intended as
-a visual sanity check that objective improvements correspond to sensible physical layouts rather
-than a metric artifact.
+a visual sanity check that a current-vs-pre-C objective improvement corresponds to a sensible physical
+layout rather than a metric artifact.
+
+## Verifier regression tests
+
+The lightweight acceptance-tool regressions are ordinary pytest tests and do not run the multi-seed
+benchmark itself:
+
+```bash
+uv run pytest tests/synthesis/test_milestone_c_acceptance_tools.py
+```
+
+They cover request uniqueness/budget expansion, lexicographic and per-component reporting, and basic
+SVG rendering.
 
 ## Repository gate
 
