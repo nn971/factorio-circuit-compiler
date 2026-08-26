@@ -1,7 +1,7 @@
 """User-verifiable acceptance gate for Milestone C (Annealing v2).
 
 The command compares the current checkout with the frozen pre-Milestone-C commit in separate Python
-processes. Heavy scale and budget-curve checks are opt-in but are enabled by ``--full``.
+processes. Heavy scale and budget-curve checks are opt-in via ``--full``.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from statistics import median
 import subprocess
 import sys
 import tempfile
@@ -32,8 +33,19 @@ CURVE_CASES = (
     "perimeter-anchor",
 )
 CURVE_BUDGETS = (256, 1024, 4096, 16384)
+_OBJECTIVE_FIELDS = ("relay_count", "occupied_area", "wire_length")
+_WORK_FIELDS = (
+    "proposals",
+    "accepted",
+    "noop",
+    "geometry",
+    "reach",
+    "metropolis",
+    "routing_queue_pops",
+    "topology_rebuilds",
+)
 
-_WORKER = r'''
+_WORKER = r"""
 import json
 import sys
 from dataclasses import replace
@@ -67,6 +79,7 @@ factories = {
     "fixed-endpoint-span": _fixed_endpoint_span_case,
     "large-sparse-1200": _large_sparse_case,
 }
+
 request = json.loads(sys.stdin.read())
 rows = []
 for item in request:
@@ -101,7 +114,7 @@ for item in request:
         }
     )
 print(json.dumps(rows, separators=(",", ":")))
-'''
+"""
 
 
 def _git(root: Path, *args: str, capture: bool = True) -> str:
@@ -139,6 +152,7 @@ def _ensure_baseline(root: Path) -> None:
 
 def _run_worker(tree: Path, request: list[dict[str, Any]]) -> list[dict[str, Any]]:
     env = dict(os.environ)
+    env["PYTHONHASHSEED"] = "0"
     env["PYTHONPATH"] = os.pathsep.join((str(tree / "src"), str(tree)))
     completed = subprocess.run(
         [sys.executable, "-c", _WORKER],
@@ -167,11 +181,12 @@ def _request(*, seeds: int, proposals: int, full: bool) -> list[dict[str, Any]]:
         for budget in CURVE_BUDGETS:
             for seed in range(curve_seeds):
                 key = (case, budget, seed)
-                if key not in seen:
-                    rows.append(
-                        {"case": case, "proposals": budget, "seed": seed, "kind": "curve"}
-                    )
-                    seen.add(key)
+                if key in seen:
+                    continue
+                rows.append(
+                    {"case": case, "proposals": budget, "seed": seed, "kind": "curve"}
+                )
+                seen.add(key)
     rows.append(
         {
             "case": "large-sparse-1200",
@@ -191,64 +206,103 @@ def _fmt_objective(value: list[float]) -> str:
     return f"({int(value[0])}, {value[1]:.3f}, {value[2]:.3f})"
 
 
+def _direction(new: Any, old: Any) -> str:
+    if new < old:
+        return "better"
+    if new > old:
+        return "worse"
+    return "equal"
+
+
 def _compare(
     baseline: list[dict[str, Any]],
     current: list[dict[str, Any]],
-) -> bool:
+) -> tuple[bool, dict[str, Any]]:
     before = {_key(row): row for row in baseline}
     after = {_key(row): row for row in current}
     if before.keys() != after.keys():
         raise RuntimeError("baseline/current worker result keys differ")
 
-    totals = {"better": 0, "equal": 0, "worse": 0}
+    lexicographic = {"better": 0, "equal": 0, "worse": 0}
+    components = {
+        field: {"better": 0, "equal": 0, "worse": 0} for field in _OBJECTIVE_FIELDS
+    }
     runtime_ratios: list[float] = []
+    rows: list[dict[str, Any]] = []
+
     print("case                     budget seed outcome  baseline -> current")
-    print("-" * 96)
+    print("-" * 104)
     for key in sorted(before):
         old = before[key]
         new = after[key]
         old_objective = tuple(old["objective"])
         new_objective = tuple(new["objective"])
-        if new_objective < old_objective:
-            outcome = "better"
-        elif new_objective > old_objective:
-            outcome = "worse"
-        else:
-            outcome = "equal"
-        totals[outcome] += 1
-        ratio = new["runtime_seconds"] / old["runtime_seconds"] if old["runtime_seconds"] else 1.0
+        outcome = _direction(new_objective, old_objective)
+        lexicographic[outcome] += 1
+
+        component_outcomes: dict[str, str] = {}
+        for index, field in enumerate(_OBJECTIVE_FIELDS):
+            component_outcome = _direction(new_objective[index], old_objective[index])
+            components[field][component_outcome] += 1
+            component_outcomes[field] = component_outcome
+
+        ratio = (
+            new["runtime_seconds"] / old["runtime_seconds"]
+            if old["runtime_seconds"]
+            else 1.0
+        )
         runtime_ratios.append(ratio)
+        rows.append(
+            {
+                "case": key[0],
+                "proposals": key[1],
+                "seed": key[2],
+                "outcome": outcome,
+                "component_outcomes": component_outcomes,
+                "baseline_objective": list(old_objective),
+                "current_objective": list(new_objective),
+                "runtime_ratio": ratio,
+            }
+        )
         print(
             f"{key[0]:24} {key[1]:6d} {key[2]:4d} {outcome:7}  "
             f"{_fmt_objective(old['objective'])} -> {_fmt_objective(new['objective'])}  "
             f"runtime x{ratio:.3f}"
         )
 
-    runtime_ratios.sort()
-    median_runtime = runtime_ratios[len(runtime_ratios) // 2] if runtime_ratios else 1.0
+    median_runtime = median(runtime_ratios) if runtime_ratios else 1.0
     print()
     print(
         "OVERALL "
-        f"better/equal/worse={totals['better']}/{totals['equal']}/{totals['worse']}; "
+        f"better/equal/worse={lexicographic['better']}/"
+        f"{lexicographic['equal']}/{lexicographic['worse']}; "
         f"median-runtime-ratio={median_runtime:.3f}"
     )
+    print("Independent objective-component outcomes:")
+    for field in _OBJECTIVE_FIELDS:
+        counts = components[field]
+        print(
+            f"  {field:20} "
+            f"{counts['better']}/{counts['equal']}/{counts['worse']} "
+            "(better/equal/worse)"
+        )
 
+    work_delta = {
+        field: sum(after[key]["work"][field] - before[key]["work"][field] for key in before)
+        for field in _WORK_FIELDS
+    }
     print("\nAggregated work deltas (current - pre-C):")
-    fields = (
-        "proposals",
-        "accepted",
-        "noop",
-        "geometry",
-        "reach",
-        "metropolis",
-        "routing_queue_pops",
-        "topology_rebuilds",
-    )
-    for field in fields:
-        delta = sum(after[key]["work"][field] - before[key]["work"][field] for key in before)
-        print(f"  {field:20} {delta:+d}")
+    for field in _WORK_FIELDS:
+        print(f"  {field:20} {work_delta[field]:+d}")
 
-    return totals["worse"] == 0
+    summary = {
+        "lexicographic": lexicographic,
+        "components": components,
+        "median_runtime_ratio": median_runtime,
+        "work_delta": work_delta,
+        "rows": rows,
+    }
+    return lexicographic["worse"] == 0, summary
 
 
 def main() -> None:
@@ -259,6 +313,11 @@ def main() -> None:
         "--full",
         action="store_true",
         help="also run budget curves and the 1,200-object scale case",
+    )
+    parser.add_argument(
+        "--json-report",
+        type=Path,
+        help="also write baseline/current rows and summary as JSON",
     )
     args = parser.parse_args()
     if args.seeds <= 0:
@@ -276,7 +335,15 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="factorio-milestone-c-") as temporary:
         baseline_tree = Path(temporary) / "baseline"
-        _git(root, "worktree", "add", "--detach", str(baseline_tree), PRE_C_BASELINE, capture=False)
+        _git(
+            root,
+            "worktree",
+            "add",
+            "--detach",
+            str(baseline_tree),
+            PRE_C_BASELINE,
+            capture=False,
+        )
         try:
             baseline = _run_worker(baseline_tree, request)
             current = _run_worker(root, request)
@@ -288,7 +355,20 @@ def main() -> None:
                 capture_output=True,
             )
 
-    if not _compare(baseline, current):
+    passed, summary = _compare(baseline, current)
+    if args.json_report is not None:
+        report = {
+            "pre_c_baseline": PRE_C_BASELINE,
+            "current_revision": current_revision,
+            "request": request,
+            "baseline": baseline,
+            "current": current,
+            "summary": summary,
+        }
+        args.json_report.write_text(json.dumps(report, indent=2) + "\n")
+        print(f"\nwrote JSON report: {args.json_report}")
+
+    if not passed:
         raise SystemExit("Milestone C acceptance failed: current optimizer lost a pre-C objective")
 
 
