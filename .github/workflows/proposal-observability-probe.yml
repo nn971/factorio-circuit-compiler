@@ -1,13 +1,12 @@
 name: Proposal observability probe
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/annealing-v2-adaptive-proposals
+      - main
 
 jobs:
   probe:
-    if: "${{ github.event.head_commit.message == 'ci: probe annealer proposal waste' }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
