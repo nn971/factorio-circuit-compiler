@@ -284,8 +284,7 @@ def main() -> None:
     if args.include_scale:
         cases.append(("large-sparse-1200", _large_sparse_case))
     request = [
-        {"case": name, "proposals": args.proposals, "seed": args.seed}
-        for name, _factory in cases
+        {"case": name, "proposals": args.proposals, "seed": args.seed} for name, _factory in cases
     ]
 
     with tempfile.TemporaryDirectory(prefix="factorio-milestone-c-examples-") as temporary:
