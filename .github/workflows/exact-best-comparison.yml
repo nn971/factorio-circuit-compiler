@@ -7,7 +7,7 @@ on:
 
 jobs:
   compare:
-    if: "${{ github.event.head_commit.message == 'ci: run incremental exact tracker comparison' }}"
+    if: "${{ github.event.head_commit.message == 'ci: probe layout hash determinism' }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -18,5 +18,9 @@ jobs:
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Compare epoch-only and local exact tracking
-        run: uv run python -m benchmarks.layout_optimizer_exact_best_compare --proposals 4096 --seeds 3
+      - name: Probe clustered layout across Python hash seeds
+        run: |
+          for hash_seed in 1 2 3 4 5 42; do
+            echo "PYTHONHASHSEED=$hash_seed"
+            PYTHONHASHSEED=$hash_seed uv run python -c 'from benchmarks.layout_optimizer_topology_corpus import _clustered_sparse_cut_case; from factorio_circuit.synthesis.layout_optimizer import optimize_physical_layout; from factorio_circuit.synthesis.placement import PlacementOptions; case=_clustered_sparse_cut_case(); result=optimize_physical_layout(case.problem, options=PlacementOptions(anchor_io=False, reserve_corridors=False, iterations=4096, random_seed=1, restarts=1)); print((result.after.objective, tuple(sorted(result.layout.positions.items())), tuple((wire.source_entity, wire.source_connector_id, wire.target_entity, wire.target_connector_id, wire.color.value) for wire in result.layout.wires)))'
+          done
