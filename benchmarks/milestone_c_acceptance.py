@@ -184,9 +184,7 @@ def _request(*, seeds: int, proposals: int, full: bool) -> list[dict[str, Any]]:
                 key = (case, budget, seed)
                 if key in seen:
                     continue
-                rows.append(
-                    {"case": case, "proposals": budget, "seed": seed, "kind": "curve"}
-                )
+                rows.append({"case": case, "proposals": budget, "seed": seed, "kind": "curve"})
                 seen.add(key)
     rows.append(
         {
@@ -225,9 +223,7 @@ def _compare(
         raise RuntimeError("baseline/current worker result keys differ")
 
     lexicographic = {"better": 0, "equal": 0, "worse": 0}
-    components = {
-        field: {"better": 0, "equal": 0, "worse": 0} for field in _OBJECTIVE_FIELDS
-    }
+    components = {field: {"better": 0, "equal": 0, "worse": 0} for field in _OBJECTIVE_FIELDS}
     runtime_ratios: list[float] = []
     rows: list[dict[str, Any]] = []
 
@@ -247,11 +243,7 @@ def _compare(
             components[field][component_outcome] += 1
             component_outcomes[field] = component_outcome
 
-        ratio = (
-            new["runtime_seconds"] / old["runtime_seconds"]
-            if old["runtime_seconds"]
-            else 1.0
-        )
+        ratio = new["runtime_seconds"] / old["runtime_seconds"] if old["runtime_seconds"] else 1.0
         runtime_ratios.append(ratio)
         rows.append(
             {
