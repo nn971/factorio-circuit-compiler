@@ -27,6 +27,11 @@ jobs:
         run: uv sync --extra dev
       - name: Test
         run: uv run pytest
+      - name: Annealer proposal observability probe
+        run: |
+          for seed in 0 1 2 3; do
+            uv run python -m benchmarks.layout_optimizer_observability --proposals 4096 --seed "$seed"
+          done
       - name: Ruff lint
         run: uv run ruff check .
       - name: Ruff format
