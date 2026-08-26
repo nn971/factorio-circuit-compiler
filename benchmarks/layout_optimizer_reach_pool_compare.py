@@ -1,8 +1,9 @@
-"""Compare the baseline annealer with reach-immobile proposal filtering."""
+"""Compare the baseline annealer with bounded reach-immobile proposal filtering."""
 
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -30,14 +31,75 @@ from factorio_circuit.synthesis.placement import PlacementOptions
 CaseFactory = Callable[[], Any]
 
 
+def _bounded_reach_feasible_alternative(
+    state: Any,
+    topology: Any,
+    object_id: int,
+    grid: Any,
+) -> bool:
+    """Decision-equivalent reach-domain test that scans only the local coordinate rectangle."""
+
+    incident = topology.incident_wires.get(object_id, ())
+    if not incident:
+        return True
+    current = state.object_position(object_id)
+    if object_id in state.relay_positions:
+        x_positions = grid.unit_x_positions
+    else:
+        entity = state.circuit.entity_by_id(object_id)
+        x_positions = (
+            grid.unit_x_positions
+            if isinstance(entity, incremental.ConstantCombinator)
+            else grid.x_positions
+        )
+    y_positions = grid.y_positions
+
+    neighbors = []
+    for wire in incident:
+        remote, _connector = incremental._remote_endpoint(wire, object_id)
+        if remote != object_id:
+            neighbors.append(state.object_position(remote))
+    if not neighbors:
+        return True
+
+    safe_span = state.safe_span
+    left = max(position[0] - safe_span for position in neighbors)
+    right = min(position[0] + safe_span for position in neighbors)
+    top = max(position[1] - safe_span for position in neighbors)
+    bottom = min(position[1] + safe_span for position in neighbors)
+    if left > right + incremental._EPSILON or top > bottom + incremental._EPSILON:
+        return False
+
+    x_start = bisect_left(x_positions, left - incremental._EPSILON)
+    x_end = bisect_right(x_positions, right + incremental._EPSILON)
+    y_start = bisect_left(y_positions, top - incremental._EPSILON)
+    y_end = bisect_right(y_positions, bottom + incremental._EPSILON)
+    for x in x_positions[x_start:x_end]:
+        for y in y_positions[y_start:y_end]:
+            candidate = (x, y)
+            if candidate == current:
+                continue
+            if all(
+                incremental._distance(candidate, neighbor)
+                <= safe_span + incremental._EPSILON
+                for neighbor in neighbors
+            ):
+                return True
+    return False
+
+
 @contextmanager
 def _filtering(enabled: bool) -> Iterator[None]:
-    original = incremental._FILTER_REACH_IMMOBILE_PROPOSALS
+    original_filter = incremental._FILTER_REACH_IMMOBILE_PROPOSALS
+    original_predicate = incremental._has_reach_feasible_alternative
     incremental._FILTER_REACH_IMMOBILE_PROPOSALS = enabled
+    if enabled:
+        incremental._has_reach_feasible_alternative = _bounded_reach_feasible_alternative
     try:
         yield
     finally:
-        incremental._FILTER_REACH_IMMOBILE_PROPOSALS = original
+        incremental._has_reach_feasible_alternative = original_predicate
+        incremental._FILTER_REACH_IMMOBILE_PROPOSALS = original_filter
 
 
 def _run(factory: CaseFactory, *, proposals: int, seed: int, filtering: bool):
