@@ -15,17 +15,24 @@ move this baseline forward when later C improvements merge.
 
 ## One-command acceptance
 
-Before Milestone C is marked complete, provide an opt-in command:
+Run the standard multi-seed comparison with:
 
 ```bash
 uv run python -m benchmarks.milestone_c_acceptance
 ```
 
-The command must print machine-readable-enough summaries and exit non-zero when a required
-no-regression condition fails. It should compare the current implementation with the frozen pre-C
-baseline using identical corpus cases, proposal budgets, and random seeds.
+The command creates a detached git worktree at the frozen baseline and runs baseline/current
+optimizers in separate Python processes so modules from the two revisions cannot contaminate one
+another. It validates every produced layout and exits non-zero if the current optimizer loses any
+required public lexicographic objective.
 
-At minimum report, separately:
+Run the heavier budget-curve and scale gate with:
+
+```bash
+uv run python -m benchmarks.milestone_c_acceptance --full
+```
+
+The report keeps these measurements separate rather than inventing one weighted score:
 
 - relay count;
 - occupied area;
@@ -35,11 +42,9 @@ At minimum report, separately:
 - runtime;
 - better / equal / worse counts under the public lexicographic objective.
 
-Do not collapse relay count, area, wire length, and work into one invented weighted score.
-
 ## Fixed structural corpus
 
-The final acceptance bundle should include at least these representative families:
+The final acceptance bundle includes these representative families:
 
 - relay forest;
 - shared bus;
@@ -57,7 +62,7 @@ All produced layouts must pass `validate_physical_layout`.
 
 Use a fixed documented seed set. Eight seeds is the default minimum for ordinary structural cases.
 
-For a representative subset, additionally compare proposal budgets:
+The `--full` gate additionally compares representative cases at proposal budgets:
 
 - 256;
 - 1,024;
@@ -72,22 +77,38 @@ chosen budget. Report quality-versus-work rather than only final wall-clock time
 A fixed optimizer seed must produce the same optimized artifact across fresh Python processes and
 multiple `PYTHONHASHSEED` values. The existing hash-determinism regression remains part of the gate.
 
-The acceptance bundle should expose a direct command or pytest target for this check.
+Run it directly with:
+
+```bash
+uv run pytest tests/synthesis/test_layout_hash_determinism.py
+```
 
 ## Manual inspection bundle
 
-Produce initial and optimized artifacts for a small set of informative examples, preferably:
+Generate directly inspectable before/after layouts with:
+
+```bash
+uv run python -m benchmarks.milestone_c_examples /tmp/milestone-c-layouts
+```
+
+This writes self-contained SVG files, `manifest.json` with the exact before/after public objectives,
+and an `index.html` showing each pair side by side. The default set contains:
 
 - relay forest;
 - clustered sparse cut;
 - red/green mesh;
 - narrow corridor;
-- perimeter anchors;
-- the 1k+ sparse case.
+- perimeter anchors.
 
-For each example include the public objective before/after. Where practical, export a blueprint or
-other directly inspectable physical-layout representation so a player can visually check that metric
-improvements correspond to sensible layouts.
+Add the 1,200-object sparse case with:
+
+```bash
+uv run python -m benchmarks.milestone_c_examples /tmp/milestone-c-layouts --include-scale
+```
+
+The SVGs preserve actual entity/relay coordinates and physical red/green wires. They are intended as
+a visual sanity check that objective improvements correspond to sensible physical layouts rather
+than a metric artifact.
 
 ## Repository gate
 
