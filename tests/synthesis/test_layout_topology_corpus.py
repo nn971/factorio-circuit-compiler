@@ -2,6 +2,7 @@ import pytest
 
 from benchmarks.layout_optimizer_topology_corpus import (
     _clustered_sparse_cut_case,
+    _large_sparse_case,
     _near_optimal_packed_case,
     _red_green_mesh_case,
 )
@@ -35,3 +36,9 @@ def test_topology_corpus_fixture_is_valid_and_zero_budget_is_exact_pass_through(
     assert result.layout == case.problem.layout
     assert result.before == result.after
     assert result.proposal_budget == 0
+
+
+@pytest.mark.benchmark
+def test_large_sparse_corpus_fixture_is_valid() -> None:
+    case = _large_sparse_case()
+    validate_physical_layout(case.problem)
