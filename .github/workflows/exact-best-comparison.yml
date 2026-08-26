@@ -7,7 +7,7 @@ on:
 
 jobs:
   compare:
-    if: "${{ github.event.head_commit.message == 'ci: run exact-best short-stride matrix' }}"
+    if: "${{ github.event.head_commit.message == 'ci: run incremental exact tracker comparison' }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -18,7 +18,5 @@ jobs:
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Compare exact-best short sampling strides
-        run: >-
-          uv run python -m benchmarks.layout_optimizer_exact_best_compare
-          --proposals 4096 --seeds 3 --strides 1 2 4
+      - name: Compare epoch-only and local exact tracking
+        run: uv run python -m benchmarks.layout_optimizer_exact_best_compare --proposals 4096 --seeds 3
