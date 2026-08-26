@@ -9,9 +9,11 @@ from benchmarks.layout_optimizer_corpus import (
     _fixed_endpoint_span_case,
     _narrow_corridor_case,
     _perimeter_anchor_case,
+    _relay_forest_case,
     _shared_bus_case,
 )
 from benchmarks.layout_optimizer_topology_corpus import (
+    _clustered_sparse_cut_case,
     _near_optimal_packed_case,
     _red_green_mesh_case,
 )
@@ -70,7 +72,9 @@ def main() -> None:
         parser.error("--proposals must be non-negative")
 
     for case in (
+        _relay_forest_case(),
         _shared_bus_case(),
+        _clustered_sparse_cut_case(),
         _fixed_endpoint_span_case(),
         _narrow_corridor_case(),
         _perimeter_anchor_case(),
