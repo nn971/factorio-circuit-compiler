@@ -1,0 +1,58 @@
+name: Incremental exact tracker experiment
+
+on:
+  push:
+    branches:
+      - agent/annealing-v2-exact-best-tracking
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    if: "${{ github.event.head_commit.message == 'ci: apply incremental exact tracker experiment' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Apply incremental tracker patch
+        run: uv run python tools/_apply_incremental_exact_tracker_experiment.py
+      - name: Format
+        run: >-
+          uv run ruff format
+          src/factorio_circuit/synthesis/incremental_joint_layout.py
+          src/factorio_circuit/synthesis/layout_observability.py
+          tests/synthesis/test_incremental_joint_regressions.py
+          benchmarks/layout_optimizer_exact_best_compare.py
+      - name: Targeted tests
+        run: >-
+          uv run pytest
+          tests/synthesis/test_incremental_joint_regressions.py
+          tests/synthesis/test_layout_observability.py
+      - name: Lint changed files
+        run: >-
+          uv run ruff check
+          src/factorio_circuit/synthesis/incremental_joint_layout.py
+          src/factorio_circuit/synthesis/layout_observability.py
+          tests/synthesis/test_incremental_joint_regressions.py
+          benchmarks/layout_optimizer_exact_best_compare.py
+      - name: Type check
+        run: uv run mypy src
+      - name: Commit experiment
+        run: |
+          git config user.name nn971
+          git config user.email 60208623+nn971@users.noreply.github.com
+          git add src/factorio_circuit/synthesis/incremental_joint_layout.py \
+                  src/factorio_circuit/synthesis/layout_observability.py \
+                  tests/synthesis/test_incremental_joint_regressions.py \
+                  benchmarks/layout_optimizer_exact_best_compare.py \
+                  docs/roadmap.md \
+                  .github/workflows/exact-best-comparison.yml
+          git commit -m 'perf: track exact layout objective incrementally'
+          git push origin HEAD:agent/annealing-v2-exact-best-tracking
