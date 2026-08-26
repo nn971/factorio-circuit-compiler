@@ -451,19 +451,12 @@ def _anneal_feasible_observed(
             or outliers
             or (movable_entities if movable_entities else movable_relays)
         )
-        proposal_pool = incremental._reach_mobile_proposal_pool(
-            state,
-            topology,
-            proposal_pool,
-            grid,
-        )
-        if not proposal_pool and not incremental._FILTER_REACH_IMMOBILE_PROPOSALS:
+        if not proposal_pool:
             _complete_epoch(stats, best_score=best_score, improved=False)
             continue
 
         epoch_improved = False
-        steps = range(epoch_start, epoch_end) if proposal_pool else ()
-        for step in steps:
+        for step in range(epoch_start, epoch_end):
             stats.proposals_attempted += 1
             progress = step / max(1, iterations - 1)
             normalized_temperature = 0.03**progress
