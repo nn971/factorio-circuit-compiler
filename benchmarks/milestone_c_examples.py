@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
-from html import escape
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from dataclasses import replace
+from html import escape
+from pathlib import Path
 from typing import Any
 
 from benchmarks.layout_optimizer_corpus import (
