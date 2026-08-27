@@ -1,7 +1,7 @@
 """Application-level Milestone C acceptance for the generic physical layout optimizer.
 
 This benchmark intentionally starts from the failproof safe-folded Snake layout, then applies the
-same public ``optimize_physical_layout`` API used by non-Snake callers.  It measures the hard
+same public ``optimize_physical_layout`` API used by non-Snake callers. It measures the hard
 application criteria that the structural corpus cannot establish: footprint occupancy, relay burden,
 known-redundant relays, and bounded wall-clock convergence at Snake scale.
 
@@ -27,6 +27,7 @@ from benchmarks.snake.random_model import (
 from factorio_circuit import RandomSignalOracleProvider, SamplingPolicy
 from factorio_circuit.blueprint.layout_encode import encode_layout_blueprint_string
 from factorio_circuit.synthesis import incremental_joint_layout as incremental
+from factorio_circuit.synthesis import layout_optimizer
 from factorio_circuit.synthesis import placement as base_placement
 from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.layout_optimizer import (
@@ -70,7 +71,7 @@ def _entity_footprint_area(layout: Layout) -> float:
 def _known_redundant_relays(problem: LayoutOptimizationProblem) -> int:
     """Count relays removed by the general topology-preserving simplifier to fixed point."""
 
-    embedding = incremental.exact_embedding_for_layout_optimizer(problem)
+    embedding = layout_optimizer._validated_embedding(problem)
     state = embedding.state
     topology = embedding.topology
     initial = len(state.relay_positions)
