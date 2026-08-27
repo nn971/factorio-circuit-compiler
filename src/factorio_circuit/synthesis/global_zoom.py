@@ -3,21 +3,22 @@
 A zoom proposal contracts every movable implementation entity and routed relay toward one common
 center, then projects the desired coordinates back onto the caller's legal placement lattice with a
 deterministic collision legalizer. The existing electrical topology is retained during the move.
-Consequently the input layout remains an immediate fail-safe fallback: a snapped proposal is accepted
-only after the ordinary physical-layout validator confirms footprints, anchors, electrical topology,
-and wire reach.
+Consequently the input layout remains an immediate fail-safe fallback: a snapped proposal is
+accepted only after the ordinary physical-layout validator confirms footprints, anchors, electrical
+topology, and wire reach.
 
 The transform makes no assumptions about circuit shape, semantic roles, or application identity.
-After a valid zoom, the ordinary topology-preserving relay simplifier may remove relays made redundant
-by the newly shortened geometry.
+After a valid zoom, the ordinary topology-preserving relay simplifier may remove relays made
+redundant by the newly shortened geometry.
 """
 
 from __future__ import annotations
 
 from bisect import bisect_left
 from dataclasses import dataclass, replace
-from math import inf
+from math import floor, inf
 
+from factorio_circuit.ir.physical import ConstantCombinator
 from factorio_circuit.synthesis import incremental_joint_layout as incremental
 from factorio_circuit.synthesis import layout_optimizer
 from factorio_circuit.synthesis import placement as base_placement
@@ -53,8 +54,6 @@ class _BoxOccupancy:
 
     @staticmethod
     def _keys(position: Position, half: tuple[float, float]) -> tuple[tuple[int, int], ...]:
-        from math import floor
-
         left = floor(position[0] - half[0] + _EPSILON)
         right = floor(position[0] + half[0] - _EPSILON)
         top = floor(position[1] - half[1] + _EPSILON)
@@ -145,13 +144,13 @@ class _SiteRows:
                     right += 1
                 candidate = (x, y)
                 distance_sq = (x - target_x) ** 2 + dy_sq
-                if occupancy.is_clear(candidate, half):
-                    if distance_sq < best_distance_sq - _EPSILON or (
-                        abs(distance_sq - best_distance_sq) <= _EPSILON
-                        and (best is None or candidate < best)
-                    ):
-                        best = candidate
-                        best_distance_sq = distance_sq
+                is_better = distance_sq < best_distance_sq - _EPSILON or (
+                    abs(distance_sq - best_distance_sq) <= _EPSILON
+                    and (best is None or candidate < best)
+                )
+                if occupancy.is_clear(candidate, half) and is_better:
+                    best = candidate
+                    best_distance_sq = distance_sq
         return best
 
 
@@ -221,8 +220,7 @@ def _project_zoom_positions(
         )
         rows = (
             unit_rows
-            if object_id in relay_ids
-            or isinstance(entities[object_id], layout_optimizer.ConstantCombinator)
+            if object_id in relay_ids or isinstance(entities[object_id], ConstantCombinator)
             else wide_rows
         )
         position = rows.nearest_clear(desired, half_extents[object_id], occupancy)
@@ -233,15 +231,16 @@ def _project_zoom_positions(
     return result, None
 
 
-def _layout_with_positions(problem: LayoutOptimizationProblem, positions: dict[int, Position]) -> Layout:
-    relay_positions = {relay.entity_id: relay for relay in problem.layout.relays}
+def _layout_with_positions(
+    problem: LayoutOptimizationProblem,
+    positions: dict[int, Position],
+) -> Layout:
     return replace(
         problem.layout,
         positions=positions,
         relays=tuple(
             LayoutRelay(relay.entity_id, positions[relay.entity_id], relay.description)
             for relay in problem.layout.relays
-            if relay.entity_id in relay_positions
         ),
     )
 
