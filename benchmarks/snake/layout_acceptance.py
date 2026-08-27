@@ -52,7 +52,7 @@ class ApplicationLayoutMetrics:
     occupancy: float
     implementation_per_relay: float | None
     wire_length: float
-    known_redundant_relays: int
+    known_redundant_relays: int | None
 
 
 def _entity_footprint_area(layout: Layout) -> float:
@@ -87,6 +87,7 @@ def application_layout_metrics(
     layout: Layout,
     *,
     problem: LayoutOptimizationProblem,
+    check_redundancy: bool = True,
 ) -> ApplicationLayoutMetrics:
     public = physical_layout_metrics(layout)
     footprint = _entity_footprint_area(layout)
@@ -100,7 +101,9 @@ def application_layout_metrics(
         occupancy=occupancy,
         implementation_per_relay=ratio,
         wire_length=public.wire_length,
-        known_redundant_relays=_known_redundant_relays(problem),
+        known_redundant_relays=(
+            _known_redundant_relays(problem) if check_redundancy else None
+        ),
     )
 
 
@@ -146,7 +149,11 @@ def main() -> None:
         raise SystemExit("--max-runtime-seconds must be positive")
 
     seed_layout, problem = _build_failproof_seed()
-    input_metrics = application_layout_metrics(seed_layout, problem=problem)
+    input_metrics = application_layout_metrics(
+        seed_layout,
+        problem=problem,
+        check_redundancy=False,
+    )
 
     started = monotonic()
     optimized = optimize_physical_layout(
