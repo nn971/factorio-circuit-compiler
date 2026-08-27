@@ -103,6 +103,30 @@ uv run python -m benchmarks.snake.census --deep-delays
 uv run python -m benchmarks.snake.generate --output snake-blueprint.txt
 ```
 
+Milestone C has an additional application-level physical acceptance command. It always starts from
+the failproof safe-folded Snake seed and measures exact entity-footprint occupancy, implementation /
+relay ratio, final relay fixed-point redundancy, routed wire length, and optimizer wall time:
+
+```bash
+# Strict gate: exits non-zero until the >80% occupancy contract and all other hard criteria pass.
+uv run python -m benchmarks.snake.layout_acceptance \
+  --proposals 4096 \
+  --seed 0 \
+  --json-report /tmp/snake-layout-acceptance.json \
+  --output-blueprint /tmp/snake-layout-acceptance.txt
+
+# Development measurement without treating the still-open density target as a command failure.
+uv run python -m benchmarks.snake.layout_acceptance \
+  --proposals 4096 --seed 0 --measure-only
+```
+
+The occupancy numerator is the sum of exact placed Factorio entity footprint areas, including relays;
+the denominator is the exact occupied bounding-box area. Acceptance requires occupancy to be
+**strictly greater than 0.80**. The final layout is also rejected if the general topology-preserving
+relay simplifier can still remove a relay at its fixed point. The default Snake-scale optimizer
+runtime ceiling is 600 seconds and may be overridden explicitly for controlled machine comparisons.
+This heavyweight gate remains opt-in.
+
 Accepted Snake milestones and their physical metrics are recorded in
 `benchmarks/snake/baselines.json`. Historical entries are append-only: a new accepted optimization gets
 a new named milestone rather than rewriting the previous measurement.
