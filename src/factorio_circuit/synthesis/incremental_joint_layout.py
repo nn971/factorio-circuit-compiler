@@ -135,7 +135,7 @@ class _FeasibleTopology:
             affected.update(self.incident_wires.get(object_id, ()))
 
         delta = 0.0
-        for wire in sorted(affected, key=_routed_wire_sort_key):
+        for wire in affected:
             source_before = state.object_position(wire.source_entity)
             target_before = state.object_position(wire.target_entity)
             source_after = targets.get(wire.source_entity, source_before)
