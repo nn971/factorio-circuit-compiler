@@ -1,4 +1,4 @@
-"""Temporarily stage order-independent local wire-energy accumulation for Milestone C."""
+"""Temporarily stage stable incident-order wire accumulation for Milestone C."""
 
 from __future__ import annotations
 
@@ -19,23 +19,15 @@ def _replace_once(text: str, old: str, new: str) -> str:
 
 def main() -> None:
     text = PATH.read_text()
-    if "from math import ceil, exp, floor, fsum, hypot\n" in text:
+    if "affected_seen: set[wire_routing.RoutedWire]" in text:
         return
-    text = _replace_once(
-        text,
-        "from math import ceil, exp, floor, hypot\n",
-        "from math import ceil, exp, floor, fsum, hypot\n",
-    )
-    text = _replace_once(
-        text,
-        """        delta = 0.0\n        for wire in sorted(affected, key=_routed_wire_sort_key):\n            source_before = state.object_position(wire.source_entity)\n            target_before = state.object_position(wire.target_entity)\n            source_after = targets.get(wire.source_entity, source_before)\n            target_after = targets.get(wire.target_entity, target_before)\n            after_distance = _distance(source_after, target_after)\n            if after_distance > state.safe_span + _EPSILON:\n                return None\n            delta += _wire_energy(after_distance, state.safe_span)\n            delta -= _wire_energy(_distance(source_before, target_before), state.safe_span)\n        return delta\n""",
-        """        contributions: list[float] = []\n        for wire in affected:\n            source_before = state.object_position(wire.source_entity)\n            target_before = state.object_position(wire.target_entity)\n            source_after = targets.get(wire.source_entity, source_before)\n            target_after = targets.get(wire.target_entity, target_before)\n            after_distance = _distance(source_after, target_after)\n            if after_distance > state.safe_span + _EPSILON:\n                return None\n            contributions.append(\n                _wire_energy(after_distance, state.safe_span)\n                - _wire_energy(_distance(source_before, target_before), state.safe_span)\n            )\n        return fsum(contributions)\n""",
-    )
-    text = _replace_once(
-        text,
-        """        delta = 0.0\n        for wire in sorted(affected, key=_routed_wire_sort_key):\n            source_before = state.object_position(wire.source_entity)\n            target_before = state.object_position(wire.target_entity)\n            source_after = targets.get(wire.source_entity, source_before)\n            target_after = targets.get(wire.target_entity, target_before)\n            delta += _distance(source_after, target_after)\n            delta -= _distance(source_before, target_before)\n        return delta\n""",
-        """        return fsum(\n            _distance(\n                targets.get(wire.source_entity, state.object_position(wire.source_entity)),\n                targets.get(wire.target_entity, state.object_position(wire.target_entity)),\n            )\n            - _distance(\n                state.object_position(wire.source_entity),\n                state.object_position(wire.target_entity),\n            )\n            for wire in affected\n        )\n""",
-    )
+    old_collect = """        affected: set[wire_routing.RoutedWire] = set()\n        for object_id in targets:\n            affected.update(self.incident_wires.get(object_id, ()))\n\n        delta = 0.0\n        for wire in sorted(affected, key=_routed_wire_sort_key):\n"""
+    new_collect = """        affected: list[wire_routing.RoutedWire] = []\n        affected_seen: set[wire_routing.RoutedWire] = set()\n        for object_id in targets:\n            for wire in self.incident_wires.get(object_id, ()):\n                if wire in affected_seen:\n                    continue\n                affected_seen.add(wire)\n                affected.append(wire)\n\n        delta = 0.0\n        for wire in affected:\n"""
+    text = _replace_once(text, old_collect, new_collect)
+
+    old_tracker_collect = """        affected: set[wire_routing.RoutedWire] = set()\n        for object_id in targets:\n            affected.update(topology.incident_wires.get(object_id, ()))\n        delta = 0.0\n        for wire in sorted(affected, key=_routed_wire_sort_key):\n"""
+    new_tracker_collect = """        affected: list[wire_routing.RoutedWire] = []\n        affected_seen: set[wire_routing.RoutedWire] = set()\n        for object_id in targets:\n            for wire in topology.incident_wires.get(object_id, ()):\n                if wire in affected_seen:\n                    continue\n                affected_seen.add(wire)\n                affected.append(wire)\n        delta = 0.0\n        for wire in affected:\n"""
+    text = _replace_once(text, old_tracker_collect, new_tracker_collect)
     PATH.write_text(text)
 
 
