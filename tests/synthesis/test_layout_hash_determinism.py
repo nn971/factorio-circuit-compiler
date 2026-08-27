@@ -82,8 +82,5 @@ def test_seeded_layout_is_independent_of_python_hash_seed() -> None:
 
 def test_routed_wire_hash_preserves_legacy_seed_zero_order() -> None:
     legacy = tuple(json.loads(_run_child(_LEGACY_HASH_CHILD, 0)))
-    hashes = {
-        tuple(json.loads(_run_child(_WIRE_HASH_CHILD, seed)))
-        for seed in (1, 2, 3, 42)
-    }
+    hashes = {tuple(json.loads(_run_child(_WIRE_HASH_CHILD, seed))) for seed in (1, 2, 3, 42)}
     assert hashes == {legacy}
