@@ -94,17 +94,19 @@ The opt-in report is `benchmarks/layout_optimizer_observability.py`.
 
 ## Milestone C — Annealing v2
 
-**Status: current.**
+**Status: current; structural stabilization complete, application-level acceptance still open.**
 
-**Goal:** improve quality and speed while preserving feasible-first behavior.
+**Goal:** build a general-purpose multiscale physical optimizer that starts from a failproof validated layout, preserves feasible-first behavior, and converges rapidly to a dense, relay-efficient final blueprint on Snake-scale circuits.
 
-Prioritized experiments:
+Experiments evaluated so far include:
 
 1. adaptive coarse retopology triggered by stagnation or congestion rather than only fixed budget fractions;
 2. transactional compound moves such as terminal+adjacent-relay moves and short relay-chain translations;
 3. adaptive proposal pools based on congestion, envelope outliers, and objective stagnation;
 4. targeted local repair around hard anchors and routing bottlenecks;
-5. only after measurement, lower-level performance work in occupancy, routing indexes, and proposal evaluation.
+5. measured lower-level performance work in proposal and exact-objective evaluation.
+
+The Snake application check shows that flat single-object annealing has the correct qualitative direction but converges far too slowly in geometric density. The next phase should therefore prioritize general multiscale mechanisms such as global contraction/zoom targets, physical-net or implementation-net clustering, macro annealing, hierarchical uncoarsening, and transactional legalization. These mechanisms must remain circuit-generic and cannot depend on Snake-specific geometry or special-case shape assumptions.
 
 ### Experiment record
 
@@ -112,20 +114,41 @@ Prioritized experiments:
 - **Rejected: terminal + one adjacent relay translation.** In 18 paired runs it produced 0 better / 18 equal / 0 worse objectives. It attempted 13,096 rescues and accepted none because taut safe-span chains transferred the violation to the relay's far side.
 - **Rejected: seven-step reach backoff.** In 18 paired runs it produced 0 better / 17 equal / 1 worse objectives. It reduced some reach rejections but made taut/fixed cases 2.6x-4.5x slower.
 - **Rejected: analytical implementation reach clipping.** In 18 paired runs it produced 0 better / 15 equal / 3 worse objectives. It cheaply removed many reach rejections, but every clustered sparse-cut seed became lexicographically worse by trading larger area for shorter wire.
-- **Accepted: incremental exact mid-epoch best tracking, with legacy-stable wire hashing.** Full rescoring after every accepted move found transient lexicographic improvements without changing the intended search trajectory, but cost roughly 1.7x-2.3x on active cases. The retained implementation samples every accepted move while maintaining footprint extrema with lazy heaps and wire length through incident-wire deltas. The first deterministic implementation sorted hash-sensitive local wire traversal; an immediate-parent 8-seed × 6-case sweep looked safe at 3 better / 45 equal / 0 worse, but the later frozen pre-C 8-seed × 8-case gate exposed two clustered sparse-cut regressions. The repair gives `RoutedWire` a stable hash compatible with the CPython 3.12 `PYTHONHASHSEED=0` baseline and restores the original set traversal. The frozen gate then produced 2 better / 62 equal / 0 worse outcomes, with relay count and occupied area identical in all 64 runs, two wire-length improvements, and zero deltas in proposal, acceptance, rejection, routing-work, and topology-rebuild counters. Median runtime was 1.049x the pre-C baseline.
+- **Accepted as structural stabilization: incremental exact mid-epoch best tracking, with legacy-stable wire hashing.** Full rescoring after every accepted move found transient lexicographic improvements without changing the intended search trajectory, but cost roughly 1.7x-2.3x on active cases. The retained implementation samples every accepted move while maintaining footprint extrema with lazy heaps and wire length through incident-wire deltas. The first deterministic implementation sorted hash-sensitive local wire traversal; an immediate-parent 8-seed × 6-case sweep looked safe at 3 better / 45 equal / 0 worse, but the later frozen pre-C 8-seed × 8-case gate exposed two clustered sparse-cut regressions. The repair gives `RoutedWire` a stable hash compatible with the CPython 3.12 `PYTHONHASHSEED=0` baseline and restores the original set traversal. The frozen gate then produced 2 better / 62 equal / 0 worse outcomes, with relay count and occupied area identical in all 64 runs, two wire-length improvements, and zero deltas in proposal, acceptance, rejection, routing-work, and topology-rebuild counters. Median runtime was 1.049x the pre-C baseline.
 - **Withdrawn before acceptance: reach-immobile proposal filtering.** A bounded candidate was prepared to avoid spending proposals on objects whose current wired neighbours admit no alternative safe-span lattice site, but the required paired multi-seed acceptance run could not be collected in the connected runner environment. The production changes and experiment-only probes were removed rather than retaining an unmeasured heuristic. This is not a benchmark rejection and should not be cited as performance evidence.
 - **Rejected: one-epoch relay relief after implementation reach deadlock.** A 4-seed observability probe identified perimeter anchors as a real implementation-only reach deadlock, but granting the next epoch exclusively to movable relays produced 0 better / 64 equal / 0 worse immediate-parent objectives while adding 2,048 relay proposals, accepting zero relay moves, and adding 27 reach rejections. Ordinary single-relay motion therefore does not release that topology.
+- **Rejected: defer exact wire-length bookkeeping until after Metropolis acceptance.** The candidate preserved 32 / 32 complete immediate-parent layout fingerprints exactly, but its overall median runtime ratio was 1.003x rather than faster; the worst family median was near-optimal-packed at 1.024x. The theoretical saving was below benchmark noise and did not justify a retained production change.
 
 ### C acceptance
+
+Structural regression gates remain mandatory:
 
 - Every accepted optimization is benchmarked across multiple seeds.
 - Improvements are reported separately for relay count, area, wire length, and work/runtime.
 - Recoverable search failures return the best validated candidate; invariant violations remain visible as bugs.
-- Final Milestone C is compared against the frozen pre-C baseline `a70df723768a6ba099ffd43017bdcb0291011c8f`, not merely against the immediately previous experiment.
+- Milestone C is compared against the frozen pre-C baseline `a70df723768a6ba099ffd43017bdcb0291011c8f`, not merely against the immediately previous experiment.
 - The standard frozen-baseline check, full budget/scale sweep, hash-determinism target, and manual three-way layout examples are documented in `milestone-c-acceptance.md` and exposed as reproducible commands.
 - Heavy multi-seed and 1k+ scale checks remain opt-in; lightweight verifier regressions stay in routine pytest.
 
+Final **application-level acceptance is stricter and mandatory**:
+
+- The annealer starts from a validated failproof layout policy such as `safe-folded-crossbar` or `safe-crossbar` and retains that valid input/best-known result as fallback.
+- On Snake or another comparably large application, the final serialized blueprint has **strictly greater than 80% physical occupancy**, measured as total placed physical-entity footprint area divided by the exact occupied axis-aligned bounding-box area.
+- The density result is achieved without assumptions about circuit shape and without Snake-specific scoring, placement hints, clustering, or other benchmark-specific optimization behavior.
+- The optimizer does not rely on non-general primary moves such as empty-strip squeezing; accepted mechanisms must be defined from general physical/netlist information and apply to arbitrary circuits satisfying the compiler's physical contracts.
+- No known-redundant relay combinator remains. The final routing is simplified to a fixed point under all general topology-preserving relay eliminations available to the compiler, and no redundant scaffold from the failproof seed is intentionally retained.
+- The optimizer converges to the density target in a reasonable bounded runtime at Snake scale. The acceptance report records proposal/work budget, routing work, wall-clock runtime, and execution environment; runtime is part of user acceptance rather than informational only.
+- For otherwise comparable valid results, a larger `implementation combinators / relay combinators` ratio is considered better and is reported explicitly.
+
+The exact application-level definitions and reporting requirements live in `milestone-c-acceptance.md`.
+
+The completed structural full gate contains 101 baseline/current pairs across the eight structural families, 256 / 1,024 / 4,096 / 16,384 proposal budgets, and the 1,200-object scale fixture. It produced **6 better / 95 equal / 0 worse** lexicographic outcomes, all six improvements in wire length at unchanged relay count and occupied area. Search-work counters were identical to pre-C and the overall median runtime ratio was **1.031x**. These are retained as stabilization evidence in `milestone-c-results.md`, not as final Milestone C acceptance.
+
+The first Snake application check further confirmed the gap: a 4,096-proposal optimization from a `safe-folded-crossbar` seed produced a correct in-game blueprint but only about **4.0% physical occupancy**, far below the >80% exit criterion. Additional flat proposals showed strong diminishing returns, so Milestone C remains open.
+
 ## Milestone D — Physical ABI completion and placement integration
+
+**Status: blocked until Milestone C application acceptance.**
 
 **Goal:** finish the reusable physical-module boundary and make layout consume its geometry directly.
 
@@ -216,6 +239,8 @@ For a fixed input/oracle trace, compare semantic execution against physical simu
 
 Explore coarsening the physical-net hypergraph into clusters, placing the coarse graph, expanding it, then using the existing feasible joint annealer for local refinement. The current annealer remains the correctness-preserving local optimizer rather than being replaced outright.
 
+The Snake density result makes this capability relevant to Milestone C rather than a purely later optimization. General multilevel clustering, macro annealing, global zoom/contraction targets, and hierarchical uncoarsening may therefore be developed as part of C when required to satisfy the >80% application-density gate. This section remains as the longer-term home for broader multilevel/global optimization beyond the C acceptance target.
+
 ### H acceptance
 
 - Large structural corpus cases improve in quality or work compared with flat annealing at equal validation guarantees.
@@ -243,10 +268,11 @@ The immediate sequence is:
 ```text
 A. layout reliability corpus [complete]
     -> B. annealer observability [complete]
-    -> C. annealing v2 [current]
+    -> C. annealing v2 [current: application acceptance open]
+    -> D. physical ABI placement integration [blocked]
 ```
 
-Milestone D can proceed in parallel, but new layout constraints should be introduced only with structural benchmark coverage. Then:
+Finish Milestone C's general multiscale convergence work and pass the Snake-scale >80% occupancy gate before beginning D. After C:
 
 ```text
 D. physical ABI placement integration
@@ -254,8 +280,8 @@ D. physical ABI placement integration
     -> F. additional useful peripherals
 ```
 
-Milestone G should begin as soon as a small useful random-program generator exists and then grow continuously. H and I become especially valuable once larger devices and benchmark applications exercise the full physical pipeline.
+Milestone G should begin as soon as a small useful random-program generator exists and then grow continuously. H and I become especially valuable once larger devices and benchmark applications exercise the full physical pipeline; H techniques may be pulled forward into C when they are required for application-level convergence.
 
 ## Current step
 
-Land the **legacy-stable wire-hash repair** and run the full frozen-baseline budget/scale gate. If that remains no-worse, resume Milestone C from the deterministic exact mid-epoch tracker. The measured perimeter-anchor deadlock is not solved by ordinary single-relay proposals, so the next quality experiment should target a genuinely transactional short relay-chain/local-repair move rather than globally mixing more relay proposals into the hot loop. No candidate becomes production behavior without paired multi-seed evidence and the frozen pre-C gate.
+Continue **Milestone C — Annealing v2** from the validated failproof-layout application benchmark. The immediate convergence direction is general multiscale physical optimization: investigate global zoom/contraction with legalization, circuit-generic clustering, macro-level annealing/transactional moves, and hierarchical uncoarsening. Every candidate must preserve the feasible-first fallback contract and be judged on Snake-scale physical occupancy, relay overhead, runtime, and the existing structural regression gates. Do not proceed to Milestone D until the >80% application-density contract is satisfied.
