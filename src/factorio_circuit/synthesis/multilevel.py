@@ -144,9 +144,7 @@ def coarsen_level(
         merged.append(PlacementMacro(tuple(sorted((*left.members, *right.members)))))
         matched.update((left_index, right_index))
 
-    merged.extend(
-        macro for index, macro in enumerate(level.macros) if index not in matched
-    )
+    merged.extend(macro for index, macro in enumerate(level.macros) if index not in matched)
     return CoarseningLevel(tuple(sorted(merged, key=lambda macro: macro.members)))
 
 
@@ -157,7 +155,7 @@ def build_multilevel_hierarchy(
     target_macros: int = 32,
     max_levels: int = 16,
 ) -> MultilevelHierarchy:
-    """Build deterministic heavy-edge levels until the target or a matching fixed point is reached."""
+    """Build deterministic heavy-edge levels to the target or a matching fixed point."""
 
     if target_macros <= 0:
         raise ValueError("target_macros must be positive")
