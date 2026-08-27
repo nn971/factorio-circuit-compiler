@@ -27,6 +27,21 @@ jobs:
         run: uv sync --extra dev
       - name: Test
         run: uv run pytest
+      - name: Full frozen pre-C acceptance
+        run: |
+          git fetch origin a70df723768a6ba099ffd43017bdcb0291011c8f
+          uv run python -m benchmarks.milestone_c_acceptance \
+            --seeds 8 \
+            --proposals 4096 \
+            --full \
+            --json-report milestone-c-full-acceptance.json
+      - name: Preserve full acceptance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: milestone-c-full-acceptance
+          path: milestone-c-full-acceptance.json
+          if-no-files-found: ignore
       - name: Ruff lint
         run: uv run ruff check .
       - name: Ruff format
