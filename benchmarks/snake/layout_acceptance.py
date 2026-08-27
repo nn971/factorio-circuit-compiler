@@ -101,9 +101,7 @@ def application_layout_metrics(
         occupancy=occupancy,
         implementation_per_relay=ratio,
         wire_length=public.wire_length,
-        known_redundant_relays=(
-            _known_redundant_relays(problem) if check_redundancy else None
-        ),
+        known_redundant_relays=(_known_redundant_relays(problem) if check_redundancy else None),
     )
 
 
@@ -184,8 +182,7 @@ def main() -> None:
         )
     if runtime_seconds > args.max_runtime_seconds:
         failures.append(
-            f"optimizer runtime {runtime_seconds:.3f}s exceeds "
-            f"{args.max_runtime_seconds:.3f}s"
+            f"optimizer runtime {runtime_seconds:.3f}s exceeds {args.max_runtime_seconds:.3f}s"
         )
 
     report = {
