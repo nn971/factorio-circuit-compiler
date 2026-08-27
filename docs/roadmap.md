@@ -94,17 +94,17 @@ The opt-in report is `benchmarks/layout_optimizer_observability.py`.
 
 ## Milestone C — Annealing v2
 
-**Status: current.**
+**Status: complete.**
 
 **Goal:** improve quality and speed while preserving feasible-first behavior.
 
-Prioritized experiments:
+Experiments evaluated during this milestone included:
 
 1. adaptive coarse retopology triggered by stagnation or congestion rather than only fixed budget fractions;
 2. transactional compound moves such as terminal+adjacent-relay moves and short relay-chain translations;
 3. adaptive proposal pools based on congestion, envelope outliers, and objective stagnation;
 4. targeted local repair around hard anchors and routing bottlenecks;
-5. only after measurement, lower-level performance work in occupancy, routing indexes, and proposal evaluation.
+5. measured lower-level performance work in proposal and exact-objective evaluation.
 
 ### Experiment record
 
@@ -115,6 +115,7 @@ Prioritized experiments:
 - **Accepted: incremental exact mid-epoch best tracking, with legacy-stable wire hashing.** Full rescoring after every accepted move found transient lexicographic improvements without changing the intended search trajectory, but cost roughly 1.7x-2.3x on active cases. The retained implementation samples every accepted move while maintaining footprint extrema with lazy heaps and wire length through incident-wire deltas. The first deterministic implementation sorted hash-sensitive local wire traversal; an immediate-parent 8-seed × 6-case sweep looked safe at 3 better / 45 equal / 0 worse, but the later frozen pre-C 8-seed × 8-case gate exposed two clustered sparse-cut regressions. The repair gives `RoutedWire` a stable hash compatible with the CPython 3.12 `PYTHONHASHSEED=0` baseline and restores the original set traversal. The frozen gate then produced 2 better / 62 equal / 0 worse outcomes, with relay count and occupied area identical in all 64 runs, two wire-length improvements, and zero deltas in proposal, acceptance, rejection, routing-work, and topology-rebuild counters. Median runtime was 1.049x the pre-C baseline.
 - **Withdrawn before acceptance: reach-immobile proposal filtering.** A bounded candidate was prepared to avoid spending proposals on objects whose current wired neighbours admit no alternative safe-span lattice site, but the required paired multi-seed acceptance run could not be collected in the connected runner environment. The production changes and experiment-only probes were removed rather than retaining an unmeasured heuristic. This is not a benchmark rejection and should not be cited as performance evidence.
 - **Rejected: one-epoch relay relief after implementation reach deadlock.** A 4-seed observability probe identified perimeter anchors as a real implementation-only reach deadlock, but granting the next epoch exclusively to movable relays produced 0 better / 64 equal / 0 worse immediate-parent objectives while adding 2,048 relay proposals, accepting zero relay moves, and adding 27 reach rejections. Ordinary single-relay motion therefore does not release that topology.
+- **Rejected: defer exact wire-length bookkeeping until after Metropolis acceptance.** The candidate preserved 32 / 32 complete immediate-parent layout fingerprints exactly, but its overall median runtime ratio was 1.003x rather than faster; the worst family median was near-optimal-packed at 1.024x. The theoretical saving was below benchmark noise and did not justify a retained production change.
 
 ### C acceptance
 
@@ -125,7 +126,11 @@ Prioritized experiments:
 - The standard frozen-baseline check, full budget/scale sweep, hash-determinism target, and manual three-way layout examples are documented in `milestone-c-acceptance.md` and exposed as reproducible commands.
 - Heavy multi-seed and 1k+ scale checks remain opt-in; lightweight verifier regressions stay in routine pytest.
 
+The final full gate contains 101 baseline/current pairs across the eight structural families, 256 / 1,024 / 4,096 / 16,384 proposal budgets, and the 1,200-object scale fixture. It produced **6 better / 95 equal / 0 worse** lexicographic outcomes, all six improvements in wire length at unchanged relay count and occupied area. Search-work counters were identical to pre-C and the overall median runtime ratio was **1.031x**. The full result and retained Actions artifact are recorded in `milestone-c-results.md`.
+
 ## Milestone D — Physical ABI completion and placement integration
+
+**Status: current.**
 
 **Goal:** finish the reusable physical-module boundary and make layout consume its geometry directly.
 
@@ -243,10 +248,11 @@ The immediate sequence is:
 ```text
 A. layout reliability corpus [complete]
     -> B. annealer observability [complete]
-    -> C. annealing v2 [current]
+    -> C. annealing v2 [complete]
+    -> D. physical ABI placement integration [current]
 ```
 
-Milestone D can proceed in parallel, but new layout constraints should be introduced only with structural benchmark coverage. Then:
+Milestone D now becomes the primary physical-layout work. Then:
 
 ```text
 D. physical ABI placement integration
@@ -258,4 +264,4 @@ Milestone G should begin as soon as a small useful random-program generator exis
 
 ## Current step
 
-Land the **legacy-stable wire-hash repair** and run the full frozen-baseline budget/scale gate. If that remains no-worse, resume Milestone C from the deterministic exact mid-epoch tracker. The measured perimeter-anchor deadlock is not solved by ordinary single-relay proposals, so the next quality experiment should target a genuinely transactional short relay-chain/local-repair move rather than globally mixing more relay proposals into the hot loop. No candidate becomes production behavior without paired multi-seed evidence and the frozen pre-C gate.
+Begin **Milestone D — Physical ABI placement integration** from the already-landed anchoring/component contracts. The first concrete target is to make hard component keepouts and rigid component geometry participate directly in the same feasibility/placement path used by implementation entities and relays, with structural benchmark coverage before attempting distant explicit-port pinning or richer seam roles.
