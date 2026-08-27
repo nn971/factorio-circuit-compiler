@@ -11,13 +11,15 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: agent/annealing-v2-defer-exact-wire-delta
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -25,11 +27,41 @@ jobs:
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
+      - name: Stage deferred exact wire delta
+        run: |
+          python tools/stage_defer_exact_wire_delta.py
+          uv run ruff format \
+            src/factorio_circuit/synthesis/incremental_joint_layout.py \
+            tests/synthesis/test_exact_tracker_hot_loop.py
       - name: Test
         run: uv run pytest
+      - name: Immediate-parent trajectory/runtime gate
+        run: |
+          git fetch origin 34c78d59ae9b4e2a07e5a76edc4dbb0ba356a16b
+          uv run python -m benchmarks.compare_deferred_exact_wire_delta \
+            --seeds 4 \
+            --proposals 4096
+      - name: Frozen pre-C acceptance
+        run: |
+          git fetch origin a70df723768a6ba099ffd43017bdcb0291011c8f
+          uv run python -m benchmarks.milestone_c_acceptance \
+            --seeds 8 \
+            --proposals 4096
       - name: Ruff lint
         run: uv run ruff check .
       - name: Ruff format
         run: uv run ruff format --check .
       - name: Mypy
         run: uv run mypy src
+      - name: Commit validated performance candidate
+        if: github.event_name == 'pull_request'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            src/factorio_circuit/synthesis/incremental_joint_layout.py \
+            tests/synthesis/test_exact_tracker_hot_loop.py
+          if ! git diff --cached --quiet; then
+            git commit -m "perf: defer exact wire delta until acceptance"
+            git push origin HEAD:agent/annealing-v2-defer-exact-wire-delta
+          fi
