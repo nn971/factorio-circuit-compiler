@@ -6,7 +6,7 @@ This file records the durable acceptance evidence for **Milestone C — Annealin
 
 `a70df723768a6ba099ffd43017bdcb0291011c8f`
 
-## Accepted behavior before final performance tuning
+## Accepted behavior
 
 The retained Milestone C behavior is incremental exact mid-epoch best tracking, together with legacy-stable `RoutedWire` hashing that preserves the old CPython 3.12 / `PYTHONHASHSEED=0` annealing trajectory while remaining hash-seed deterministic.
 
@@ -63,8 +63,26 @@ The acceptance-only GitHub Actions run was `33046453377`. Its retained artifact 
 
 The temporary acceptance PR was closed without merge; it changed no production behavior.
 
-## Remaining performance observation
+## Final performance experiment
 
-The full report also shows that exact accepted-move tracking still has avoidable overhead on some dense active cases even when the final objective is unchanged. In particular, the current hot loop computes `proposal_wire_length_delta()` before the Metropolis test, so feasible proposals that are later rejected still pay the exact-tracking wire-distance/sort cost.
+The full report showed noticeable exact-tracker overhead on some dense active cases, so one final trajectory-neutral optimization was tested: defer `proposal_wire_length_delta()` until after a proposal passes the Metropolis test.
 
-The final Milestone C performance experiment is therefore deliberately trajectory-neutral: defer exact wire-length bookkeeping until after a proposal passes Metropolis but before state mutation. Acceptance requires identical optimized artifacts and work counters, together with a measurable runtime reduction against the immediate parent and a no-worse frozen pre-C gate.
+The candidate passed the full test suite and an immediate-parent paired benchmark confirmed **32 / 32 identical complete layout fingerprints**. It therefore preserved the search trajectory exactly. It did not, however, provide a measurable speedup:
+
+- overall median runtime ratio: **1.003×** the immediate parent;
+- relay forest: 0.997×;
+- shared bus: 1.005×;
+- clustered sparse cut: 0.995×;
+- red/green mesh: 1.004×;
+- near-optimal packed: 1.024×;
+- narrow corridor: 1.000×;
+- perimeter anchors: 1.007×;
+- fixed endpoint span: 1.001×.
+
+The experiment was therefore **rejected**. The production hot loop remains unchanged: the tiny theoretical saving was below benchmark noise and did not justify another retained code path.
+
+## Exit conclusion
+
+Milestone C exits with a deterministic, feasibility-preserving annealer that retains transient exact-objective improvements without changing the intended proposal trajectory. Against the frozen pre-C baseline it is no worse across every tested structural case, seed, budget, and the 1,200-object scale fixture, while producing six measured wire-length improvements at unchanged relay count and occupied area in the full acceptance matrix.
+
+The reproducible acceptance commands and manual SVG comparison workflow remain documented in `milestone-c-acceptance.md`.
