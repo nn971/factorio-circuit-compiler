@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -37,17 +38,52 @@ fingerprint = {
 print(json.dumps(fingerprint, sort_keys=True))
 """
 
+_WIRE_HASH_CHILD = r"""
+import json
 
-def _fingerprint(hash_seed: int) -> str:
+from factorio_circuit.blueprint.routing import RoutedWire
+from factorio_circuit.ir.physical import WireColor
+
+print(
+    json.dumps(
+        [
+            hash(RoutedWire(1, 2, 3, 4, WireColor.RED)),
+            hash(RoutedWire(1, 2, 3, 4, WireColor.GREEN)),
+        ]
+    )
+)
+"""
+
+_LEGACY_HASH_CHILD = r"""
+import json
+
+print(json.dumps([hash((1, 2, 3, 4, "red")), hash((1, 2, 3, 4, "green"))]))
+"""
+
+
+def _run_child(code: str, hash_seed: int) -> str:
     env = dict(os.environ)
     env["PYTHONHASHSEED"] = str(hash_seed)
     return subprocess.check_output(
-        [sys.executable, "-c", _CHILD],
+        [sys.executable, "-c", code],
         env=env,
         text=True,
     ).strip()
 
 
+def _fingerprint(hash_seed: int) -> str:
+    return _run_child(_CHILD, hash_seed)
+
+
 def test_seeded_layout_is_independent_of_python_hash_seed() -> None:
     fingerprints = {_fingerprint(seed) for seed in (1, 2, 3, 42)}
     assert len(fingerprints) == 1
+
+
+def test_routed_wire_hash_preserves_legacy_seed_zero_order() -> None:
+    legacy = tuple(json.loads(_run_child(_LEGACY_HASH_CHILD, 0)))
+    hashes = {
+        tuple(json.loads(_run_child(_WIRE_HASH_CHILD, seed)))
+        for seed in (1, 2, 3, 42)
+    }
+    assert hashes == {legacy}
