@@ -1,12 +1,12 @@
-# Milestone C — acceptance results
+# Milestone C — structural stabilization results
 
-This file records the durable acceptance evidence for **Milestone C — Annealing v2** against the frozen pre-C baseline.
+This file records durable **structural stabilization evidence** for **Milestone C — Annealing v2** against the frozen pre-C baseline. These results are necessary regression evidence, but they are no longer sufficient for final Milestone C acceptance. The hard application-level exit contract is defined in `milestone-c-acceptance.md`.
 
 ## Frozen baseline
 
 `a70df723768a6ba099ffd43017bdcb0291011c8f`
 
-## Accepted behavior
+## Retained behavior
 
 The retained Milestone C behavior is incremental exact mid-epoch best tracking, together with legacy-stable `RoutedWire` hashing that preserves the old CPython 3.12 / `PYTHONHASHSEED=0` annealing trajectory while remaining hash-seed deterministic.
 
@@ -19,7 +19,7 @@ The legacy-stable hash repair was validated first on the ordinary 8-case × 8-se
 - proposal, acceptance, rejection, routing-work, and topology-rebuild counters exactly unchanged from pre-C;
 - median runtime ratio 1.049× pre-C.
 
-## Full budget / scale gate
+## Full budget / scale structural gate
 
 The documented command was then run from merged `main`:
 
@@ -81,8 +81,44 @@ The candidate passed the full test suite and an immediate-parent paired benchmar
 
 The experiment was therefore **rejected**. The production hot loop remains unchanged: the tiny theoretical saving was below benchmark noise and did not justify another retained code path.
 
-## Exit conclusion
+## Snake application check: current gap
 
-Milestone C exits with a deterministic, feasibility-preserving annealer that retains transient exact-objective improvements without changing the intended proposal trajectory. Against the frozen pre-C baseline it is no worse across every tested structural case, seed, budget, and the 1,200-object scale fixture, while producing six measured wire-length improvements at unchanged relay count and occupied area in the full acceptance matrix.
+The current generic annealer was also applied to the production Snake circuit from a complete `safe-folded-crossbar` routed seed. The heavyweight Snake semantic acceptance passed, and the emitted annealed blueprints were manually tested in Factorio and behaved correctly.
 
-The reproducible acceptance commands and manual SVG comparison workflow remain documented in `milestone-c-acceptance.md`.
+The 4,096-proposal seed-0 result was:
+
+```text
+implementation combinators   602
+relay combinators            2,482
+occupied bounding-box area  91,805 tiles²
+routed wire length          19,405.0
+annealer runtime               480.0 s
+```
+
+Using the final blueprint's entity footprints, the approximate occupied footprint is:
+
+```text
+591 wide combinators × 2 tiles   = 1,182
+22 one-tile constants            =    22
+2,482 one-tile relays            = 2,482
+                                      -----
+occupied footprint               = 3,686 tiles²
+```
+
+so physical occupancy is approximately:
+
+```text
+3,686 / 91,805 ≈ 4.0%
+```
+
+This is far below the **strictly greater than 80%** application-level requirement now defined in `milestone-c-acceptance.md`. The result demonstrates that the current annealer is on a useful optimization path—it removes most of the failproof seed's relay scaffold and greatly reduces wire length—but it does **not** satisfy the final density/convergence contract.
+
+The application check also showed diminishing returns from ordinary flat proposals: increasing the budget from 512 to 4,096 improved relay count from 2,586 to 2,482 and occupied area from 93,632 to 91,805, but the layout remained extremely sparse. This is evidence that the remaining problem is convergence/move scale rather than simply insufficient proposal count.
+
+## Current conclusion
+
+Milestone C is **not accepted yet**.
+
+The structural work completed so far establishes a deterministic, feasibility-preserving, well-instrumented local annealer with strong regression protection. Final acceptance additionally requires a general-purpose optimizer that starts from a failproof layout and converges on a Snake-scale application to >80% physical occupancy, without circuit-shape assumptions, Snake-specific behavior, non-general compaction tricks, or known-redundant relays, in a practical runtime.
+
+The reproducible structural commands, the hard application-level contract, and manual SVG comparison workflow are documented in `milestone-c-acceptance.md`.
