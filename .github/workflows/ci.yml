@@ -11,15 +11,13 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: agent/annealing-v2-order-independent-energy
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -27,33 +25,11 @@ jobs:
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Stage seed-zero compatible wire hashing
-        run: |
-          python tools/stage_order_independent_energy.py
-          uv run ruff format \
-            src/factorio_circuit/blueprint/routing.py \
-            src/factorio_circuit/synthesis/incremental_joint_layout.py
       - name: Test
         run: uv run pytest
-      - name: Frozen pre-C acceptance
-        run: |
-          git fetch origin a70df723768a6ba099ffd43017bdcb0291011c8f
-          uv run python -m benchmarks.milestone_c_acceptance --seeds 8 --proposals 4096
       - name: Ruff lint
         run: uv run ruff check .
       - name: Ruff format
         run: uv run ruff format --check .
       - name: Mypy
         run: uv run mypy src
-      - name: Commit validated stable-hash candidate
-        if: github.event_name == 'pull_request'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            src/factorio_circuit/blueprint/routing.py \
-            src/factorio_circuit/synthesis/incremental_joint_layout.py
-          if ! git diff --cached --quiet; then
-            git commit -m "synthesis: preserve seed-zero wire trajectory deterministically"
-            git push origin HEAD:agent/annealing-v2-order-independent-energy
-          fi
