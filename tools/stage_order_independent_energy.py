@@ -1,12 +1,13 @@
+# ruff: noqa: E501
 """Stage a stable RoutedWire hash matching the old PYTHONHASHSEED=0 trajectory."""
 
 from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTING = ROOT / "src/factorio_circuit/blueprint/routing.py"
@@ -48,10 +49,10 @@ def _stage_routed_wire_hash(red_hash: int, green_hash: int) -> None:
 def _stage_pre_c_proposal_order() -> None:
     text = ANNEALER.read_text()
     old = "for wire in sorted(affected, key=_routed_wire_sort_key):\n"
-    if "for wire in affected:\n" in text[text.index("def proposal_delta(") : text.index("@dataclass(slots=True)\nclass _ExactObjectiveTracker")]:
-        return
     start = text.index("def proposal_delta(")
     end = text.index("@dataclass(slots=True)\nclass _ExactObjectiveTracker")
+    if "for wire in affected:\n" in text[start:end]:
+        return
     section = text[start:end]
     section = _replace_once(section, old, "for wire in affected:\n")
     ANNEALER.write_text(text[:start] + section + text[end:])
