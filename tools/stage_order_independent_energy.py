@@ -19,6 +19,8 @@ def _replace_once(text: str, old: str, new: str) -> str:
 
 def main() -> None:
     text = PATH.read_text()
+    if "from math import ceil, exp, floor, fsum, hypot\n" in text:
+        return
     text = _replace_once(
         text,
         "from math import ceil, exp, floor, hypot\n",
