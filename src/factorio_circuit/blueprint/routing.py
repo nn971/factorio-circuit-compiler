@@ -52,6 +52,25 @@ class BlueprintRelay:
     description: str
 
 
+class _FixedHashToken:
+    __slots__ = ("value",)
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __hash__(self) -> int:
+        return self.value
+
+
+# Preserve the RoutedWire hash produced by CPython 3.12 with PYTHONHASHSEED=0.
+# The pre-Milestone-C annealer iterated sets of RoutedWire values; keeping that exact hash
+# makes the old trajectory deterministic instead of replacing it with a new sorted order.
+_PYTHONHASHSEED0_RED_HASH = -6268442434690306256
+_PYTHONHASHSEED0_GREEN_HASH = -7684778424070487378
+_RED_HASH_TOKEN = _FixedHashToken(_PYTHONHASHSEED0_RED_HASH)
+_GREEN_HASH_TOKEN = _FixedHashToken(_PYTHONHASHSEED0_GREEN_HASH)
+
+
 @dataclass(frozen=True, slots=True)
 class RoutedWire:
     source_entity: int
@@ -59,6 +78,18 @@ class RoutedWire:
     target_entity: int
     target_connector_id: int
     color: WireColor
+
+    def __hash__(self) -> int:
+        color_token = _RED_HASH_TOKEN if self.color is WireColor.RED else _GREEN_HASH_TOKEN
+        return hash(
+            (
+                self.source_entity,
+                self.source_connector_id,
+                self.target_entity,
+                self.target_connector_id,
+                color_token,
+            )
+        )
 
     def as_factorio_tuple(self) -> tuple[int, int, int, int]:
         left = [
