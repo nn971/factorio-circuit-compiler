@@ -1,11 +1,11 @@
 """Authoritative rigid-component geometry for physical layout optimization.
 
-Milestone D1 deliberately stops before rigid-body motion.  A component describes its geometry in a
-local coordinate system and a current pose, while the lowering step freezes its current members and
-removes component-owned/keepout/adapter regions from the ordinary placement lattice.  This makes the
-geometry authoritative for implementation combinators and relay routing today without teaching the
-annealer partial rigid-body semantics.  Milestone D2 can replace the frozen lowering with rigid moves
-while preserving this public contract.
+Milestone D1 deliberately stops before rigid-body motion. A component describes its geometry in a
+local coordinate system and a current pose, while lowering freezes its current members and removes
+component-owned/keepout/adapter regions from the ordinary placement lattice. This makes geometry
+authoritative for implementation combinators and relay routing without teaching the annealer unsafe
+partial rigid-body semantics. Milestone D2 can replace the frozen lowering with rigid moves while
+preserving this public contract.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from factorio_circuit.synthesis.layout_optimizer import (
     LayoutOptimizationResult,
     LegalPlacementLattice,
     optimize_physical_layout,
+    validate_physical_layout,
 )
 from factorio_circuit.synthesis.placement import PlacementOptions, Position
 
@@ -109,7 +110,7 @@ class RigidComponentMember:
 
 @dataclass(frozen=True, slots=True)
 class ComponentAccessPoint:
-    """Named public routing/access point on the boundary of a component footprint."""
+    """Named public routing/access point on a declared footprint boundary."""
 
     name: str
     offset: Position
@@ -123,14 +124,14 @@ class ComponentAccessPoint:
 class RigidComponentConstraint:
     """Rigid local geometry plus the currently selected legal component pose.
 
-    ``footprints`` are component-owned regions.  Current members must fit completely inside one of
+    ``footprints`` are component-owned regions. Current members must fit completely inside one of
     them, while every object outside this component must stay out. ``keepouts`` extend that external
     exclusion without constraining where the component's own members may lie. ``adapter_regions`` are
     reserved for a future interface adapter/routing stage and must currently be empty, including of
     the component's own members.
 
-    ``allowed_origins`` and ``allowed_quarter_turns`` are already represented in D1 so D2 can add
-    rigid-body moves without changing the constraint format.  D1 preserves the selected pose exactly.
+    ``allowed_origins`` and ``allowed_quarter_turns`` are represented in D1 so D2 can add rigid-body
+    moves without changing the constraint format. D1 preserves the selected pose exactly.
     """
 
     name: str
@@ -227,13 +228,9 @@ class ComponentLayoutOptimizationProblem:
 
 
 def validate_component_layout_problem(problem: ComponentLayoutOptimizationProblem) -> None:
-    """Validate component poses, ownership, keepouts, adapters, and the underlying physical layout."""
+    """Validate component geometry and the exact lowered physical artifact."""
 
-    lowered = lower_component_layout_problem(problem, validate_base=False)
-    # Import locally to keep this module's public dependency surface small.
-    from factorio_circuit.synthesis.layout_optimizer import validate_physical_layout
-
-    validate_physical_layout(lowered)
+    lower_component_layout_problem(problem, validate_base=True)
 
 
 def lower_component_layout_problem(
@@ -241,22 +238,21 @@ def lower_component_layout_problem(
     *,
     validate_base: bool = True,
 ) -> LayoutOptimizationProblem:
-    """Lower D1 component constraints to fixed members plus a component-aware legal lattice."""
+    """Lower D1 geometry to fixed members plus a component-aware legal lattice.
+
+    Component membership is resolved *before* ordinary lattice validation. A rigid member may be at a
+    legal component pose that is not itself a movable annealer site; once promoted to ``fixed_positions``
+    the ordinary exact validator correctly treats that coordinate as part of the physical boundary.
+    """
 
     base = problem.layout_problem
-    if validate_base:
-        # Validate the source before applying stronger component restrictions.  This makes malformed
-        # electrical/routing input fail for its ordinary reason instead of being hidden by geometry.
-        from factorio_circuit.synthesis.layout_optimizer import validate_physical_layout
-
-        validate_physical_layout(base)
-
     positions = base.layout.positions
     half_extents = _layout_half_extents(base.layout)
     known_ids = set(positions)
     member_owner: dict[int, str] = {}
     fixed_positions = dict(base.fixed_positions)
     exclusion_regions: list[ComponentRegion] = []
+    owned_footprints: list[tuple[str, ComponentRegion]] = []
 
     for component in problem.components:
         for member_id in component.member_ids:
@@ -275,6 +271,15 @@ def lower_component_layout_problem(
         keepouts = component.absolute_keepouts()
         adapters = component.absolute_adapter_regions()
         member_ids = component.member_ids
+
+        for footprint in footprints:
+            for previous_name, previous_footprint in owned_footprints:
+                if footprint.interior_overlaps(previous_footprint):
+                    raise ValueError(
+                        f"component {component.name!r} footprint overlaps component "
+                        f"{previous_name!r} footprint"
+                    )
+            owned_footprints.append((component.name, footprint))
 
         for object_id, expected in expected_positions.items():
             actual = positions[object_id]
@@ -316,8 +321,14 @@ def lower_component_layout_problem(
 
         exclusion_regions.extend((*footprints, *keepouts, *adapters))
 
-    lattice = _filter_lattice(base.lattice, tuple(exclusion_regions))
-    return replace(base, lattice=lattice, fixed_positions=fixed_positions)
+    lowered = replace(
+        base,
+        lattice=_filter_lattice(base.lattice, tuple(exclusion_regions)),
+        fixed_positions=fixed_positions,
+    )
+    if validate_base:
+        validate_physical_layout(lowered)
+    return lowered
 
 
 def optimize_component_layout(
@@ -329,9 +340,20 @@ def optimize_component_layout(
 
     lowered = lower_component_layout_problem(problem)
     result = optimize_physical_layout(lowered, options=options)
-    validate_component_layout_problem(
-        replace(problem, layout_problem=replace(problem.layout_problem, layout=result.layout))
+    output_problem = replace(
+        problem,
+        layout_problem=replace(problem.layout_problem, layout=result.layout),
     )
+    try:
+        validate_component_layout_problem(output_problem)
+    except ValueError as exc:
+        return LayoutOptimizationResult(
+            layout=problem.layout_problem.layout,
+            before=result.before,
+            after=result.before,
+            proposal_budget=result.proposal_budget,
+            diagnostics=(*result.diagnostics, f"component geometry candidate rejected: {exc}"),
+        )
     return result
 
 
