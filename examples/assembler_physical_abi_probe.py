@@ -9,8 +9,6 @@ layout is serialized back to a Factorio blueprint.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 from factorio_circuit.blueprint.opaque_layout_encode import (
     encode_layout_blueprint_string_with_opaque,
     layout_to_blueprint_json_with_opaque,
