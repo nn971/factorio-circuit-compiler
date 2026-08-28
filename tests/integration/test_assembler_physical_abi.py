@@ -1,3 +1,6 @@
+from factorio_circuit.blueprint.opaque_layout_encode import (
+    encode_layout_blueprint_string_with_opaque,
+)
 from factorio_circuit.devices import AssemblerDevice
 from factorio_circuit.devices._blueprint import decode_blueprint
 from factorio_circuit.ir.physical import OpaqueSingleConnectorEntity
@@ -13,7 +16,6 @@ from examples.assembler_physical_abi_probe import (
     RECIPE_MARKER_ID,
     TRANSLATED_DEVICE_ORIGIN,
     build_assembler_physical_abi_problem,
-    generate_assembler_physical_abi_probe_string,
     route_assembler_physical_abi_probe,
     translate_assembler_physical_abi_probe,
 )
@@ -60,7 +62,7 @@ def test_real_assembler_device_routes_distant_exact_ports_and_preserves_payload(
     assert layout.positions[INGREDIENTS_MARKER_ID] == INGREDIENTS_ANCHOR
     validate_anchored_interface_routing(routed.problem, routed.reservations)
 
-    encoded = generate_assembler_physical_abi_probe_string()
+    encoded = encode_layout_blueprint_string_with_opaque(layout)
     decoded = decode_blueprint(encoded)
     entities = {entity["entity_number"]: entity for entity in decoded["entities"]}
     source_entities = {
