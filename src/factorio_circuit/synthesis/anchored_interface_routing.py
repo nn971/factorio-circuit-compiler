@@ -230,9 +230,11 @@ def validate_anchored_interface_routing(
             *reservation.relay_positions,
             reservation.landing_position,
         )
-        for left, right in zip(path, path[1:]):
+        for left, right in zip(path[:-1], path[1:], strict=True):
             if _distance(left, right) > lowered.safe_wire_span + _EPSILON:
-                raise ValueError(f"reservation {interface.name!r} contains an overlong interface hop")
+                raise ValueError(
+                    f"reservation {interface.name!r} contains an overlong interface hop"
+                )
 
 
 def _route_anchored_interfaces(
@@ -503,11 +505,8 @@ def _resolve_public_port(
     circuit: PhysicalCircuit,
     interface: PublicPortAnchorConstraint,
 ) -> InputPort | OutputPort:
-    candidates: list[InputPort | OutputPort]
-    if interface.direction == "input":
-        candidates = list(circuit.inputs)
-    else:
-        candidates = list(circuit.outputs)
+    source_ports = circuit.inputs if interface.direction == "input" else circuit.outputs
+    candidates: list[InputPort | OutputPort] = [*source_ports]
     matches = [port for port in candidates if port.name == interface.port]
     if len(matches) != 1:
         raise ValueError(
@@ -534,7 +533,8 @@ def _marker_group(state: exact._JointState, marker_entity: int) -> int:
     ]
     if len(groups) != 1:
         raise ValueError(
-            f"public marker {marker_entity} must belong to exactly one electrical group; got {groups}"
+            f"public marker {marker_entity} must belong to exactly one electrical group; "
+            f"got {groups}"
         )
     return groups[0]
 
