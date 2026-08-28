@@ -1,15 +1,5 @@
 """Physical synthesis from abstract target circuits to final layouts."""
 
-from .layout import Layout
-from .layout_optimizer import (
-    LayoutOptimizationProblem,
-    LayoutOptimizationResult,
-    LegalPlacementLattice,
-    PhysicalLayoutMetrics,
-    optimize_physical_layout,
-    physical_layout_metrics,
-    validate_physical_layout,
-)
 from .component_geometry import (
     ComponentAccessPoint,
     ComponentLayoutOptimizationProblem,
@@ -19,6 +9,16 @@ from .component_geometry import (
     lower_component_layout_problem,
     optimize_component_layout,
     validate_component_layout_problem,
+)
+from .layout import Layout
+from .layout_optimizer import (
+    LayoutOptimizationProblem,
+    LayoutOptimizationResult,
+    LegalPlacementLattice,
+    PhysicalLayoutMetrics,
+    optimize_physical_layout,
+    physical_layout_metrics,
+    validate_physical_layout,
 )
 from .physical import synthesize_layout
 from .placement import PlacementMetrics, PlacementOptions, placement_metrics
