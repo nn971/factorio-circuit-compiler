@@ -166,8 +166,7 @@ def build_macro_geometry(
     if seen != implementation_ids:
         missing_from_level = sorted(implementation_ids - seen)
         raise ValueError(
-            "coarsening level does not cover all implementation entities: "
-            f"{missing_from_level}"
+            f"coarsening level does not cover all implementation entities: {missing_from_level}"
         )
     return MacroGeometry(level, tuple(centers), tuple(half_extents), total_area)
 
@@ -257,9 +256,7 @@ def validate_macro_placement(geometry: MacroGeometry) -> None:
 
 def _zoom_center(geometry: MacroGeometry) -> Position:
     fixed = [
-        geometry.centers[index]
-        for index, macro in enumerate(geometry.level.macros)
-        if macro.fixed
+        geometry.centers[index] for index, macro in enumerate(geometry.level.macros) if macro.fixed
     ]
     return _centroid(fixed if fixed else list(geometry.centers))
 
@@ -303,10 +300,7 @@ def _legalize_targets(
         (index for index, macro in enumerate(geometry.level.macros) if not macro.fixed),
         key=lambda index: (
             -(4.0 * geometry.half_extents[index][0] * geometry.half_extents[index][1]),
-            -(
-                (targets[index][0] - center[0]) ** 2
-                + (targets[index][1] - center[1]) ** 2
-            ),
+            -((targets[index][0] - center[0]) ** 2 + (targets[index][1] - center[1]) ** 2),
             geometry.level.macros[index].members,
         ),
     )
