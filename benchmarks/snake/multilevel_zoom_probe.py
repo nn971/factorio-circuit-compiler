@@ -210,10 +210,8 @@ def _clustered_zoom_positions(
     }
     macro_targets = {
         macro_index: (
-            target_center[0]
-            + (center[0] - source_center[0]) * zoom_scale,
-            target_center[1]
-            + (center[1] - source_center[1]) * zoom_scale,
+            target_center[0] + (center[0] - source_center[0]) * zoom_scale,
+            target_center[1] + (center[1] - source_center[1]) * zoom_scale,
         )
         for macro_index, center in macro_source_centers.items()
     }
@@ -232,19 +230,21 @@ def _clustered_zoom_positions(
         placed_inside: list[Position] = []
         for entity_id in members:
             entity = entities[entity_id]
-            candidates = (
-                unit_candidates if isinstance(entity, ConstantCombinator) else wide_candidates
-            )
-            groups = [
-                [result[peer] for peer in group if peer in result]
+            candidates = unit_candidates if isinstance(entity, ConstantCombinator) else wide_candidates
+            groups = tuple(
+                tuple(result[peer] for peer in group if peer in result)
                 for group in peer_groups.get(entity_id, ())
-            ]
-            groups = [group for group in groups if group]
-            local_target = (
-                incremental._centroid(placed_inside) if placed_inside else macro_target
             )
+            groups = tuple(group for group in groups if group)
+            local_target = incremental._centroid(placed_inside) if placed_inside else macro_target
 
-            def candidate_key(candidate: Position):
+            def candidate_key(
+                candidate: Position,
+                *,
+                groups: tuple[tuple[Position, ...], ...] = groups,
+                local_target: Position = local_target,
+                macro_target: Position = macro_target,
+            ) -> tuple[int, float, float, float, float, Position]:
                 group_distances = [
                     min(incremental._distance(candidate, peer) for peer in group)
                     for group in groups
