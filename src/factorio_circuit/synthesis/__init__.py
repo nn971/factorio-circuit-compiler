@@ -1,5 +1,13 @@
 """Physical synthesis from abstract target circuits to final layouts."""
 
+from .anchored_interface_routing import (
+    AnchoredInterfaceLayoutProblem,
+    AnchoredInterfaceRoutingResult,
+    AnchoredRelayReservation,
+    PublicPortAnchorConstraint,
+    route_anchored_interfaces_transactionally,
+    validate_anchored_interface_routing,
+)
 from .component_geometry import (
     ComponentAccessPoint,
     ComponentLayoutOptimizationProblem,
@@ -31,6 +39,9 @@ from .rigid_component_translation import (
 )
 
 __all__ = [
+    "AnchoredInterfaceLayoutProblem",
+    "AnchoredInterfaceRoutingResult",
+    "AnchoredRelayReservation",
     "ComponentAccessPoint",
     "ComponentLayoutOptimizationProblem",
     "ComponentRegion",
@@ -41,6 +52,7 @@ __all__ = [
     "PlacementMetrics",
     "PlacementOptions",
     "PhysicalLayoutMetrics",
+    "PublicPortAnchorConstraint",
     "RigidComponentConstraint",
     "RigidComponentMember",
     "RigidComponentTranslationOptimizationResult",
@@ -52,8 +64,10 @@ __all__ = [
     "optimize_rigid_component_translations",
     "placement_metrics",
     "physical_layout_metrics",
+    "route_anchored_interfaces_transactionally",
     "synthesize_layout",
     "translate_rigid_component_transactionally",
+    "validate_anchored_interface_routing",
     "validate_component_layout_problem",
     "validate_physical_layout",
 ]
