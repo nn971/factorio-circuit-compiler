@@ -367,8 +367,8 @@ def _candidate_geometry(
         return candidate
 
     scale = rng.choice((0.92, 0.95, 0.97))
-    candidate, _failure = try_macro_zoom(geometry, scale=scale)
-    return candidate
+    zoom_candidate, _failure = try_macro_zoom(geometry, scale=scale)
+    return zoom_candidate
 
 
 def anneal_macro_geometry(
