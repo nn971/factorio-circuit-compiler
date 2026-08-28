@@ -108,7 +108,9 @@ def refine_routed_layout_transactionally(
         if after.objective > before.objective:
             diagnostics.append("fine refinement was valid but worsened the physical objective")
         else:
-            diagnostics.append("fine refinement was valid but did not improve the physical objective")
+            diagnostics.append(
+                "fine refinement was valid but did not improve the physical objective"
+            )
         return FineRefinementResult(
             problem.layout,
             before,
