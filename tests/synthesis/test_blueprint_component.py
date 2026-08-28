@@ -66,7 +66,7 @@ def test_import_preserves_payload_geometry_and_connector_identity() -> None:
     assert entities[1]["control_behavior"] == blueprint["entities"][0]["control_behavior"]
     assert entities[2]["control_behavior"] == blueprint["entities"][1]["control_behavior"]
     assert entities[2]["direction"] == 4
-    assert serialized["wires"] == [[1, 2, 2, 4], [1, 2, 2, 2]]
+    assert serialized["wires"] == [[1, 2, 2, 2], [1, 2, 2, 4]]
 
 
 def test_import_requires_explicit_prototype_geometry() -> None:
