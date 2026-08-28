@@ -296,8 +296,7 @@ def lower_component_layout_problem(
                     f"expected {expected!r}, got {actual!r}"
                 )
             if not any(
-                footprint.contains_box(actual, half_extents[object_id])
-                for footprint in footprints
+                footprint.contains_box(actual, half_extents[object_id]) for footprint in footprints
             ):
                 raise ValueError(
                     f"component {component.name!r} member {object_id} does not fit completely "
