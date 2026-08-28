@@ -126,9 +126,9 @@ class RigidComponentConstraint:
 
     ``footprints`` are component-owned regions. Current members must fit completely inside one of
     them, while every object outside this component must stay out. ``keepouts`` extend that external
-    exclusion without constraining where the component's own members may lie. ``adapter_regions`` are
-    reserved for a future interface adapter/routing stage and must currently be empty, including of
-    the component's own members.
+    exclusion without constraining where the component's own members may lie.
+    ``adapter_regions`` are reserved for a future interface adapter/routing stage and must currently
+    be empty, including of the component's own members.
 
     ``allowed_origins`` and ``allowed_quarter_turns`` are represented in D1 so D2 can add rigid-body
     moves without changing the constraint format. D1 preserves the selected pose exactly.
@@ -179,7 +179,9 @@ class RigidComponentConstraint:
         for left_index, left in enumerate(self.footprints):
             for right in self.footprints[left_index + 1 :]:
                 if left.interior_overlaps(right):
-                    raise ValueError("component footprint regions must not overlap in their interiors")
+                    raise ValueError(
+                        "component footprint regions must not overlap in their interiors"
+                    )
         for access in self.access_points:
             if not any(region.contains_boundary_point(access.offset) for region in self.footprints):
                 raise ValueError(
@@ -197,7 +199,9 @@ class RigidComponentConstraint:
         }
 
     def absolute_footprints(self) -> tuple[ComponentRegion, ...]:
-        return tuple(region.transformed(self.origin, self.quarter_turns) for region in self.footprints)
+        return tuple(
+            region.transformed(self.origin, self.quarter_turns) for region in self.footprints
+        )
 
     def absolute_keepouts(self) -> tuple[ComponentRegion, ...]:
         return tuple(region.transformed(self.origin, self.quarter_turns) for region in self.keepouts)
@@ -240,9 +244,10 @@ def lower_component_layout_problem(
 ) -> LayoutOptimizationProblem:
     """Lower D1 geometry to fixed members plus a component-aware legal lattice.
 
-    Component membership is resolved *before* ordinary lattice validation. A rigid member may be at a
-    legal component pose that is not itself a movable annealer site; once promoted to ``fixed_positions``
-    the ordinary exact validator correctly treats that coordinate as part of the physical boundary.
+    Component membership is resolved *before* ordinary lattice validation. A rigid member may be at
+    a legal component pose that is not itself a movable annealer site. Once promoted to
+    ``fixed_positions``, the ordinary exact validator treats that coordinate as part of the physical
+    boundary.
     """
 
     base = problem.layout_problem
@@ -299,7 +304,8 @@ def lower_component_layout_problem(
             existing = fixed_positions.get(object_id)
             if existing is not None and existing != expected:
                 raise ValueError(
-                    f"component {component.name!r} member {object_id} conflicts with a fixed position"
+                    f"component {component.name!r} member {object_id} conflicts with "
+                    "a fixed position"
                 )
             fixed_positions[object_id] = expected
 
