@@ -1,29 +1,33 @@
 """Hierarchical expansion from optimized coarse macros to implementation-level targets.
 
 C6 preserves the multilevel abstraction while walking the C2 hierarchy back toward singleton
-implementation entities. Each finer macro is assigned to its unique coarser parent by membership.
-Pairwise children are split inside the optimized parent region before deterministic legalization,
-so uncoarsening preserves coarse locality rather than making every sibling compete for one center.
+implementation entities. Every optimized coarse macro owns a non-overlapping rectangular region.
+Because C2 coarsening is pairwise, refinement can subdivide that region into one or two child
+regions without sending siblings back through a global placement problem.
 
-Packing slack also decreases toward the finest level. The coarsest expansion retains configurable
-macro slack, while singleton macros use their real implementation footprints by default. Relay
-topology remains absent throughout C6; the resulting complete legal implementation placement is
-intended to be handed to the C5 transactional rerouter.
+The owned region is also allowed to shrink as target density rises toward the finest level. This
+removes coarse proxy-box rounding slack without scattering child centers outside their parent.
+Relay topology remains absent throughout C6; the resulting singleton centers are projected onto the
+real implementation lattice and handed to the C5 transactional rerouter.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from math import ceil, sqrt
+from dataclasses import dataclass
+from math import sqrt
 
 from factorio_circuit.ir.physical import ConstantCombinator, PhysicalCircuit
 from factorio_circuit.synthesis import incremental_joint_layout as incremental
 from factorio_circuit.synthesis import joint_layout as exact
-from factorio_circuit.synthesis import layout_optimizer, multilevel_zoom
+from factorio_circuit.synthesis import layout_optimizer
 from factorio_circuit.synthesis import placement as base_placement
-from factorio_circuit.synthesis.multilevel import CoarseningLevel, MultilevelHierarchy
+from factorio_circuit.synthesis.multilevel import (
+    CoarseningLevel,
+    MultilevelHierarchy,
+    PlacementMacro,
+)
 from factorio_circuit.synthesis.multilevel_anneal import (
     MacroAnnealOptions,
     MacroAnnealStats,
@@ -32,7 +36,6 @@ from factorio_circuit.synthesis.multilevel_anneal import (
 from factorio_circuit.synthesis.multilevel_zoom import (
     MacroGeometry,
     MacroPlacementMetrics,
-    build_macro_geometry,
     macro_placement_metrics,
     validate_macro_placement,
 )
@@ -45,9 +48,9 @@ _EPSILON = 1e-9
 class HierarchicalUncoarsenOptions:
     """Bounded controls for coarse-to-fine expansion and refinement.
 
-    ``target_density`` is the packing density at the first expansion below the coarsest level.
-    Density increases linearly toward ``finest_density`` so rounding slack does not survive into
-    singleton implementation macros.
+    ``target_density`` is the density at the first refinement below the coarsest level. Density
+    rises linearly toward ``finest_density``. Parent regions are shrunk only when their current area
+    exceeds the implementation area required at the new density.
     """
 
     target_density: float = 0.80
@@ -97,9 +100,7 @@ def child_parent_indices(
         if not parents:
             raise ValueError(f"finer macro {child_index} has no parent in the coarser level")
         if len(parents) != 1:
-            raise ValueError(
-                f"finer macro {child_index} crosses coarse parents {sorted(parents)}"
-            )
+            raise ValueError(f"finer macro {child_index} crosses coarse parents {sorted(parents)}")
         parent = next(iter(parents))
         if not set(child.members) <= set(coarse_level.macros[parent].members):
             raise ValueError(f"finer macro {child_index} is not contained in parent {parent}")
@@ -107,79 +108,104 @@ def child_parent_indices(
     return tuple(result)
 
 
-def _default_macro_legalization_radius(geometry: MacroGeometry) -> int:
-    footprint = sum(4.0 * half[0] * half[1] for half in geometry.half_extents)
-    return max(8, ceil(sqrt(max(1.0, footprint))))
+def _macro_implementation_area(circuit: PhysicalCircuit, macro: PlacementMacro) -> float:
+    area = 0.0
+    for entity_id in macro.members:
+        half_x, half_y = base_placement._entity_half_extent(circuit.entity_by_id(entity_id))
+        area += 4.0 * half_x * half_y
+    return area
 
 
-def _pair_orientation(
+def _scaled_parent_half_extent(
     parent_half: tuple[float, float],
-    left_half: tuple[float, float],
-    right_half: tuple[float, float],
-) -> int:
-    """Choose x=0 or y=1 for the tighter sibling split inside one parent box."""
-
-    parent_width = max(2.0 * parent_half[0], _EPSILON)
-    parent_height = max(2.0 * parent_half[1], _EPSILON)
-    horizontal_width = 2.0 * (left_half[0] + right_half[0])
-    horizontal_height = 2.0 * max(left_half[1], right_half[1])
-    vertical_width = 2.0 * max(left_half[0], right_half[0])
-    vertical_height = 2.0 * (left_half[1] + right_half[1])
-    horizontal_pressure = max(1.0, horizontal_width / parent_width) * max(
-        1.0, horizontal_height / parent_height
-    )
-    vertical_pressure = max(1.0, vertical_width / parent_width) * max(
-        1.0, vertical_height / parent_height
-    )
-    if horizontal_pressure < vertical_pressure - _EPSILON:
-        return 0
-    if vertical_pressure < horizontal_pressure - _EPSILON:
-        return 1
-    return 0 if parent_width >= parent_height else 1
+    implementation_area: float,
+    target_density: float,
+) -> tuple[float, float]:
+    parent_area = 4.0 * parent_half[0] * parent_half[1]
+    if parent_area <= _EPSILON:
+        raise ValueError("coarse macro region must have positive area")
+    desired_area = implementation_area / target_density
+    scale = min(1.0, sqrt(desired_area / parent_area))
+    return (parent_half[0] * scale, parent_half[1] * scale)
 
 
-def _child_targets(
-    prototype: MacroGeometry,
+def _subdivide_parent_region(
+    circuit: PhysicalCircuit,
     coarse_geometry: MacroGeometry,
-    parents: tuple[int, ...],
-) -> tuple[Position, ...]:
-    """Split at most two children around each optimized parent center."""
+    finer_level: CoarseningLevel,
+    parent_index: int,
+    child_indices: tuple[int, ...],
+    *,
+    target_density: float,
+) -> tuple[tuple[int, Position, tuple[float, float]], ...]:
+    """Return child regions wholly contained in one optimized parent region."""
 
-    by_parent: dict[int, list[int]] = defaultdict(list)
-    for child_index, parent_index in enumerate(parents):
-        by_parent[parent_index].append(child_index)
+    parent_macro = coarse_geometry.level.macros[parent_index]
+    ordered = tuple(sorted(child_indices, key=lambda index: finer_level.macros[index].members))
+    child_members = {
+        entity_id
+        for child_index in ordered
+        for entity_id in finer_level.macros[child_index].members
+    }
+    if child_members != set(parent_macro.members):
+        raise ValueError(f"children do not exactly partition coarse macro {parent_index}")
 
-    targets = list(prototype.centers)
-    for parent_index, children in sorted(by_parent.items()):
-        ordered = sorted(children, key=lambda index: prototype.level.macros[index].members)
-        movable = [index for index in ordered if not prototype.level.macros[index].fixed]
-        if not movable:
-            continue
-        if len(movable) == 1:
-            targets[movable[0]] = coarse_geometry.centers[parent_index]
-            continue
-        if len(movable) != 2:
-            raise ValueError(
-                "hierarchical expansion expected pairwise refinement but parent "
-                f"{parent_index} has {len(movable)} movable children"
-            )
+    parent_center = coarse_geometry.centers[parent_index]
+    parent_half = coarse_geometry.half_extents[parent_index]
+    if parent_macro.fixed:
+        if len(ordered) != 1 or not finer_level.macros[ordered[0]].fixed:
+            raise ValueError("fixed coarse macro must remain one fixed child during uncoarsening")
+        return ((ordered[0], parent_center, parent_half),)
 
-        left, right = movable
-        parent = coarse_geometry.centers[parent_index]
-        left_half = prototype.half_extents[left]
-        right_half = prototype.half_extents[right]
-        axis = _pair_orientation(
-            coarse_geometry.half_extents[parent_index],
-            left_half,
-            right_half,
+    if len(ordered) not in {1, 2}:
+        raise ValueError(
+            "hierarchical expansion expected pairwise refinement but parent "
+            f"{parent_index} has {len(ordered)} children"
         )
-        if axis == 0:
-            targets[left] = (parent[0] - right_half[0], parent[1])
-            targets[right] = (parent[0] + left_half[0], parent[1])
-        else:
-            targets[left] = (parent[0], parent[1] - right_half[1])
-            targets[right] = (parent[0], parent[1] + left_half[1])
-    return tuple(targets)
+
+    child_areas = tuple(
+        _macro_implementation_area(circuit, finer_level.macros[index]) for index in ordered
+    )
+    implementation_area = sum(child_areas)
+    scaled_half = _scaled_parent_half_extent(parent_half, implementation_area, target_density)
+    if len(ordered) == 1:
+        return ((ordered[0], parent_center, scaled_half),)
+
+    left, right = ordered
+    left_area, right_area = child_areas
+    left_fraction = left_area / implementation_area
+    width = 2.0 * scaled_half[0]
+    height = 2.0 * scaled_half[1]
+    if width >= height:
+        left_width = width * left_fraction
+        right_width = width - left_width
+        left_half = (0.5 * left_width, scaled_half[1])
+        right_half = (0.5 * right_width, scaled_half[1])
+        left_center = (
+            parent_center[0] - scaled_half[0] + left_half[0],
+            parent_center[1],
+        )
+        right_center = (
+            parent_center[0] + scaled_half[0] - right_half[0],
+            parent_center[1],
+        )
+    else:
+        top_height = height * left_fraction
+        bottom_height = height - top_height
+        left_half = (scaled_half[0], 0.5 * top_height)
+        right_half = (scaled_half[0], 0.5 * bottom_height)
+        left_center = (
+            parent_center[0],
+            parent_center[1] - scaled_half[1] + left_half[1],
+        )
+        right_center = (
+            parent_center[0],
+            parent_center[1] + scaled_half[1] - right_half[1],
+        )
+    return (
+        (left, left_center, left_half),
+        (right, right_center, right_half),
+    )
 
 
 def expand_macro_level(
@@ -189,32 +215,45 @@ def expand_macro_level(
     finer_level: CoarseningLevel,
     *,
     target_density: float = 0.80,
-    max_legalization_radius: int | None = None,
 ) -> MacroGeometry:
-    """Expand one pairwise coarse partition while preserving optimized parent locality."""
+    """Subdivide every optimized parent region into its one or two finer children."""
 
-    prototype = build_macro_geometry(
-        circuit,
-        seed_positions,
-        finer_level,
-        target_density=target_density,
-    )
+    if not 0.0 < target_density <= 1.0:
+        raise ValueError("target_density must be in (0, 1]")
+    implementation_ids = {entity.id for entity in circuit.entities}
+    if set(seed_positions) != implementation_ids:
+        raise ValueError("seed_positions must exactly cover implementation entities")
+
     parents = child_parent_indices(coarse_geometry.level, finer_level)
-    targets = _child_targets(prototype, coarse_geometry, parents)
-    radius = max_legalization_radius
-    if radius is None:
-        radius = _default_macro_legalization_radius(prototype)
-    if radius < 0:
-        raise ValueError("max_legalization_radius must be non-negative")
+    children_by_parent: dict[int, list[int]] = defaultdict(list)
+    for child_index, parent_index in enumerate(parents):
+        children_by_parent[parent_index].append(child_index)
 
-    centers, failure = multilevel_zoom._legalize_targets(
-        prototype,
-        targets,
-        max_radius=radius,
+    centers: list[Position | None] = [None] * len(finer_level.macros)
+    half_extents: list[tuple[float, float] | None] = [None] * len(finer_level.macros)
+    for parent_index in range(len(coarse_geometry.level.macros)):
+        children = tuple(children_by_parent.get(parent_index, ()))
+        if not children:
+            raise ValueError(f"coarse macro {parent_index} has no finer children")
+        for child_index, center, half in _subdivide_parent_region(
+            circuit,
+            coarse_geometry,
+            finer_level,
+            parent_index,
+            children,
+            target_density=target_density,
+        ):
+            centers[child_index] = center
+            half_extents[child_index] = half
+
+    if any(center is None for center in centers) or any(half is None for half in half_extents):
+        raise AssertionError("hierarchical region subdivision left an unassigned child")
+    result = MacroGeometry(
+        finer_level,
+        tuple(center for center in centers if center is not None),
+        tuple(half for half in half_extents if half is not None),
+        coarse_geometry.implementation_area,
     )
-    if centers is None:
-        raise ValueError(f"hierarchical expansion could not legalize child macros: {failure}")
-    result = replace(prototype, centers=centers)
     validate_macro_placement(result)
     return result
 
@@ -238,7 +277,7 @@ def hierarchical_uncoarsen(
     *,
     options: HierarchicalUncoarsenOptions | None = None,
 ) -> HierarchicalUncoarsenResult:
-    """Walk every hierarchy level back to singleton macros with bounded refinement."""
+    """Walk every hierarchy level back to singleton macro regions with bounded refinement."""
 
     if options is None:
         options = HierarchicalUncoarsenOptions()
@@ -274,9 +313,9 @@ def hierarchical_uncoarsen(
         )
         expanded_metrics = macro_placement_metrics(expanded, hierarchy.hyperedges)
 
-        # Do not force an area-only zoom after every split. C4 annealing already proposes coherent
-        # zooms transactionally and retains the expanded placement when their combined net/area
-        # objective is worse.
+        # Fine-level C4 refinement is optional and transactional. In particular, there is no
+        # unconditional area-only zoom between subdivisions: the inherited region geometry remains
+        # available as the best state when a proposed move loses more net quality than it gains.
         annealed = anneal_macro_geometry(
             expanded,
             hierarchy.hyperedges,
