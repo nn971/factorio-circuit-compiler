@@ -31,7 +31,7 @@ def _red_connection(left: int, right: int) -> WireConnection:
     )
 
 
-def test_pair_expansion_splits_siblings_around_parent_center() -> None:
+def test_pair_expansion_subdivides_shrunken_parent_region() -> None:
     circuit = PhysicalCircuit(
         "pair-split",
         entities=[ConstantCombinator(1), ConstantCombinator(2)],
@@ -51,7 +51,6 @@ def test_pair_expansion_splits_siblings_around_parent_center() -> None:
         coarse,
         finer_level,
         target_density=1.0,
-        max_legalization_radius=0,
     )
 
     validate_macro_placement(expanded)
@@ -59,7 +58,7 @@ def test_pair_expansion_splits_siblings_around_parent_center() -> None:
     assert expanded.half_extents == ((0.5, 0.5), (0.5, 0.5))
 
 
-def test_uncoarsening_removes_rounding_slack_at_singleton_level() -> None:
+def test_uncoarsening_removes_proxy_rounding_area_by_singleton_level() -> None:
     circuit = PhysicalCircuit(
         "density-schedule",
         entities=[ConstantCombinator(entity_id) for entity_id in range(1, 5)],
@@ -88,4 +87,5 @@ def test_uncoarsening_removes_rounding_slack_at_singleton_level() -> None:
 
     validate_macro_placement(result.geometry)
     assert result.levels[-1].target_density == 1.0
-    assert result.geometry.half_extents == ((0.5, 0.5),) * 4
+    abstract_leaf_area = sum(4.0 * half[0] * half[1] for half in result.geometry.half_extents)
+    assert abs(abstract_leaf_area - 4.0) < 1e-9
