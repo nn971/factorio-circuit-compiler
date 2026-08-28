@@ -62,8 +62,7 @@ def refine_routed_layout_transactionally(
         raise ValueError("proposals must be non-negative")
     if not 0 < options.chunk_size < incremental._EPOCH_PROPOSALS:
         raise ValueError(
-            f"chunk_size must be in [1, {incremental._EPOCH_PROPOSALS - 1}] "
-            "to keep C7 local"
+            f"chunk_size must be in [1, {incremental._EPOCH_PROPOSALS - 1}] to keep C7 local"
         )
 
     validated = layout_optimizer._validated_embedding(problem)
