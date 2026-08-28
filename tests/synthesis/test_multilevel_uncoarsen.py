@@ -83,9 +83,7 @@ def test_child_parent_mapping_rejects_cross_parent_macro() -> None:
 
 def test_hierarchical_uncoarsen_reaches_singletons_and_preserves_fixed_macro() -> None:
     circuit = _chain_circuit(8)
-    seed_positions = {
-        entity_id: (float(4 * (entity_id - 1)), 0.0) for entity_id in range(1, 9)
-    }
+    seed_positions = {entity_id: (float(4 * (entity_id - 1)), 0.0) for entity_id in range(1, 9)}
     hierarchy = build_multilevel_hierarchy(
         circuit,
         fixed_entities=frozenset({1}),
