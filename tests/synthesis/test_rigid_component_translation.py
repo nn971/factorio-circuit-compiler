@@ -26,9 +26,7 @@ from factorio_circuit.synthesis.rigid_component_translation import (
 
 
 def _lattice(width: int = 14, height: int = 4) -> LegalPlacementLattice:
-    unit_sites = tuple(
-        (float(x), float(y)) for y in range(height) for x in range(width)
-    )
+    unit_sites = tuple((float(x), float(y)) for y in range(height) for x in range(width))
     return LegalPlacementLattice(unit_sites=unit_sites, wide_sites=())
 
 
