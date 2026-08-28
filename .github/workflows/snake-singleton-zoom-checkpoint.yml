@@ -25,8 +25,8 @@ jobs:
           uv run python -m benchmarks.snake.singleton_zoom_checkpoint_probe \
             --coarse-proposals 8192 \
             --per-level-proposals 256 \
-            --scales 0.80,0.85,0.90 \
-            --zoom-radius 12 \
+            --scales 0.80,0.85,0.875 \
+            --zoom-radius 32 \
             --seed 0 \
             --final-site-search-radius 64 \
             --routing-margin-scale 2.0 \
