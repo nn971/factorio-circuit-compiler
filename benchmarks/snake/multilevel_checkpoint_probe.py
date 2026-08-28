@@ -189,9 +189,7 @@ def main() -> None:
     report["relay_efficiency"] = {
         "implementation_combinators": implementation_count,
         "relay_combinators": relay_count,
-        "implementation_per_relay": (
-            implementation_count / relay_count if relay_count else None
-        ),
+        "implementation_per_relay": (implementation_count / relay_count if relay_count else None),
     }
     report["passes_80_percent_occupancy"] = occupancy["ratio"] > 0.80
     report["total_runtime_seconds"] = sum(float(value) for value in runtime.values())
