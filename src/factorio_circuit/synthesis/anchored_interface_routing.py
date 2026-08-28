@@ -637,8 +637,7 @@ def _find_interface_relay_chain(
         neighbors = {
             candidate
             for candidate in workspace.nearby_sites(position)
-            if candidate != position
-            and _distance(position, candidate) <= safe_span + _EPSILON
+            if candidate != position and _distance(position, candidate) <= safe_span + _EPSILON
         }
         if _distance(position, goal) <= safe_span + _EPSILON:
             neighbors.add(goal)
@@ -767,8 +766,7 @@ def _complete_routing_preserving_fixed_relays(
         if failed:
             continue
         if any(
-            exact._group_spanning_tree(state, group) is None
-            for group in state.endpoints_by_group
+            exact._group_spanning_tree(state, group) is None for group in state.endpoints_by_group
         ):
             last_failure = "fresh anchored routing left at least one physical net disconnected"
             continue
