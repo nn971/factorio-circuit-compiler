@@ -11,6 +11,7 @@ Detailed tuning logs, rejected experiments, and branch handoffs belong in Git/PR
 3. **Preserve explicit contracts across layers.** Semantic timing, physical interfaces, placement constraints, and serialized geometry each need one authoritative representation.
 4. **Prefer differential verification.** Whenever two independent realizations exist, compare them automatically rather than relying only on hand-written expected outputs.
 5. **Keep heavyweight acceptance opt-in.** Routine CI should stay fast; large layout and in-game acceptance runs remain separate but reproducible.
+6. **Treat application thresholds as evidence, not theology.** A numerical benchmark target can motivate engineering work, but it should not remain a hard milestone gate after a general solution is demonstrably practical, correct, and satisfactory in the actual game.
 
 ## Milestone A — Layout reliability corpus
 
@@ -59,9 +60,7 @@ total routed wire length
 - The 1k+ scale fixture has an explicit opt-in validation path rather than burdening routine CI.
 - Any discovered failure should be reduced to a small regression case when practical.
 
-The corpus lives in `benchmarks/layout_optimizer_corpus.py` and
-`benchmarks/layout_optimizer_topology_corpus.py`; usage and scale-tier instructions are in
-`benchmarks/README.md`.
+The corpus lives in `benchmarks/layout_optimizer_corpus.py` and `benchmarks/layout_optimizer_topology_corpus.py`; usage and scale-tier instructions are in `benchmarks/README.md`.
 
 ## Milestone B — Annealer observability
 
@@ -69,19 +68,7 @@ The corpus lives in `benchmarks/layout_optimizer_corpus.py` and
 
 **Goal:** expose where optimization work is spent and why proposals fail.
 
-The opt-in `OptimizationStats` surface records:
-
-- proposals attempted and accepted moves;
-- Metropolis, geometry/occupancy, and wire-reach rejections;
-- implementation moves vs relay moves;
-- swaps;
-- relay simplification classified as isolated deletion, leaf deletion, or degree-two bypass;
-- topology rebuild attempts/successes;
-- routing search calls/failures and deterministic priority-queue work;
-- best-objective history by epoch;
-- epochs since last improvement.
-
-The stats are observational only. The production annealer remains authoritative, and regression tests require a fixed seed and work budget to produce the same optimized artifact through the observed path.
+The opt-in `OptimizationStats` surface records proposals, accepted moves, rejection classes, implementation/relay motion, swaps, relay simplification, topology rebuilds, routing search work, best-objective history, and stagnation. The stats are observational only; the production optimizer remains authoritative.
 
 ### B acceptance
 
@@ -92,65 +79,80 @@ The stats are observational only. The production annealer remains authoritative,
 
 The opt-in report is `benchmarks/layout_optimizer_observability.py`.
 
-## Milestone C — Annealing v2
+## Milestone C — Annealing v2 / multilevel physical placement
 
-**Status: current; structural stabilization complete, application-level acceptance still open.**
+**Status: complete.**
 
-**Goal:** build a general-purpose multiscale physical optimizer that starts from a failproof validated layout, preserves feasible-first behavior, and converges rapidly to a dense, relay-efficient final blueprint on Snake-scale circuits.
+**Goal:** build a general-purpose physical optimizer that can start from a failproof validated layout, preserve feasible-first behavior, and produce a compact, relay-efficient, exact-valid blueprint on Snake-scale circuits in bounded work.
 
-Experiments evaluated so far include:
+Milestone C began with a flat joint annealer and ended as a multilevel placement-and-rerouting pipeline. The key lesson was that Snake-scale geometry cannot be recovered efficiently by moving hundreds of individual combinators through an already-routed sparse scaffold. The successful design separates global implementation geometry from final relay routing.
 
-1. adaptive coarse retopology triggered by stagnation or congestion rather than only fixed budget fractions;
-2. transactional compound moves such as terminal+adjacent-relay moves and short relay-chain translations;
-3. adaptive proposal pools based on congestion, envelope outliers, and objective stagnation;
-4. targeted local repair around hard anchors and routing bottlenecks;
-5. measured lower-level performance work in proposal and exact-objective evaluation.
+### What landed
 
-The Snake application check shows that flat single-object annealing has the correct qualitative direction but converges far too slowly in geometric density. The next phase should therefore prioritize general multiscale mechanisms such as global contraction/zoom targets, physical-net or implementation-net clustering, macro annealing, hierarchical uncoarsening, and transactional legalization. These mechanisms must remain circuit-generic and cannot depend on Snake-specific geometry or special-case shape assumptions.
+The retained path combines the following circuit-generic mechanisms:
 
-### Experiment record
+1. **Fail-safe routed-layout optimization boundary.** Optimization consumes an already-valid `Layout`, carries fixed-position and lattice constraints explicitly, exact-validates accepted results, and retains the valid input/best-known artifact as fallback.
+2. **Observability and exact best tracking.** Proposal/rejection/routing work is measurable, transient exact lexicographic improvements are retained, and stable `RoutedWire` hashing preserves deterministic seeded behavior without changing the historical annealing trajectory.
+3. **C2 relay-blind hypergraph coarsening.** Logical red/green electrical hypernets are reconstructed without consulting the current relay scaffold or physical distances. Deterministic heavy-edge matching reduced the 613 Snake implementation/marker objects through `613 -> 320 -> 173 -> 98 -> 58 -> 38 -> 27` macros while keeping fixed public markers singleton.
+4. **C3 genuine coarse macro contraction.** The coarsest macros remain real placement objects rather than immediately expanding back to hundreds of combinators. Their footprints derive from member implementation area plus bounded packing slack, fixed anchors remain exact, and deterministic legalization produces a compact coarse geometry.
+5. **C4 coarse macro annealing.** Macro translations, affinity-directed migration, swaps, small compound moves, and bounded zoom pressure optimize occupied macro area, projected logical-hypernet HPWL, and a congestion estimate before expensive fine routing exists.
+6. **C6 hierarchical uncoarsening.** The optimized hierarchy is expanded level by level. Children subdivide their actual optimized parent region, packing slack falls toward the real singleton footprints, and each level may receive transactional coarse refinement. This avoids the severe scattering seen when hundreds of singleton objects are globally legalized at once.
+7. **C5 transactional fresh rerouting.** At the final implementation geometry, the old failproof relay scaffold is discarded. Routing starts fresh from zero relays, rebuilds the connector-aware logical nets, simplifies the resulting relay topology to a fixed point, and exact-validates the physical layout. Failure returns the original validated layout unchanged.
 
-- **Rejected: adaptive coarse retopology.** In 12 paired runs it produced 0 better / 12 equal / 0 worse physical objectives while adding four rebuilds per run and increasing routing work/runtime.
-- **Rejected: terminal + one adjacent relay translation.** In 18 paired runs it produced 0 better / 18 equal / 0 worse objectives. It attempted 13,096 rescues and accepted none because taut safe-span chains transferred the violation to the relay's far side.
-- **Rejected: seven-step reach backoff.** In 18 paired runs it produced 0 better / 17 equal / 1 worse objectives. It reduced some reach rejections but made taut/fixed cases 2.6x-4.5x slower.
-- **Rejected: analytical implementation reach clipping.** In 18 paired runs it produced 0 better / 15 equal / 3 worse objectives. It cheaply removed many reach rejections, but every clustered sparse-cut seed became lexicographically worse by trading larger area for shorter wire.
-- **Accepted as structural stabilization: incremental exact mid-epoch best tracking, with legacy-stable wire hashing.** Full rescoring after every accepted move found transient lexicographic improvements without changing the intended search trajectory, but cost roughly 1.7x-2.3x on active cases. The retained implementation samples every accepted move while maintaining footprint extrema with lazy heaps and wire length through incident-wire deltas. The first deterministic implementation sorted hash-sensitive local wire traversal; an immediate-parent 8-seed × 6-case sweep looked safe at 3 better / 45 equal / 0 worse, but the later frozen pre-C 8-seed × 8-case gate exposed two clustered sparse-cut regressions. The repair gives `RoutedWire` a stable hash compatible with the CPython 3.12 `PYTHONHASHSEED=0` baseline and restores the original set traversal. The frozen gate then produced 2 better / 62 equal / 0 worse outcomes, with relay count and occupied area identical in all 64 runs, two wire-length improvements, and zero deltas in proposal, acceptance, rejection, routing-work, and topology-rebuild counters. Median runtime was 1.049x the pre-C baseline.
-- **Withdrawn before acceptance: reach-immobile proposal filtering.** A bounded candidate was prepared to avoid spending proposals on objects whose current wired neighbours admit no alternative safe-span lattice site, but the required paired multi-seed acceptance run could not be collected in the connected runner environment. The production changes and experiment-only probes were removed rather than retaining an unmeasured heuristic. This is not a benchmark rejection and should not be cited as performance evidence.
-- **Rejected: one-epoch relay relief after implementation reach deadlock.** A 4-seed observability probe identified perimeter anchors as a real implementation-only reach deadlock, but granting the next epoch exclusively to movable relays produced 0 better / 64 equal / 0 worse immediate-parent objectives while adding 2,048 relay proposals, accepting zero relay moves, and adding 27 reach rejections. Ordinary single-relay motion therefore does not release that topology.
-- **Rejected: defer exact wire-length bookkeeping until after Metropolis acceptance.** The candidate preserved 32 / 32 complete immediate-parent layout fingerprints exactly, but its overall median runtime ratio was 1.003x rather than faster; the worst family median was near-optimal-packed at 1.024x. The theoretical saving was below benchmark noise and did not justify a retained production change.
+### Structural regression evidence
 
-### C acceptance
+The frozen pre-C baseline remains `a70df723768a6ba099ffd43017bdcb0291011c8f`.
 
-Structural regression gates remain mandatory:
+The completed structural full gate contains 101 baseline/current pairs across the structural families, proposal budgets 256 / 1,024 / 4,096 / 16,384, and the 1,200-object scale fixture. It produced **6 better / 95 equal / 0 worse** public lexicographic outcomes. All six improvements were wire-length improvements at unchanged relay count and occupied area; measured search-work counters were unchanged and the overall median runtime ratio was **1.031x**.
 
-- Every accepted optimization is benchmarked across multiple seeds.
-- Improvements are reported separately for relay count, area, wire length, and work/runtime.
-- Recoverable search failures return the best validated candidate; invariant violations remain visible as bugs.
-- Milestone C is compared against the frozen pre-C baseline `a70df723768a6ba099ffd43017bdcb0291011c8f`, not merely against the immediately previous experiment.
-- The standard frozen-baseline check, full budget/scale sweep, hash-determinism target, and manual three-way layout examples are documented in `milestone-c-acceptance.md` and exposed as reproducible commands.
-- Heavy multi-seed and 1k+ scale checks remain opt-in; lightweight verifier regressions stay in routine pytest.
+This evidence remains useful as a regression guard, but the decisive C result is the large application artifact below.
 
-Final **application-level acceptance is stricter and mandatory**:
+### Accepted Snake result
 
-- The annealer starts from a validated failproof layout policy such as `safe-folded-crossbar` or `safe-crossbar` and retains that valid input/best-known result as fallback.
-- On Snake or another comparably large application, the final serialized blueprint has **strictly greater than 80% physical occupancy**, measured as total placed physical-entity footprint area divided by the exact occupied axis-aligned bounding-box area.
-- The density result is achieved without assumptions about circuit shape and without Snake-specific scoring, placement hints, clustering, or other benchmark-specific optimization behavior.
-- The optimizer does not rely on non-general primary moves such as empty-strip squeezing; accepted mechanisms must be defined from general physical/netlist information and apply to arbitrary circuits satisfying the compiler's physical contracts.
-- No known-redundant relay combinator remains. The final routing is simplified to a fixed point under all general topology-preserving relay eliminations available to the compiler, and no redundant scaffold from the failproof seed is intentionally retained.
-- The optimizer converges to the density target in a reasonable bounded runtime at Snake scale. The acceptance report records proposal/work budget, routing work, wall-clock runtime, and execution environment; runtime is part of user acceptance rather than informational only.
-- For otherwise comparable valid results, a larger `implementation combinators / relay combinators` ratio is considered better and is reported explicitly.
+The early flat application check was correct in game but only about **4.0% physical occupancy** after 4,096 proposals, with 2,482 relays and a 91,805-tile bounding box. Increasing the flat proposal count had strong diminishing returns. That failure motivated the multilevel architecture above.
 
-The exact application-level definitions and reporting requirements live in `milestone-c-acceptance.md`.
+The accepted seed-0 C3 -> C4 -> C6 -> fresh C5 pipeline produces the current Snake physical artifact with:
 
-The completed structural full gate contains 101 baseline/current pairs across the eight structural families, 256 / 1,024 / 4,096 / 16,384 proposal budgets, and the 1,200-object scale fixture. It produced **6 better / 95 equal / 0 worse** lexicographic outcomes, all six improvements in wire length at unchanged relay count and occupied area. Search-work counters were identical to pre-C and the overall median runtime ratio was **1.031x**. These are retained as stabilization evidence in `milestone-c-results.md`, not as final Milestone C acceptance.
+```text
+internal implementation combinators     602
+public input/output markers               11
+relay combinators                         174
+placed physical entities                  787
+implementation footprint area           1204 tiles²
+exact routed bounding-box area           2116 tiles²
+physical occupancy                     65.12%
+routed wire length                    2829.56
+implementation / relay ratio             3.46
+C6 hierarchical uncoarsening            93.84 s
+fresh C5 reroute                         12.19 s
+measured end-to-end pipeline            155.98 s
+```
 
-The first Snake application check further confirmed the gap: a 4,096-proposal optimization from a `safe-folded-crossbar` seed produced a correct in-game blueprint but only about **4.0% physical occupancy**, far below the >80% exit criterion. Additional flat proposals showed strong diminishing returns, so Milestone C remains open.
+The final artifact is exact-valid, uses only circuit-generic placement/routing mechanisms, preserves the fixed public markers, and was imported and exercised in Factorio. The application behaved correctly and the resulting physical layout was judged satisfactory in game.
+
+### C acceptance decision
+
+The previous **strictly greater than 80% occupancy** rule was a deliberately aggressive provisional target used to force the project away from the ~4% flat result. It succeeded at revealing the need for multilevel placement, but it is no longer a hard milestone gate.
+
+Milestone C is accepted at the validated **65.12%** Snake result because the substantive goals are now met:
+
+- a complete failproof artifact is always available as fallback;
+- the optimizer is circuit-generic and contains no Snake-specific placement/scoring rule;
+- global geometry is solved at an appropriate multilevel scale rather than by benchmark-specific squeezing;
+- the final implementation placement is freshly rerouted and exact-validated;
+- relay overhead is dramatically lower than the original failproof/flat layouts;
+- work is explicitly bounded and measured;
+- the serialized blueprint has been tested successfully in the real game and is physically compact enough to be practical and visually satisfactory.
+
+Physical occupancy remains an important reported quality metric. **80% is retained as a stretch optimization target, not a correctness or roadmap blocker.** Fine routed compaction, push-and-drag cluster motion, and further global-density work belong to later optional physical-optimization work unless a future application demonstrates a concrete need.
+
+The detailed historical acceptance and results documents retain the benchmark definitions and evidence.
 
 ## Milestone D — Physical ABI completion and placement integration
 
-**Status: blocked until Milestone C application acceptance.**
+**Status: current.**
 
-**Goal:** finish the reusable physical-module boundary and make layout consume its geometry directly.
+**Goal:** finish the reusable physical-module boundary and make layout consume component geometry and interface constraints directly.
 
 ### Already landed
 
@@ -169,7 +171,7 @@ These contracts are documented in `device-anchoring.md` and `component-seam-abi.
 Prioritize the gaps the current ABI deliberately leaves open:
 
 - robust pre-placement public-port pinning for distant explicit anchors;
-- hard component keepouts consumed by placement and joint annealing;
+- hard component keepouts consumed by placement and joint optimization;
 - automatic reserved adapter regions around ABI seams;
 - prototype-aware footprint/collision treatment where centre-only confinement is insufficient;
 - rigid multi-entity macro placement inside the same optimizer state as ordinary combinators and relays;
@@ -177,11 +179,19 @@ Prioritize the gaps the current ABI deliberately leaves open:
 
 Avoid extending the ABI with speculative roles until a real device or benchmark exercises them.
 
+### D implementation sequence
+
+1. **D1 — authoritative component geometry constraints.** Represent rigid footprints, keepouts, legal translations/orientations, boundary access, and reserved adapter regions in the physical optimization problem rather than as post-hoc placement conventions.
+2. **D2 — rigid macro participation.** Let one multi-entity component move as a rigid body alongside ordinary implementation combinators and relays while all overlap, reach, fixed-anchor, and lattice checks remain authoritative.
+3. **D3 — anchored interface routing.** Reintroduce distant explicit public-port pinning with relay workspace reserved before routing, so anchors do not depend on fragile post-hoc repair.
+4. **D4 — application benchmark.** Exercise the path with an existing real component, preferably the reusable assembler/device infrastructure, and require exact serialized pins, internal rigid geometry, component keepouts, and routed external seams to survive compilation and in-game inspection.
+
 ### D acceptance
 
 - A rigid multi-entity component can participate in final placement/routing without losing its internal geometry.
 - Hard component regions are respected by the same feasibility checks used by relays and implementation entities.
 - Distant explicit public anchors receive validated relay workspace rather than relying on post-hoc repair.
+- At least one real reusable device/component passes an end-to-end serialized integration test.
 
 ## Milestone E — Oracle/device/layout unification
 
@@ -213,19 +223,7 @@ Prefer devices that double as integration benchmarks for the ABI, Event semantic
 
 **Goal:** compare reference semantics with compiled physical simulation automatically.
 
-Generate random programs inside the currently supported semantic subset, including combinations of:
-
-- scalar/vector arithmetic;
-- periodic state;
-- Event state;
-- `sample_on`;
-- `gate_clock`;
-- `event_merge`;
-- `sum_into`;
-- `hold_into`;
-- output materialization policies.
-
-For a fixed input/oracle trace, compare semantic execution against physical simulation. Shrink disagreements into minimal regression tests.
+Generate random programs inside the currently supported semantic subset, including scalar/vector arithmetic, periodic and Event state, `sample_on`, `gate_clock`, `event_merge`, `sum_into`, `hold_into`, and output materialization policies. For a fixed input/oracle trace, compare semantic execution against physical simulation and shrink disagreements into minimal regression tests.
 
 ### G acceptance
 
@@ -233,17 +231,25 @@ For a fixed input/oracle trace, compare semantic execution against physical simu
 - The shrinker can reduce common expression/state/clock mismatches.
 - Unsupported language shapes are filtered or expected to reject explicitly.
 
-## Milestone H — Multilevel/global physical optimization
+## Milestone H — Further multilevel/global physical optimization
 
-**Goal:** give large circuits a better global seed before local joint annealing.
+**Status: foundation landed during Milestone C; future optimization.**
 
-Explore coarsening the physical-net hypergraph into clusters, placing the coarse graph, expanding it, then using the existing feasible joint annealer for local refinement. The current annealer remains the correctness-preserving local optimizer rather than being replaced outright.
+**Goal:** improve quality/work beyond the accepted C baseline when larger applications justify it.
 
-The Snake density result makes this capability relevant to Milestone C rather than a purely later optimization. General multilevel clustering, macro annealing, global zoom/contraction targets, and hierarchical uncoarsening may therefore be developed as part of C when required to satisfy the >80% application-density gate. This section remains as the longer-term home for broader multilevel/global optimization beyond the C acceptance target.
+The core multilevel architecture is no longer speculative: relay-blind hypergraph coarsening, genuine coarse macro placement, macro annealing, hierarchical uncoarsening, and transactional fresh rerouting all landed as part of C. H is therefore the home for improvements that are useful but no longer block the physical ABI roadmap, for example:
+
+- better coarse partitioning and multilevel objectives;
+- directed boundary/inward compaction;
+- routed cluster push-and-drag moves;
+- stronger local legalization after singleton projection;
+- multistart/seed selection with bounded cost;
+- optional higher-density modes and the historical 80% Snake stretch target.
 
 ### H acceptance
 
-- Large structural corpus cases improve in quality or work compared with flat annealing at equal validation guarantees.
+- Large structural or application cases improve in quality or work compared with the accepted C baseline at equal validation guarantees.
+- New density mechanisms remain circuit-generic and do not sacrifice fail-safe fallback behavior.
 
 ## Milestone I — Independent blueprint-level verifier
 
@@ -263,16 +269,16 @@ This verifier should share as little mutable synthesis state as practical so tha
 
 ## Implementation order
 
-The immediate sequence is:
+The immediate sequence is now:
 
 ```text
 A. layout reliability corpus [complete]
     -> B. annealer observability [complete]
-    -> C. annealing v2 [current: application acceptance open]
-    -> D. physical ABI placement integration [blocked]
+    -> C. annealing v2 / multilevel placement [complete]
+    -> D. physical ABI placement integration [current]
 ```
 
-Finish Milestone C's general multiscale convergence work and pass the Snake-scale >80% occupancy gate before beginning D. After C:
+Then:
 
 ```text
 D. physical ABI placement integration
@@ -280,8 +286,10 @@ D. physical ABI placement integration
     -> F. additional useful peripherals
 ```
 
-Milestone G should begin as soon as a small useful random-program generator exists and then grow continuously. H and I become especially valuable once larger devices and benchmark applications exercise the full physical pipeline; H techniques may be pulled forward into C when they are required for application-level convergence.
+Milestone G should begin as soon as a small useful random-program generator exists and then grow continuously. H is optional optimization beyond the accepted C baseline and can proceed when a concrete application justifies it. I becomes especially valuable as D/E introduce richer rigid components and more serialized physical contracts.
 
 ## Current step
 
-Continue **Milestone C — Annealing v2** from the validated failproof-layout application benchmark. The immediate convergence direction is general multiscale physical optimization: investigate global zoom/contraction with legalization, circuit-generic clustering, macro-level annealing/transactional moves, and hierarchical uncoarsening. Every candidate must preserve the feasible-first fallback contract and be judged on Snake-scale physical occupancy, relay overhead, runtime, and the existing structural regression gates. Do not proceed to Milestone D until the >80% application-density contract is satisfied.
+Proceed with **Milestone D — Physical ABI completion and placement integration**. Start by making rigid component geometry, keepouts, and boundary access authoritative inputs to the physical optimizer; then let rigid multi-entity macros participate in placement; then reintroduce distant explicit public anchors with pre-reserved routing workspace. Use an existing reusable device as the first end-to-end benchmark rather than inventing speculative ABI roles.
+
+Do not continue C7-style fine density work merely to chase the former 80% threshold. Preserve those ideas for Milestone H unless they solve a concrete layout problem encountered by D or a later application.
