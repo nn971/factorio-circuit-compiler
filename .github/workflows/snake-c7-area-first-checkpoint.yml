@@ -1,0 +1,39 @@
+name: Snake C7 area-first checkpoint
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Run area-first C7 checkpoint
+        run: |
+          mkdir -p /tmp/c7-area-first
+          uv run python -m benchmarks.snake.fine_refinement_checkpoint_probe \
+            --coarse-proposals 8192 \
+            --per-level-proposals 256 \
+            --fine-proposals 16384 \
+            --fine-chunk-size 256 \
+            --seed 0 \
+            --final-site-search-radius 64 \
+            --routing-margin-scale 2.0 \
+            | tee /tmp/c7-area-first/report.json
+      - name: Preserve report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snake-c7-area-first-checkpoint
+          path: /tmp/c7-area-first/report.json
