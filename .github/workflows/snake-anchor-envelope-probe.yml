@@ -1,0 +1,31 @@
+name: Snake anchor envelope probe
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Measure fixed envelope
+        run: |
+          mkdir -p /tmp/anchor-envelope
+          uv run python -m benchmarks.snake.fixed_anchor_envelope_probe \
+            | tee /tmp/anchor-envelope/report.json
+      - name: Preserve report
+        uses: actions/upload-artifact@v4
+        with:
+          name: snake-anchor-envelope
+          path: /tmp/anchor-envelope/report.json
