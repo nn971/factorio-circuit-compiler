@@ -1,15 +1,16 @@
 """Transactional area-first refinement of an already-valid routed physical layout.
 
-C7 starts after a successful C5 routing checkpoint.  During the fine search the explicit routed
-topology is held fixed: implementation entities and relay combinators may move, but every accepted
-move must preserve the reach of every incident wire.  The best state is selected by exact occupied
-bounding area first and exact wire length second.  Relay simplification is deliberately deferred
-until after the best compact geometry has been restored, so an early removable relay cannot trump
-all later area improvements merely because the public objective is relay-count-first.
+C7 starts after a successful C5 routing checkpoint. During the fine search the explicit routed
+topology is held fixed. Ordinary proposals first try a single reach-safe object move; if packing or
+wire reach blocks that move, a bounded push-and-drag proposal may translate the colliding objects
+and the topology neighbors whose wires would otherwise become over-span. This gives dense layouts a
+general local cluster move without assuming rows, strips, application structure, or a target shape.
 
-After compaction, the routed topology is simplified to a fixed point, materialized, and exact-
-validated.  The original validated layout remains the transactional fallback unless the final
-artifact improves the public lexicographic physical objective.
+The best search state is selected by exact occupied bounding area first and exact wire length second.
+Relay simplification is deliberately deferred until after that compact geometry has been restored,
+so an early removable relay cannot lexicographically trump all later area improvements. The final
+artifact is simplified to a fixed point, materialized, exact-validated, and accepted only if it
+improves the public physical objective; otherwise the original validated layout is returned.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from factorio_circuit.synthesis.layout_optimizer import (
     PhysicalLayoutMetrics,
     physical_layout_metrics,
 )
+from factorio_circuit.synthesis.placement import Position
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +39,7 @@ class FineRefinementOptions:
     random_seed: int = 0
     chunk_size: int = incremental._EPOCH_PROPOSALS
     final_envelope_scale: float = 0.70
+    max_cluster_size: int = 12
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,12 +79,129 @@ def _target_envelope(
     )
 
 
+def _translated_targets(
+    state: exact._JointState,
+    cluster: set[int],
+    delta: Position,
+) -> dict[int, Position]:
+    dx, dy = delta
+    return {
+        object_id: (
+            state.object_position(object_id)[0] + dx,
+            state.object_position(object_id)[1] + dy,
+        )
+        for object_id in cluster
+    }
+
+
+def _overstretched_external_neighbors(
+    state: exact._JointState,
+    topology: incremental._FeasibleTopology,
+    cluster: set[int],
+    targets: dict[int, Position],
+) -> set[int]:
+    offenders: set[int] = set()
+    seen_wires = set()
+    for object_id in cluster:
+        for wire in topology.incident_wires.get(object_id, ()):
+            if wire in seen_wires:
+                continue
+            seen_wires.add(wire)
+            source_in = wire.source_entity in cluster
+            target_in = wire.target_entity in cluster
+            if source_in == target_in:
+                continue
+            moved_id = wire.source_entity if source_in else wire.target_entity
+            remote_id = wire.target_entity if source_in else wire.source_entity
+            if (
+                incremental._distance(
+                    targets[moved_id],
+                    state.object_position(remote_id),
+                )
+                > state.safe_span + incremental._EPSILON
+            ):
+                offenders.add(remote_id)
+    return offenders
+
+
+def _cluster_translation(
+    state: exact._JointState,
+    topology: incremental._FeasibleTopology,
+    occupancy: incremental._SpatialOccupancy,
+    object_id: int,
+    target: Position,
+    movable: set[int],
+    unit_sites: set[Position],
+    wide_sites: set[Position],
+    max_cluster_size: int,
+) -> tuple[dict[int, Position], float] | None:
+    """Grow a bounded translated cluster until packing and wire reach are both legal."""
+
+    current = state.object_position(object_id)
+    delta = (target[0] - current[0], target[1] - current[1])
+    if delta == (0.0, 0.0):
+        return None
+    cluster = {object_id}
+
+    while len(cluster) <= max_cluster_size:
+        targets = _translated_targets(state, cluster, delta)
+        if any(
+            not incremental._position_is_legal(
+                state,
+                member,
+                position,
+                unit_sites,
+                wide_sites,
+            )
+            for member, position in targets.items()
+        ):
+            return None
+
+        blockers: set[int] = set()
+        for member, position in targets.items():
+            blockers.update(occupancy.overlaps(member, position, ignored=cluster))
+        if blockers:
+            additions = blockers - cluster
+            if not additions <= movable or len(cluster | additions) > max_cluster_size:
+                return None
+            cluster.update(additions)
+            continue
+
+        offenders = _overstretched_external_neighbors(state, topology, cluster, targets)
+        additions = offenders - cluster
+        if additions:
+            if not additions <= movable or len(cluster | additions) > max_cluster_size:
+                return None
+            cluster.update(additions)
+            continue
+
+        wire_delta = topology.proposal_delta(state, targets)
+        if wire_delta is None:
+            return None
+        return targets, wire_delta
+    return None
+
+
+def _apply_targets(
+    state: exact._JointState,
+    occupancy: incremental._SpatialOccupancy,
+    targets: dict[int, Position],
+) -> None:
+    previous = {object_id: state.object_position(object_id) for object_id in targets}
+    for object_id, position in previous.items():
+        occupancy.remove(object_id, position)
+    for object_id, position in targets.items():
+        exact._set_object_position(state, object_id, position)
+    for object_id, position in targets.items():
+        occupancy.add(object_id, position)
+
+
 def _compact_with_fixed_topology(
     state: exact._JointState,
     topology: incremental._FeasibleTopology,
     grid,
     options: FineRefinementOptions,
-) -> incremental._FeasibleTopology:
+) -> tuple[incremental._FeasibleTopology, tuple[str, ...]]:
     """Area-first reach-safe annealing without epoch simplification or retopology."""
 
     explicitly_fixed = set(state.fixed_objects)
@@ -89,7 +209,7 @@ def _compact_with_fixed_topology(
         entity.id for entity in state.circuit.entities if entity.id not in explicitly_fixed
     ]
     if options.proposals <= 0:
-        return topology
+        return topology, ()
 
     unit_sites = set(grid.unit_slots)
     wide_sites = set(grid.slots)
@@ -103,6 +223,14 @@ def _compact_with_fixed_topology(
     best_relays = dict(state.relay_positions)
     best_relay_groups = dict(state.relay_groups)
     best_routing = topology.routing
+
+    attempted = 0
+    legal = 0
+    accepted = 0
+    cluster_attempts = 0
+    cluster_legal = 0
+    cluster_accepted = 0
+    best_updates = 0
 
     for epoch_start in range(0, options.proposals, options.chunk_size):
         epoch_end = min(options.proposals, epoch_start + options.chunk_size)
@@ -130,6 +258,7 @@ def _compact_with_fixed_topology(
         proposal_pool = implementation_outliers or outliers or movable_objects
 
         for step in range(epoch_start, epoch_end):
+            attempted += 1
             global_progress = step / max(1, options.proposals - 1)
             normalized_temperature = 0.03**global_progress
             temperature = max(
@@ -151,48 +280,39 @@ def _compact_with_fixed_topology(
             if target == current:
                 continue
 
-            owners = occupancy.overlaps(object_id, target, ignored={object_id})
-            other: int | None = None
-            if owners:
-                if len(owners) != 1:
-                    continue
-                candidate = next(iter(owners))
-                if state.object_position(candidate) != target:
-                    continue
-                if candidate not in movable_set:
-                    continue
-                if state.object_half_extent(candidate) != state.object_half_extent(object_id):
-                    continue
-                if not incremental._position_is_legal(
-                    state,
-                    candidate,
-                    current,
-                    unit_sites,
-                    wide_sites,
-                ):
-                    continue
-                other = candidate
-
-            if not incremental._position_is_legal(
+            proposal = _cluster_translation(
                 state,
+                topology,
+                occupancy,
                 object_id,
                 target,
+                movable_set,
                 unit_sites,
                 wide_sites,
-            ):
+                1,
+            )
+            used_cluster = False
+            if proposal is None and options.max_cluster_size > 1:
+                cluster_attempts += 1
+                proposal = _cluster_translation(
+                    state,
+                    topology,
+                    occupancy,
+                    object_id,
+                    target,
+                    movable_set,
+                    unit_sites,
+                    wide_sites,
+                    options.max_cluster_size,
+                )
+                used_cluster = proposal is not None
+            if proposal is None:
                 continue
-            ignored = {object_id} if other is None else {object_id, other}
-            if occupancy.overlaps(object_id, target, ignored=ignored):
-                continue
-            if other is not None and occupancy.overlaps(other, current, ignored=ignored):
-                continue
+            targets, wire_delta = proposal
+            legal += 1
+            if used_cluster:
+                cluster_legal += 1
 
-            targets = {object_id: target}
-            if other is not None:
-                targets[other] = current
-            wire_delta = topology.proposal_delta(state, targets)
-            if wire_delta is None:
-                continue
             exact_wire_delta = tracker.proposal_wire_length_delta(state, topology, targets)
             compact_delta = sum(
                 exact._compactness(position, center)
@@ -217,15 +337,12 @@ def _compact_with_fixed_topology(
             if delta > 0.0 and rng.random() >= exp(-delta / temperature):
                 continue
 
-            occupancy.remove(object_id, current)
-            if other is not None:
-                occupancy.remove(other, target)
-            exact._apply_move(state, object_id, target, other)
-            occupancy.add(object_id, target)
-            if other is not None:
-                occupancy.add(other, current)
+            _apply_targets(state, occupancy, targets)
             topology.total_energy += wire_delta
             tracker.accept_move(state, targets, exact_wire_delta)
+            accepted += 1
+            if used_cluster:
+                cluster_accepted += 1
 
             score = _area_score(tracker, state)
             if score < best_score:
@@ -234,6 +351,7 @@ def _compact_with_fixed_topology(
                 best_relays = dict(state.relay_positions)
                 best_relay_groups = dict(state.relay_groups)
                 best_routing = topology.routing
+                best_updates += 1
 
         occupancy = incremental._SpatialOccupancy.build(state)
         tracker = incremental._ExactObjectiveTracker.build(state, topology)
@@ -244,7 +362,14 @@ def _compact_with_fixed_topology(
     state.relay_positions.update(best_relays)
     state.relay_groups.clear()
     state.relay_groups.update(best_relay_groups)
-    return incremental._FeasibleTopology.build(state, best_routing)
+    topology = incremental._FeasibleTopology.build(state, best_routing)
+    diagnostics = (
+        "fine compaction work: "
+        f"attempted={attempted}, legal={legal}, accepted={accepted}, "
+        f"cluster_attempts={cluster_attempts}, cluster_legal={cluster_legal}, "
+        f"cluster_accepted={cluster_accepted}, best_updates={best_updates}"
+    )
+    return topology, (diagnostics,)
 
 
 def _simplify_to_fixed_point(
@@ -273,6 +398,8 @@ def refine_routed_layout_transactionally(
         raise ValueError("chunk_size must be positive")
     if not 0.0 < options.final_envelope_scale <= 1.0:
         raise ValueError("final_envelope_scale must be in (0, 1]")
+    if options.max_cluster_size <= 0:
+        raise ValueError("max_cluster_size must be positive")
 
     validated = layout_optimizer._validated_embedding(problem)
     before = physical_layout_metrics(problem.layout)
@@ -284,7 +411,13 @@ def refine_routed_layout_transactionally(
     grid = layout_optimizer._lattice_grid(problem.lattice)
     diagnostics: list[str] = []
     try:
-        topology = _compact_with_fixed_topology(state, topology, grid, options)
+        topology, work_diagnostics = _compact_with_fixed_topology(
+            state,
+            topology,
+            grid,
+            options,
+        )
+        diagnostics.extend(work_diagnostics)
         topology = _simplify_to_fixed_point(state, topology)
         candidate = layout_optimizer._materialize_layout(
             problem.layout,
