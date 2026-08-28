@@ -1,0 +1,89 @@
+name: Snake multilevel zoom probe
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Measure macro zoom scales
+        shell: bash
+        run: |
+          mkdir -p /tmp/multilevel-zoom
+          uv run python - <<'PY' | tee /tmp/multilevel-zoom/report.json
+          import json
+          from time import monotonic
+
+          from benchmarks.snake.multilevel_zoom_probe import (
+              _build_seed,
+              _clustered_zoom_positions,
+              _implementation_geometry,
+          )
+          from factorio_circuit.synthesis import layout_optimizer
+          from factorio_circuit.synthesis.multilevel import build_multilevel_hierarchy
+
+          started = monotonic()
+          result, problem, state = _build_seed()
+          grid = layout_optimizer._lattice_grid(problem.lattice)
+          hierarchy = build_multilevel_hierarchy(
+              result.physical_circuit,
+              fixed_entities=frozenset(problem.fixed_positions),
+              target_macros=32,
+          )
+          source = _implementation_geometry(
+              state, dict(state.positions), hierarchy.hyperedges
+          )
+          flat_positions = layout_optimizer._coarse_implementation_positions(state, grid)
+          if flat_positions is None:
+              raise RuntimeError("flat coarse legalizer failed")
+          flat = _implementation_geometry(state, flat_positions, hierarchy.hyperedges)
+
+          scales = {}
+          for scale in (0.08, 0.10, 0.12, 0.15, 0.20, 0.30):
+              scale_started = monotonic()
+              positions = _clustered_zoom_positions(
+                  state, grid, hierarchy, zoom_scale=scale
+              )
+              scales[str(scale)] = {
+                  "runtime_seconds": monotonic() - scale_started,
+                  "geometry": (
+                      None
+                      if positions is None
+                      else _implementation_geometry(state, positions, hierarchy.hyperedges)
+                  ),
+              }
+
+          print(
+              json.dumps(
+                  {
+                      "hierarchy_macro_counts": [
+                          len(level.macros) for level in hierarchy.levels
+                      ],
+                      "source": source,
+                      "flat_coarse": flat,
+                      "macro_zoom_scales": scales,
+                      "total_runtime_seconds": monotonic() - started,
+                  },
+                  indent=2,
+                  sort_keys=True,
+              )
+          )
+          PY
+      - name: Preserve report
+        uses: actions/upload-artifact@v4
+        with:
+          name: snake-multilevel-zoom-probe
+          path: /tmp/multilevel-zoom/report.json
