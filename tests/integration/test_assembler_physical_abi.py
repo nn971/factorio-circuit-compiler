@@ -17,7 +17,6 @@ from examples.assembler_physical_abi_probe import (
     TRANSLATED_DEVICE_ORIGIN,
     build_assembler_physical_abi_problem,
     route_assembler_physical_abi_probe,
-    translate_assembler_physical_abi_probe,
 )
 
 
@@ -29,7 +28,7 @@ def _source_positions() -> dict[int, tuple[float, float]]:
     }
 
 
-def test_real_assembler_device_translates_as_one_rigid_25_entity_component() -> None:
+def test_real_assembler_device_passes_d1_d2_d3_and_serialization() -> None:
     initial = build_assembler_physical_abi_problem()
     validate_component_layout_problem(initial)
     assert len(initial.components[0].members) == 25
@@ -38,18 +37,6 @@ def test_real_assembler_device_translates_as_one_rigid_25_entity_component() -> 
     assert machine.prototype == "assembling-machine-3"
     assert machine.physical_half_extent == (1.5, 1.5)
 
-    translated = translate_assembler_physical_abi_probe()
-
-    assert translated.succeeded, translated.failure
-    assert translated.problem.components[0].origin == TRANSLATED_DEVICE_ORIGIN
-    source = _source_positions()
-    final_positions = translated.problem.layout_problem.layout.positions
-    for entity_id, position in source.items():
-        assert final_positions[entity_id] == (position[0] + 24.0, position[1])
-    validate_component_layout_problem(translated.problem)
-
-
-def test_real_assembler_device_routes_distant_exact_ports_and_preserves_payload() -> None:
     routed = route_assembler_physical_abi_probe()
 
     assert routed.succeeded, routed.failure
@@ -58,8 +45,13 @@ def test_real_assembler_device_routes_distant_exact_ports_and_preserves_payload(
     problem = routed.problem.component_problem
     layout = problem.layout_problem.layout
     assert problem.components[0].origin == TRANSLATED_DEVICE_ORIGIN
+
+    source = _source_positions()
+    for entity_id, position in source.items():
+        assert layout.positions[entity_id] == (position[0] + 24.0, position[1])
     assert layout.positions[RECIPE_MARKER_ID] == RECIPE_ANCHOR
     assert layout.positions[INGREDIENTS_MARKER_ID] == INGREDIENTS_ANCHOR
+    validate_component_layout_problem(problem)
     validate_anchored_interface_routing(routed.problem, routed.reservations)
 
     encoded = encode_layout_blueprint_string_with_opaque(layout)
