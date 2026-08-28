@@ -119,8 +119,8 @@ def build_macro_geometry(
     """Construct compact relay-blind macro rectangles for one hierarchy level.
 
     Macro footprint area is derived from implementation footprint area divided by
-    ``target_density``. The current failproof seed contributes only the initial macro center. Fixed
-    macros are required to be singletons and keep the exact footprint of their implementation entity.
+    ``target_density``. The current failproof seed contributes only the initial macro center.
+    Fixed macros are required to be singletons and keep the exact footprint of their entity.
     """
 
     if not 0.0 < target_density <= 1.0:
