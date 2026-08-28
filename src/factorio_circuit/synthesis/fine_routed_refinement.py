@@ -5,6 +5,10 @@ annealer directly, so implementation entities and relay combinators may move tog
 accepted hot-loop move preserves wire reach. Unlike the generic optimizer entry point, this stage
 does not run another coarse placement/reseed before annealing.
 
+Fine work is split into sub-epoch chunks shorter than the joint annealer's 256-proposal topology
+epoch. That intentionally suppresses its scheduled full reroutes: C5 already owns expensive global
+routing transactions, while C7 should spend its budget on local joint motion and relay bypasses.
+
 The input physical artifact remains the fallback. A refined candidate is materialized, exact-
 validated, and committed only when it strictly improves the public lexicographic physical objective.
 """
@@ -30,6 +34,7 @@ class FineRefinementOptions:
 
     proposals: int = 4096
     random_seed: int = 0
+    chunk_size: int = incremental._EPOCH_PROPOSALS - 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +60,11 @@ def refine_routed_layout_transactionally(
         options = FineRefinementOptions()
     if options.proposals < 0:
         raise ValueError("proposals must be non-negative")
+    if not 0 < options.chunk_size < incremental._EPOCH_PROPOSALS:
+        raise ValueError(
+            f"chunk_size must be in [1, {incremental._EPOCH_PROPOSALS - 1}] "
+            "to keep C7 local"
+        )
 
     validated = layout_optimizer._validated_embedding(problem)
     before = physical_layout_metrics(problem.layout)
@@ -70,21 +80,28 @@ def refine_routed_layout_transactionally(
     state = validated.state
     topology = validated.topology
     grid = layout_optimizer._lattice_grid(problem.lattice)
-    anneal_options = PlacementOptions(
-        anchor_io=False,
-        iterations=options.proposals,
-        random_seed=options.random_seed,
-        restarts=1,
-    )
     diagnostics: list[str] = []
     try:
-        topology = incremental._anneal_feasible(
-            state,
-            topology,
-            anneal_options,
-            grid,
-            diagnostics,
-        )
+        remaining = options.proposals
+        chunk_index = 0
+        while remaining > 0:
+            chunk = min(options.chunk_size, remaining)
+            anneal_options = PlacementOptions(
+                anchor_io=False,
+                iterations=chunk,
+                random_seed=options.random_seed + chunk_index,
+                restarts=1,
+            )
+            topology = incremental._anneal_feasible(
+                state,
+                topology,
+                anneal_options,
+                grid,
+                diagnostics,
+            )
+            remaining -= chunk
+            chunk_index += 1
+
         topology = incremental._simplify_feasible_topology(state, topology)
         candidate = layout_optimizer._materialize_layout(
             problem.layout,
