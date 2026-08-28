@@ -94,7 +94,11 @@ def _component_problem(
         outputs=outputs,
     )
     layout = Layout(circuit, positions, relays, wires, (), ())
-    fixed = {} if marker_fixed_at is None else {1: marker_fixed_at}
+    fixed: dict[int, tuple[float, float]] = {}
+    if marker_fixed_at is not None:
+        fixed[1] = marker_fixed_at
+    if blocker_at_anchor:
+        fixed[4] = (-10.0, 0.0)
     base = LayoutOptimizationProblem(
         layout,
         _lattice(),
@@ -143,7 +147,7 @@ def test_distant_public_anchor_is_pinned_before_fresh_routing() -> None:
 
     result = route_anchored_interfaces_transactionally(problem)
 
-    assert result.succeeded
+    assert result.succeeded, result.failure
     assert result.failure is None
     assert result.after.relay_count >= 1
     layout = result.problem.component_problem.layout_problem.layout
@@ -166,7 +170,7 @@ def test_distant_public_anchor_is_pinned_before_fresh_routing() -> None:
 
 def test_reserved_interface_relays_survive_later_component_optimization() -> None:
     result = route_anchored_interfaces_transactionally(_anchored_problem(_component_problem()))
-    assert result.succeeded
+    assert result.succeeded, result.failure
     reservation = result.reservations[0]
 
     optimized = optimize_component_layout(
@@ -188,7 +192,7 @@ def test_output_port_uses_the_same_anchored_routing_contract() -> None:
 
     result = route_anchored_interfaces_transactionally(problem)
 
-    assert result.succeeded
+    assert result.succeeded, result.failure
     assert result.problem.component_problem.layout_problem.layout.positions[1] == (-10.0, 0.0)
     validate_anchored_interface_routing(result.problem, result.reservations)
 
@@ -258,5 +262,5 @@ def test_exact_anchor_may_be_changed_by_replacing_only_the_constraint() -> None:
 
     result = route_anchored_interfaces_transactionally(changed)
 
-    assert result.succeeded
+    assert result.succeeded, result.failure
     assert result.problem.component_problem.layout_problem.layout.positions[1] == (-12.0, 0.0)
