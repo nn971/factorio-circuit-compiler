@@ -204,7 +204,9 @@ class RigidComponentConstraint:
         )
 
     def absolute_keepouts(self) -> tuple[ComponentRegion, ...]:
-        return tuple(region.transformed(self.origin, self.quarter_turns) for region in self.keepouts)
+        return tuple(
+            region.transformed(self.origin, self.quarter_turns) for region in self.keepouts
+        )
 
     def absolute_adapter_regions(self) -> tuple[ComponentRegion, ...]:
         return tuple(
