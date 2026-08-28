@@ -38,9 +38,10 @@ from factorio_circuit.synthesis.component_geometry import (
     ComponentAccessPoint,
     ComponentLayoutOptimizationProblem,
     ComponentRegion,
-    RigidComponentConstraint,
-    RigidComponentMember,
     validate_component_layout_problem,
+)
+from factorio_circuit.synthesis.imported_component_geometry import (
+    imported_layout_as_rigid_component,
 )
 from factorio_circuit.synthesis.layout import Layout, LayoutWire
 from factorio_circuit.synthesis.layout_optimizer import (
@@ -150,13 +151,10 @@ def build_assembler_physical_abi_problem() -> ComponentLayoutOptimizationProblem
         _routing_lattice(),
         safe_wire_span=7.0,
     )
-    component = RigidComponentConstraint(
+    component = imported_layout_as_rigid_component(
+        imported,
         "assembler-device",
         origin=DEVICE_ORIGIN,
-        members=tuple(
-            RigidComponentMember(entity_id, position)
-            for entity_id, position in sorted(base_layout.positions.items())
-        ),
         footprints=(ComponentRegion(1.0, 4.0, 20.5, 18.0),),
         # Real reserved geometry outside the owned body. These exercise D1 exclusion during both
         # translation and D3 rerouting without interfering with the two active west/east seams.
