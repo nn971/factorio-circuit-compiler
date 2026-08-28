@@ -25,7 +25,11 @@ from factorio_circuit.synthesis.component_geometry import (
     lower_component_layout_problem,
     validate_component_layout_problem,
 )
-from factorio_circuit.synthesis.layout_optimizer import PhysicalLayoutMetrics, physical_layout_metrics
+from factorio_circuit.synthesis.layout import Layout
+from factorio_circuit.synthesis.layout_optimizer import (
+    PhysicalLayoutMetrics,
+    physical_layout_metrics,
+)
 from factorio_circuit.synthesis.placement import Position
 
 _EPSILON = 1e-9
@@ -233,7 +237,7 @@ def translate_rigid_component_transactionally(
 def optimize_rigid_component_translations(
     problem: ComponentLayoutOptimizationProblem,
     *,
-    options: RigidTranslationOptions = RigidTranslationOptions(),
+    options: RigidTranslationOptions | None = None,
 ) -> RigidComponentTranslationOptimizationResult:
     """Greedily improve exact public layout objective using bounded rigid translations.
 
@@ -244,6 +248,8 @@ def optimize_rigid_component_translations(
     an independent hard work bound.
     """
 
+    if options is None:
+        options = RigidTranslationOptions()
     validate_component_layout_problem(problem)
     current = problem
     before = physical_layout_metrics(problem.layout_problem.layout)
@@ -346,15 +352,10 @@ def _translation_legality_failure(
 
 
 def _translated_implementation_positions(
-    layout: object,
+    layout: Layout,
     component: RigidComponentConstraint,
 ) -> dict[int, Position]:
-    physical_layout = layout
-    circuit = physical_layout.circuit
-    positions = {
-        entity.id: physical_layout.positions[entity.id]
-        for entity in circuit.entities
-    }
+    positions = {entity.id: layout.positions[entity.id] for entity in layout.circuit.entities}
     positions.update(component.member_positions())
     return positions
 
@@ -369,7 +370,8 @@ def _validate_candidate_implementation_positions(
         missing = sorted(implementation_ids - layout.positions.keys())
         unknown = sorted(layout.positions.keys() - implementation_ids)
         raise ValueError(
-            f"candidate implementation positions have missing ids {missing} and unknown ids {unknown}"
+            f"candidate implementation positions have missing ids {missing} "
+            f"and unknown ids {unknown}"
         )
 
     fixed_ids = set(problem.fixed_positions)
