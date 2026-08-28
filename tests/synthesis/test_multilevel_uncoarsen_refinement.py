@@ -19,7 +19,6 @@ from factorio_circuit.synthesis.multilevel_uncoarsen import (
 from factorio_circuit.synthesis.multilevel_zoom import (
     MacroGeometry,
     build_macro_geometry,
-    compact_macro_geometry,
     validate_macro_placement,
 )
 
@@ -68,20 +67,18 @@ def test_uncoarsening_removes_rounding_slack_at_singleton_level() -> None:
     )
     seed = {entity_id: (float(4 * entity_id), 0.0) for entity_id in range(1, 5)}
     hierarchy = build_multilevel_hierarchy(circuit, target_macros=1)
-    source = build_macro_geometry(
+    coarse = build_macro_geometry(
         circuit,
         seed,
         hierarchy.levels[-1],
         target_density=0.8,
     )
-    zoom = compact_macro_geometry(source, hierarchy.hyperedges)
-    assert zoom.accepted_scale is not None
 
     result = hierarchical_uncoarsen(
         circuit,
         seed,
         hierarchy,
-        zoom.geometry,
+        coarse,
         options=HierarchicalUncoarsenOptions(
             target_density=0.8,
             finest_density=1.0,
