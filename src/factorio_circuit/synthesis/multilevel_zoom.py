@@ -2,15 +2,16 @@
 
 This module is the Milestone C3 proof-of-concept layer between implementation-only multilevel
 coarsening and eventual transactional physical rerouting. It deliberately does *not* move routed
-relays or preserve the failproof relay scaffold. Instead, a coarsening level is represented by compact
-abstract rectangular macro footprints derived only from implementation entity sizes. Existing
-implementation coordinates provide initial macro centers; routed relay geometry never participates.
+relays or preserve the failproof relay scaffold. Instead, a coarsening level is represented by
+compact abstract rectangular macro footprints derived only from implementation entity sizes.
+Existing implementation coordinates provide initial macro centers; routed relay geometry never
+participates.
 
 A global zoom contracts movable macro centers toward a common center, leaves fixed singleton macros
 exact, then legalizes the abstract macro rectangles with a bounded deterministic nearest-target
 search. The result is still an abstract coarse placement: later uncoarsening expands macros back to
-implementation entities, while transactional rerouting rebuilds the relay topology and exact-validates
-the physical artifact.
+implementation entities, while transactional rerouting rebuilds the relay topology and validates the
+physical artifact exactly.
 """
 
 from __future__ import annotations
@@ -117,9 +118,9 @@ def build_macro_geometry(
 ) -> MacroGeometry:
     """Construct compact relay-blind macro rectangles for one hierarchy level.
 
-    Macro footprint area is derived from implementation footprint area divided by ``target_density``;
-    the current failproof seed contributes only the initial macro center. Fixed macros are required to
-    be singleton macros and keep the exact physical footprint of their implementation entity.
+    Macro footprint area is derived from implementation footprint area divided by
+    ``target_density``. The current failproof seed contributes only the initial macro center. Fixed
+    macros are required to be singletons and keep the exact footprint of their implementation entity.
     """
 
     if not 0.0 < target_density <= 1.0:
@@ -137,7 +138,8 @@ def build_macro_geometry(
     for macro in level.macros:
         duplicates = seen.intersection(macro.members)
         if duplicates:
-            raise ValueError(f"coarsening level repeats implementation entities: {sorted(duplicates)}")
+            rendered = sorted(duplicates)
+            raise ValueError(f"coarsening level repeats implementation entities: {rendered}")
         seen.update(macro.members)
         unknown = set(macro.members) - implementation_ids
         if unknown:
@@ -162,9 +164,10 @@ def build_macro_geometry(
         total_area += area
 
     if seen != implementation_ids:
-        missing_from_level = implementation_ids - seen
+        missing_from_level = sorted(implementation_ids - seen)
         raise ValueError(
-            f"coarsening level does not cover all implementation entities: {sorted(missing_from_level)}"
+            "coarsening level does not cover all implementation entities: "
+            f"{missing_from_level}"
         )
     return MacroGeometry(level, tuple(centers), tuple(half_extents), total_area)
 
@@ -377,7 +380,7 @@ def compact_macro_geometry(
     scales: tuple[float, ...] = (0.08, 0.10, 0.12, 0.15, 0.20, 0.30, 0.50, 0.70),
     max_legalization_radius: int | None = None,
 ) -> MacroZoomResult:
-    """Try aggressive zoom scales first and back off until coarse legalization contracts the envelope."""
+    """Back off an aggressive global zoom until coarse legalization succeeds."""
 
     if not scales:
         raise ValueError("at least one macro zoom scale is required")
