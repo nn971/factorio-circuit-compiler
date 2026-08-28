@@ -1,8 +1,8 @@
 """Measure genuine relay-blind coarse macro zoom on full Snake.
 
 This opt-in Milestone C C2+C3 probe stops before uncoarsening and physical rerouting. The coarsest
-hierarchy level remains a small set of abstract rectangular macros throughout legalization; the probe
-does not expand those macros back to hundreds of implementation entities. Routed relays never
+hierarchy level remains a small set of abstract rectangular macros throughout legalization. The
+probe does not expand those macros back to hundreds of implementation entities. Routed relays never
 participate in clustering, macro footprints, target generation, or coarse legalization.
 """
 
