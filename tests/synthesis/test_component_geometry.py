@@ -62,12 +62,12 @@ def test_lowering_freezes_members_and_reserves_component_geometry() -> None:
 
 
 def test_external_object_cannot_occupy_component_owned_geometry() -> None:
-    base = _problem({1: (0.0, 1.0), 2: (1.5, 1.0)})
+    base = _problem({1: (0.0, 1.0), 2: (2.0, 1.0)})
     component = RigidComponentConstraint(
         "owned",
         origin=(0.0, 1.0),
         members=(RigidComponentMember(1, (0.0, 0.0)),),
-        footprints=(ComponentRegion(-0.5, -0.5, 2.0, 0.5),),
+        footprints=(ComponentRegion(-0.5, -0.5, 2.5, 0.5),),
     )
 
     with pytest.raises(ValueError, match="owned/keepout geometry"):
