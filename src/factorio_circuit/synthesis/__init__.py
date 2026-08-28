@@ -22,6 +22,13 @@ from .layout_optimizer import (
 )
 from .physical import synthesize_layout
 from .placement import PlacementMetrics, PlacementOptions, placement_metrics
+from .rigid_component_translation import (
+    RigidComponentTranslationOptimizationResult,
+    RigidComponentTranslationResult,
+    RigidTranslationOptions,
+    optimize_rigid_component_translations,
+    translate_rigid_component_transactionally,
+)
 
 __all__ = [
     "ComponentAccessPoint",
@@ -36,12 +43,17 @@ __all__ = [
     "PhysicalLayoutMetrics",
     "RigidComponentConstraint",
     "RigidComponentMember",
+    "RigidComponentTranslationOptimizationResult",
+    "RigidComponentTranslationResult",
+    "RigidTranslationOptions",
     "lower_component_layout_problem",
     "optimize_component_layout",
     "optimize_physical_layout",
+    "optimize_rigid_component_translations",
     "placement_metrics",
     "physical_layout_metrics",
     "synthesize_layout",
+    "translate_rigid_component_transactionally",
     "validate_component_layout_problem",
     "validate_physical_layout",
 ]
