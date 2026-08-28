@@ -132,7 +132,83 @@ class ConstantCombinator:
     annotation_only: bool = False
 
 
-PhysicalEntity = ArithmeticCombinator | DeciderCombinator | SelectorCombinator | ConstantCombinator
+@dataclass(frozen=True, slots=True, init=False)
+class OpaqueSingleConnectorEntity(ConstantCombinator):
+    """Serialized Factorio entity with one red/green circuit connector.
+
+    Opaque entities let physical placement preserve reusable external-device entities without
+    pretending that synthesis understands their runtime behavior. ``blueprint_fields`` stores the
+    entity payload other than number/name/position. The explicit physical half-extent is retained
+    for component-level prototype-aware validation.
+    """
+
+    prototype: str
+    blueprint_fields: dict[str, object]
+    physical_half_extent: tuple[float, float]
+
+    def __init__(
+        self,
+        id: int,
+        prototype: str,
+        blueprint_fields: dict[str, object],
+        *,
+        physical_half_extent: tuple[float, float],
+    ) -> None:
+        if not prototype:
+            raise ValueError("opaque physical entity prototype must be non-empty")
+        if physical_half_extent[0] <= 0.0 or physical_half_extent[1] <= 0.0:
+            raise ValueError("opaque physical entity half-extents must be positive")
+        description = blueprint_fields.get("player_description")
+        object.__setattr__(self, "id", id)
+        object.__setattr__(self, "signals", ())
+        object.__setattr__(self, "description", description if isinstance(description, str) else None)
+        object.__setattr__(self, "annotation_only", False)
+        object.__setattr__(self, "prototype", prototype)
+        object.__setattr__(self, "blueprint_fields", blueprint_fields)
+        object.__setattr__(self, "physical_half_extent", physical_half_extent)
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class OpaqueDualConnectorEntity(ArithmeticCombinator):
+    """Serialized Factorio entity with distinct input and output circuit connectors."""
+
+    prototype: str
+    blueprint_fields: dict[str, object]
+    physical_half_extent: tuple[float, float]
+
+    def __init__(
+        self,
+        id: int,
+        prototype: str,
+        blueprint_fields: dict[str, object],
+        *,
+        physical_half_extent: tuple[float, float],
+    ) -> None:
+        if not prototype:
+            raise ValueError("opaque physical entity prototype must be non-empty")
+        if physical_half_extent[0] <= 0.0 or physical_half_extent[1] <= 0.0:
+            raise ValueError("opaque physical entity half-extents must be positive")
+        description = blueprint_fields.get("player_description")
+        object.__setattr__(self, "id", id)
+        object.__setattr__(self, "operation", "opaque")
+        object.__setattr__(self, "left", Operand(constant=0))
+        object.__setattr__(self, "right", Operand(constant=0))
+        object.__setattr__(self, "output_each", True)
+        object.__setattr__(self, "output_signal", None)
+        object.__setattr__(self, "description", description if isinstance(description, str) else None)
+        object.__setattr__(self, "prototype", prototype)
+        object.__setattr__(self, "blueprint_fields", blueprint_fields)
+        object.__setattr__(self, "physical_half_extent", physical_half_extent)
+
+
+PhysicalEntity = (
+    ArithmeticCombinator
+    | DeciderCombinator
+    | SelectorCombinator
+    | ConstantCombinator
+    | OpaqueSingleConnectorEntity
+    | OpaqueDualConnectorEntity
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,10 +249,14 @@ class PhysicalCircuit:
 
     @property
     def combinator_count(self) -> int:
-        """Count implementation combinators, excluding I/O annotation markers."""
+        """Count compiler implementation combinators, excluding opaque device entities and markers."""
 
         return sum(
-            not (isinstance(entity, ConstantCombinator) and entity.annotation_only)
+            not isinstance(
+                entity,
+                (OpaqueSingleConnectorEntity, OpaqueDualConnectorEntity),
+            )
+            and not (isinstance(entity, ConstantCombinator) and entity.annotation_only)
             for entity in self.entities
         )
 
