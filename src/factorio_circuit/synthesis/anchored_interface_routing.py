@@ -14,10 +14,16 @@ checks their clearance, wire reach, and electrical membership in the final seria
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from heapq import heappop, heappush
 from math import ceil, floor, hypot
 from typing import Literal
 
-from factorio_circuit.ir.physical import ConstantCombinator, InputPort, OutputPort
+from factorio_circuit.ir.physical import (
+    ConstantCombinator,
+    InputPort,
+    OutputPort,
+    PhysicalCircuit,
+)
 from factorio_circuit.synthesis import incremental_joint_layout as incremental
 from factorio_circuit.synthesis import joint_layout as exact
 from factorio_circuit.synthesis import layout_optimizer
@@ -138,10 +144,10 @@ def route_anchored_interfaces_transactionally(
 ) -> AnchoredInterfaceRoutingResult:
     """Pin all public anchors, reserve their relay chains, then rebuild global routing.
 
-    The input component artifact must already be exact-valid. The transaction discards every old
-    non-interface relay. If any anchor cannot reach its declared component access, if fresh routing
-    fails, or if the final artifact violates component/interface geometry, the exact original input
-    is returned unchanged.
+    The current component-aware artifact must already be exact-valid. The transaction discards every
+    old non-interface relay. If any anchor cannot reach its declared component access, if fresh
+    routing fails, or if the final artifact violates component/interface geometry, the exact
+    original input is returned unchanged.
     """
 
     component_problem = problem.component_problem
@@ -224,7 +230,7 @@ def validate_anchored_interface_routing(
             *reservation.relay_positions,
             reservation.landing_position,
         )
-        for left, right in zip(path, path[1:], strict=True):
+        for left, right in zip(path, path[1:]):
             if _distance(left, right) > lowered.safe_wire_span + _EPSILON:
                 raise ValueError(f"reservation {interface.name!r} contains an overlong interface hop")
 
@@ -369,22 +375,11 @@ def _route_anchored_interfaces(
             ),
         )
 
-        gateway_id = next_relay_id
-        next_relay_id += 1
-        state.relay_positions[gateway_id] = gateway
-        state.relay_groups[gateway_id] = frozenset({item.group})
-        reserved_fixed_ids.add(gateway_id)
-        state.fixed_objects = frozenset((*state.fixed_objects, gateway_id))
-        free_sites.discard(gateway)
-
-        workspace = incremental._RelayWorkspace.build(free_sites, state.safe_span)
-        chain = incremental._find_relay_chain(
-            state,
-            item.group,
-            item.marker_entity,
-            gateway_id,
-            free_sites,
-            workspace,
+        chain = _find_interface_relay_chain(
+            item.constraint.anchor_position,
+            gateway,
+            free_sites - {gateway},
+            state.safe_span,
         )
         if chain is None:
             raise ValueError(
@@ -394,7 +389,7 @@ def _route_anchored_interfaces(
 
         path_ids: list[int] = []
         path_positions: list[Position] = []
-        for site in chain:
+        for site in (*chain, gateway):
             relay_id = next_relay_id
             next_relay_id += 1
             state.relay_positions[relay_id] = site
@@ -413,8 +408,8 @@ def _route_anchored_interfaces(
                 item.constraint.anchor_position,
                 item.access_position,
                 item.landing_position,
-                (*path_ids, gateway_id),
-                (*path_positions, gateway),
+                tuple(path_ids),
+                tuple(path_positions),
             )
         )
 
@@ -505,15 +500,14 @@ def _resolve_interface(
 
 
 def _resolve_public_port(
-    circuit: object,
+    circuit: PhysicalCircuit,
     interface: PublicPortAnchorConstraint,
 ) -> InputPort | OutputPort:
-    physical_circuit = circuit
     candidates: list[InputPort | OutputPort]
     if interface.direction == "input":
-        candidates = list(physical_circuit.inputs)
+        candidates = list(circuit.inputs)
     else:
-        candidates = list(physical_circuit.outputs)
+        candidates = list(circuit.outputs)
     matches = [port for port in candidates if port.name == interface.port]
     if len(matches) != 1:
         raise ValueError(
@@ -600,6 +594,82 @@ def _distance_to_axis_segment(point: Position, left: Position, right: Position) 
     raise AssertionError("interface dogleg segments must be axis-aligned")
 
 
+def _find_interface_relay_chain(
+    start: Position,
+    goal: Position,
+    free_sites: set[Position],
+    safe_span: float,
+) -> tuple[Position, ...] | None:
+    """Route one reservation without borrowing unrelated terminals on the same net."""
+
+    if _distance(start, goal) <= safe_span + _EPSILON:
+        return ()
+    workspace = incremental._RelayWorkspace.build(free_sites, safe_span)
+    infinity = (10**18, float("inf"))
+    costs: dict[Position, tuple[int, float]] = {start: (0, 0.0)}
+    previous: dict[Position, Position] = {}
+    queue: list[tuple[int, float, int, float, float, float, Position]] = []
+
+    def push(position: Position, cost: tuple[int, float]) -> None:
+        distance_to_goal = _distance(position, goal)
+        relay_hint = max(0, ceil(distance_to_goal / safe_span - 1e-12) - 1)
+        heappush(
+            queue,
+            (
+                cost[0] + relay_hint,
+                cost[1] + distance_to_goal,
+                cost[0],
+                cost[1],
+                position[0],
+                position[1],
+                position,
+            ),
+        )
+
+    push(start, (0, 0.0))
+    while queue:
+        _hint_relays, _hint_length, relay_cost, length, _x, _y, position = heappop(queue)
+        if costs.get(position, infinity) != (relay_cost, length):
+            continue
+        if position == goal:
+            break
+
+        neighbors = {
+            candidate
+            for candidate in workspace.nearby_sites(position)
+            if candidate != position
+            and _distance(position, candidate) <= safe_span + _EPSILON
+        }
+        if _distance(position, goal) <= safe_span + _EPSILON:
+            neighbors.add(goal)
+        for neighbor in sorted(neighbors):
+            edge_length = _distance(position, neighbor)
+            candidate_cost = (
+                relay_cost + (0 if neighbor == goal else 1),
+                length + edge_length,
+            )
+            if candidate_cost >= costs.get(neighbor, infinity):
+                continue
+            costs[neighbor] = candidate_cost
+            previous[neighbor] = position
+            push(neighbor, candidate_cost)
+
+    if goal not in costs:
+        return None
+
+    path: list[Position] = []
+    cursor = goal
+    while cursor != start:
+        if cursor != goal:
+            path.append(cursor)
+        parent = previous.get(cursor)
+        if parent is None:
+            return None
+        cursor = parent
+    path.reverse()
+    return tuple(path)
+
+
 def _site_overlaps_regions(site: Position, regions: tuple[ComponentRegion, ...]) -> bool:
     return any(region.overlaps_box(site, _RELAY_HALF_EXTENT) for region in regions)
 
@@ -630,10 +700,7 @@ def _complete_routing_preserving_fixed_relays(
         for relay_id, position in state.relay_positions.items()
         if relay_id in state.fixed_objects
     }
-    fixed_groups = {
-        relay_id: state.relay_groups[relay_id]
-        for relay_id in fixed_relays
-    }
+    fixed_groups = {relay_id: state.relay_groups[relay_id] for relay_id in fixed_relays}
     occupancy = incremental._SpatialOccupancy.build(state)
     base_free_sites = {
         site
@@ -656,11 +723,9 @@ def _complete_routing_preserving_fixed_relays(
         state.relay_groups.update(fixed_groups)
         free_sites = set(base_free_sites)
         workspace = incremental._RelayWorkspace.build(free_sites, state.safe_span)
-        next_relay_id = max(
-            [entity.id for entity in state.circuit.entities]
-            + list(fixed_relays)
-            + [0]
-        ) + 1
+        next_relay_id = (
+            max([entity.id for entity in state.circuit.entities] + list(fixed_relays) + [0]) + 1
+        )
         failed = False
 
         for group in order:
