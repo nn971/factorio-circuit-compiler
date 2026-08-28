@@ -309,17 +309,17 @@ def _legalize_targets(
         target = (_snap_half(targets[index][0]), _snap_half(targets[index][1]))
         chosen: Position | None = None
         for dx, dy in offsets:
-            candidate = (target[0] + dx, target[1] + dy)
+            candidate_position = (target[0] + dx, target[1] + dy)
             if all(
                 not _boxes_overlap(
-                    candidate,
+                    candidate_position,
                     geometry.half_extents[index],
                     other_position,
                     geometry.half_extents[other_index],
                 )
                 for other_index, other_position in placed.items()
             ):
-                chosen = candidate
+                chosen = candidate_position
                 break
         if chosen is None:
             return (
