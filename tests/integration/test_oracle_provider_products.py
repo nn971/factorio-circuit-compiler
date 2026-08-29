@@ -14,6 +14,7 @@ from factorio_circuit import (
     ProviderEntityProduct,
     ProviderRigidComponentProduct,
     ScalarConstantOracleProvider,
+    SignalId,
     lower_to_abstract_physical,
 )
 from factorio_circuit.devices.protocol import (
@@ -101,6 +102,37 @@ class _RigidVectorProvider:
         return OraclePortDisposition.CONSUMED
 
 
+@dataclass(frozen=True, slots=True)
+class _BindingOnlyProvider:
+    device: ExternalDeviceBlueprint
+
+    def materialize(self, context: OraclePhysicalContext) -> OraclePortDisposition:
+        context.component_output_binding(self.device, "choice")
+        return OraclePortDisposition.CONSUMED
+
+
+def _one_output_device(output: DevicePortSpec) -> ExternalDeviceBlueprint:
+    return ExternalDeviceBlueprint(
+        DeviceProtocol("e1-binding-type-probe", (output,)),
+        {
+            "entities": [
+                {
+                    "entity_number": 1,
+                    "name": "constant-combinator",
+                    "position": {"x": 0.5, "y": 0.5},
+                }
+            ],
+            "wires": [],
+        },
+        (
+            BoundDevicePort(
+                output,
+                DeviceEndpoint(1, 1, output.wire, (0.5, 0.5)),
+            ),
+        ),
+    )
+
+
 def test_ordinary_provider_entities_are_reported_as_typed_products() -> None:
     circuit = Circuit("e1_entity_product")
     temperature = circuit.oracle("temperature")
@@ -163,6 +195,47 @@ def test_rigid_component_can_bind_and_consume_named_provider_input_net() -> None
     assert all("provider" not in port.name for port in lowered.abstract_physical.outputs)
 
 
+def test_component_output_binding_rejects_payload_shape_mismatch() -> None:
+    scalar_output = DevicePortSpec(
+        "choice",
+        DevicePortDirection.OUTPUT,
+        PayloadShape.SCALAR,
+        TemporalModality.LEVEL,
+        WireColor.RED,
+        SignalId("virtual", "signal-A"),
+    )
+    circuit = Circuit("e1_shape_mismatch")
+    choice = circuit.oracle_signals("choice")
+    circuit.output("choice", choice)
+
+    with pytest.raises(OracleBindingError, match="scalar payload.*requires vector"):
+        lower_to_abstract_physical(
+            circuit,
+            optimize=False,
+            oracle_providers={"choice": _BindingOnlyProvider(_one_output_device(scalar_output))},
+        )
+
+
+def test_component_output_binding_rejects_event_port_for_level_oracle() -> None:
+    event_output = DevicePortSpec(
+        "choice",
+        DevicePortDirection.OUTPUT,
+        PayloadShape.VECTOR,
+        TemporalModality.EVENT,
+        WireColor.RED,
+    )
+    circuit = Circuit("e1_modality_mismatch")
+    choice = circuit.oracle_signals("choice")
+    circuit.output("choice", choice)
+
+    with pytest.raises(OracleBindingError, match="must be Level"):
+        lower_to_abstract_physical(
+            circuit,
+            optimize=False,
+            oracle_providers={"choice": _BindingOnlyProvider(_one_output_device(event_output))},
+        )
+
+
 def test_full_compile_refuses_to_silently_drop_e1_rigid_product() -> None:
     circuit = Circuit("e1_compile_guard")
     choice = circuit.oracle_signals("choice")
@@ -195,5 +268,39 @@ def test_rigid_product_validates_declared_device_geometry_immediately() -> None:
             origin=(0.0, 0.0),
             footprints=(ComponentRegion(0.0, 0.0, 1.0, 1.0),),
             internal_wire_span=9.0,
+            port_bindings=(ProviderComponentPortBinding("choice", 1),),
+        )
+
+
+def test_rigid_product_rejects_internal_wire_beyond_declared_envelope() -> None:
+    wired = ExternalDeviceBlueprint(
+        DeviceProtocol("e1-wire-span-probe", (_OUTPUT,)),
+        {
+            "entities": [
+                {
+                    "entity_number": 1,
+                    "name": "constant-combinator",
+                    "position": {"x": 0.5, "y": 0.5},
+                },
+                {
+                    "entity_number": 2,
+                    "name": "constant-combinator",
+                    "position": {"x": 2.5, "y": 0.5},
+                },
+            ],
+            "wires": [[1, 1, 2, 1]],
+        },
+        (
+            BoundDevicePort(_OUTPUT, DeviceEndpoint(1, 1, WireColor.RED, (0.5, 0.5))),
+        ),
+    )
+    with pytest.raises(ValueError, match="exceeding internal_wire_span"):
+        ProviderRigidComponentProduct(
+            "wire-too-long",
+            wired,
+            {"constant-combinator": BlueprintEntityPhysicalSpec((0.5, 0.5))},
+            origin=(0.0, 0.0),
+            footprints=(ComponentRegion(0.0, 0.0, 3.0, 1.0),),
+            internal_wire_span=1.5,
             port_bindings=(ProviderComponentPortBinding("choice", 1),),
         )
