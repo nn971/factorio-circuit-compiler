@@ -9,10 +9,11 @@ The raw entity payload is retained for serialization while root-level circuit wi
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Mapping
+from typing import Any
 
 from factorio_circuit.ir.physical import (
     Connector,
