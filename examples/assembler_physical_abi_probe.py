@@ -153,7 +153,8 @@ def build_assembler_physical_abi_problem() -> ComponentLayoutOptimizationProblem
         _routing_lattice(),
         # The imported assembler is an already-materialized Factorio blueprint and contains one
         # legitimate 8.322-tile device-internal circuit span. Validate/reroute it against the actual
-        # vanilla 9-tile envelope instead of the compiler's conservative 7-tile construction default.
+        # vanilla 9-tile envelope instead of the compiler's conservative 7-tile construction
+        # default.
         safe_wire_span=VANILLA_COMBINATOR_WIRE_REACH,
     )
     component = imported_layout_as_rigid_component(
