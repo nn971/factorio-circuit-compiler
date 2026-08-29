@@ -8,6 +8,12 @@ from .anchored_interface_routing import (
     route_anchored_interfaces_transactionally,
     validate_anchored_interface_routing,
 )
+from .blueprint_component import (
+    BlueprintConnectorShape,
+    BlueprintEntityPhysicalSpec,
+    ImportedBlueprintLayout,
+    import_blueprint_layout,
+)
 from .component_geometry import (
     ComponentAccessPoint,
     ComponentLayoutOptimizationProblem,
@@ -18,6 +24,7 @@ from .component_geometry import (
     optimize_component_layout,
     validate_component_layout_problem,
 )
+from .imported_component_geometry import imported_layout_as_rigid_component
 from .layout import Layout
 from .layout_optimizer import (
     LayoutOptimizationProblem,
@@ -42,9 +49,12 @@ __all__ = [
     "AnchoredInterfaceLayoutProblem",
     "AnchoredInterfaceRoutingResult",
     "AnchoredRelayReservation",
+    "BlueprintConnectorShape",
+    "BlueprintEntityPhysicalSpec",
     "ComponentAccessPoint",
     "ComponentLayoutOptimizationProblem",
     "ComponentRegion",
+    "ImportedBlueprintLayout",
     "Layout",
     "LayoutOptimizationProblem",
     "LayoutOptimizationResult",
@@ -58,6 +68,8 @@ __all__ = [
     "RigidComponentTranslationOptimizationResult",
     "RigidComponentTranslationResult",
     "RigidTranslationOptions",
+    "import_blueprint_layout",
+    "imported_layout_as_rigid_component",
     "lower_component_layout_problem",
     "optimize_component_layout",
     "optimize_physical_layout",
