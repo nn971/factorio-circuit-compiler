@@ -36,6 +36,7 @@ from factorio_circuit.optimize.pipeline import optimize_normalized_semantic
 from factorio_circuit.oracles import (
     OracleBindingError,
     OracleProvider,
+    OracleProviderMaterialization,
     materialize_oracle_providers,
     validate_oracle_provider_bindings,
 )
@@ -54,6 +55,7 @@ class AbstractPhysicalLoweringResult:
     optimized_ir: CircuitModule
     state_timing: StateTimingPlan
     abstract_physical: AbstractPhysicalCircuit
+    provider_materialization: OracleProviderMaterialization
     clocked: bool
 
 
@@ -135,10 +137,10 @@ def lower_to_abstract_physical(
     assignment, physical-net coalescing, placement, and routing. It is useful for diagnostics and
     heavyweight benchmark census work that should not need to materialize a final layout.
 
-    Semantic oracles require exact physical-provider coverage. Providers are materialized into the
-    abstract physical graph before this function returns, so their entities and unresolved symbolic
-    placement requirements participate in the same joint synthesis/layout pass as ordinary
-    compiler-generated combinators.
+    Semantic oracles require exact physical-provider coverage. Providers are materialized before
+    this function returns. Ordinary provider entities are inserted into the abstract graph and all
+    provider contributions are also returned as typed physical products. Rigid reusable components
+    deliberately remain declarations at E1; E2 will compose them into the final physical problem.
 
     ``sampling_policy`` controls when phase-zero external Level inputs and oracles are physically
     observed inside one logical occurrence. The compatibility default snapshots them at the
@@ -153,6 +155,7 @@ def lower_to_abstract_physical(
     semantic = preserve_output_materializations(lower_frontend(source), source_output)
     providers = validate_oracle_provider_bindings(semantic, oracle_providers)
     clocked = contains_event_semantics(semantic)
+    provider_materialization = OracleProviderMaterialization()
 
     if clocked:
         if sampling_policy is not SamplingPolicy.BEGINNING_OF_STEP:
@@ -195,13 +198,18 @@ def lower_to_abstract_physical(
             state_timing=state_timing,
             sampling_policy=sampling_policy,
         )
-        materialize_oracle_providers(optimized_semantic, abstract_physical, providers)
+        provider_materialization = materialize_oracle_providers(
+            optimized_semantic,
+            abstract_physical,
+            providers,
+        )
 
     return AbstractPhysicalLoweringResult(
         semantic_ir=semantic,
         optimized_ir=optimized_semantic,
         state_timing=state_timing,
         abstract_physical=abstract_physical,
+        provider_materialization=provider_materialization,
         clocked=clocked,
     )
 
@@ -229,6 +237,10 @@ def compile_circuit(
     may leave those sites unresolved, but final placement requires a coordinate for every anchored
     entity.
 
+    E1 can also return typed reusable rigid-component products. Full compilation rejects such a
+    declaration explicitly until E2 composes it into the same physical optimization problem; it is
+    never silently omitted from a generated blueprint.
+
     ``sampling_policy`` is a target-side observation policy. ``BEGINNING_OF_STEP`` preserves the
     historical snapshot behavior. ``ALAP`` lets every phase-zero external Level input/oracle remain
     live until its physical consumer, eliminating identity-delay transport when no explicit logical
@@ -245,6 +257,15 @@ def compile_circuit(
         oracle_providers=oracle_providers,
         sampling_policy=sampling_policy,
     )
+    if lowered.provider_materialization.rigid_components:
+        names = ", ".join(
+            repr(component.name) for component in lowered.provider_materialization.rigid_components
+        )
+        raise OracleBindingError(
+            "rigid oracle provider component product(s) require E2 unified physical composition: "
+            + names
+        )
+
     layout = _synthesize(
         lowered.abstract_physical,
         safe_wire_span=blueprint_safe_wire_span,
