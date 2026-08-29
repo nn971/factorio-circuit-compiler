@@ -7,7 +7,6 @@ import pytest
 from factorio_circuit import (
     Circuit,
     FreePlacement,
-    lower_to_abstract_physical,
     OracleBindingError,
     OraclePhysicalContext,
     OraclePortDisposition,
@@ -15,6 +14,7 @@ from factorio_circuit import (
     ProviderEntityProduct,
     ProviderRigidComponentProduct,
     ScalarConstantOracleProvider,
+    lower_to_abstract_physical,
 )
 from factorio_circuit.devices.protocol import (
     BoundDevicePort,
@@ -32,7 +32,6 @@ from factorio_circuit.synthesis import (
     ComponentAccessPoint,
     ComponentRegion,
 )
-
 
 _INPUT = DevicePortSpec(
     "candidates",
