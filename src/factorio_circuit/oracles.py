@@ -101,7 +101,9 @@ class OracleProviderMaterialization:
     @property
     def rigid_components(self) -> tuple[ProviderRigidComponentProduct, ...]:
         return tuple(
-            product for product in self.products if isinstance(product, ProviderRigidComponentProduct)
+            product
+            for product in self.products
+            if isinstance(product, ProviderRigidComponentProduct)
         )
 
 
@@ -251,7 +253,8 @@ class OraclePhysicalContext:
             raise OracleBindingError(f"device has no port {port_name!r}") from exc
         if port.spec.direction.value != "output":
             raise OracleBindingError(
-                f"device port {port_name!r} must be an output to provide oracle {self.source.name!r}"
+                f"device port {port_name!r} must be an output to provide oracle "
+                f"{self.source.name!r}"
             )
         expected_shape = PayloadShape.VECTOR if self.is_vector else PayloadShape.SCALAR
         self._validate_component_port_type(
@@ -309,7 +312,8 @@ class OraclePhysicalContext:
         for binding in product.port_bindings:
             if binding.net_id not in net_ids:
                 raise OracleBindingError(
-                    f"provider component {product.name!r} binds unknown abstract net {binding.net_id}"
+                    f"provider component {product.name!r} binds unknown abstract net "
+                    f"{binding.net_id}"
                 )
         provides_oracle = any(
             binding.net_id == self.net_id
