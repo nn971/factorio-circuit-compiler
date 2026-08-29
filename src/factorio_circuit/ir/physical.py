@@ -161,7 +161,11 @@ class OpaqueSingleConnectorEntity(ConstantCombinator):
         description = blueprint_fields.get("player_description")
         object.__setattr__(self, "id", id)
         object.__setattr__(self, "signals", ())
-        object.__setattr__(self, "description", description if isinstance(description, str) else None)
+        object.__setattr__(
+            self,
+            "description",
+            description if isinstance(description, str) else None,
+        )
         object.__setattr__(self, "annotation_only", False)
         object.__setattr__(self, "prototype", prototype)
         object.__setattr__(self, "blueprint_fields", blueprint_fields)
@@ -195,7 +199,11 @@ class OpaqueDualConnectorEntity(ArithmeticCombinator):
         object.__setattr__(self, "right", Operand(constant=0))
         object.__setattr__(self, "output_each", True)
         object.__setattr__(self, "output_signal", None)
-        object.__setattr__(self, "description", description if isinstance(description, str) else None)
+        object.__setattr__(
+            self,
+            "description",
+            description if isinstance(description, str) else None,
+        )
         object.__setattr__(self, "prototype", prototype)
         object.__setattr__(self, "blueprint_fields", blueprint_fields)
         object.__setattr__(self, "physical_half_extent", physical_half_extent)
@@ -249,7 +257,7 @@ class PhysicalCircuit:
 
     @property
     def combinator_count(self) -> int:
-        """Count compiler implementation combinators, excluding opaque device entities and markers."""
+        """Count compiler combinators, excluding opaque device entities and markers."""
 
         return sum(
             not isinstance(
