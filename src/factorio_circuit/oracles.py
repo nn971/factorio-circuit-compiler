@@ -10,9 +10,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from factorio_circuit.devices.protocol import DevicePortDirection, ExternalDeviceBlueprint
 from factorio_circuit.ir.abstract_physical import (
     AbstractEntity,
     AbstractNet,
@@ -40,6 +39,9 @@ from factorio_circuit.provider_products import (
     ProviderComponentPortBinding,
     ProviderRigidComponentProduct,
 )
+
+if TYPE_CHECKING:
+    from factorio_circuit.devices.protocol import ExternalDeviceBlueprint
 
 
 class OracleBindingError(ValueError):
@@ -92,7 +94,9 @@ class OracleProviderMaterialization:
 
     @property
     def entity_products(self) -> tuple[ProviderEntityProduct, ...]:
-        return tuple(product for product in self.products if isinstance(product, ProviderEntityProduct))
+        return tuple(
+            product for product in self.products if isinstance(product, ProviderEntityProduct)
+        )
 
     @property
     def rigid_components(self) -> tuple[ProviderRigidComponentProduct, ...]:
@@ -226,7 +230,7 @@ class OraclePhysicalContext:
             port = device.port(port_name)
         except KeyError as exc:
             raise OracleBindingError(f"device has no port {port_name!r}") from exc
-        if port.spec.direction is not DevicePortDirection.OUTPUT:
+        if port.spec.direction.value != "output":
             raise OracleBindingError(
                 f"device port {port_name!r} must be an output to provide oracle {self.source.name!r}"
             )
@@ -244,7 +248,7 @@ class OraclePhysicalContext:
             port = device.port(port_name)
         except KeyError as exc:
             raise OracleBindingError(f"device has no port {port_name!r}") from exc
-        if port.spec.direction is not DevicePortDirection.INPUT:
+        if port.spec.direction.value != "input":
             raise OracleBindingError(
                 f"device port {port_name!r} must be an input for provider input {name!r}"
             )
@@ -272,7 +276,7 @@ class OraclePhysicalContext:
                 )
         provides_oracle = any(
             binding.net_id == self.net_id
-            and product.device.port(binding.port_name).spec.direction is DevicePortDirection.OUTPUT
+            and product.device.port(binding.port_name).spec.direction.value == "output"
             for binding in product.port_bindings
         )
         if not provides_oracle:
