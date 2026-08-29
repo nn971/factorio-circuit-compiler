@@ -84,9 +84,30 @@ new external wires use the compiler's ordinary conservative span.
 Final validation is performed after proxy substitution, so the artifact being checked is the same
 mixed physical object that is encoded into the blueprint.
 
+## Feasibility fallback for distant anchors
+
+E3 exposed an important distinction between fixed world geometry and the annealer's optimization
+workspace. An explicitly anchored provider can legitimately lie outside the finite implementation
+lattice used by the incremental joint annealer. The anchor itself was already preserved correctly,
+but such a terminal could have no candidate relay site in the joint bootstrap lattice even though a
+valid Factorio route exists in world space.
+
+Annealed vector synthesis now treats that condition as an optimization failure rather than a
+compilation failure. It first attempts the normal reach-preserving joint layout. If that path reports
+a retryable conservative-reach/bootstrap failure, synthesis keeps the same exact anchored placement,
+materializes the ordinary electrical spanning trees, and invokes the existing constructive router on
+that seed. The constructive router searches world-space half-tile relay positions, so it can bridge a
+distant fixed terminal without moving it or inflating the implementation placement lattice.
+
+This is deliberately a fallback, not a second placement policy. A successful fallback route still
+uses the same conservative external wire span and normal collision/clearance validation. The small
+`test_distant_anchor_constructive_fallback` regression remains in routine CI. Optimizing relay motion
+around arbitrary off-lattice anchors inside the joint annealer is still optional future work; correct
+compilation no longer depends on it.
+
 ## Current limitations
 
-E2 is intentionally narrower than a general physical-module optimizer:
+E2/E3 are intentionally narrower than a general physical-module optimizer:
 
 - physical oracle providers remain Level-only; Event oracle providers are still unsupported;
 - rigid provider components are composed at their declared geometry. Full `compile()` does not yet
@@ -96,7 +117,9 @@ E2 is intentionally narrower than a general physical-module optimizer:
 - the reusable blueprint must be representable by the current opaque single-/dual-connector importer
   with explicit prototype geometry;
 - ordinary-implementation legalization around component geometry is deterministic and bounded; an
-  impossible fixed-anchor/component overlap rejects rather than moving the fixed object.
+  impossible fixed-anchor/component overlap rejects rather than moving the fixed object;
+- the incremental joint annealer does not yet optimize arbitrary off-lattice anchor relay corridors;
+  the constructive fallback provides correctness for those cases.
 
 These limitations are optimization/coverage boundaries, not holes in the serialized correctness
-contract. A successful E2 compilation has already passed exact mixed-layout validation.
+contract. A successful mixed-provider compilation has passed exact mixed-layout validation.

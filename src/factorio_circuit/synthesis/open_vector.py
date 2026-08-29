@@ -329,18 +329,49 @@ class VectorPhysicalSynthesizer(PhysicalSynthesizer):
                             "local relay topology simplification at epoch boundaries"
                         ),
                     )
-                    joint = refine_incremental_joint_layout(
-                        physical,
-                        self.circuit,
-                        net_groups,
-                        net_colors,
-                        positions,
-                        safe_wire_span=self.safe_wire_span,
-                        options=attempt_options,
-                    )
-                    positions = joint.positions
-                    routing = joint.routing
-                    self._materialize_connections(physical, net_colors, net_groups, positions)
+                    try:
+                        joint = refine_incremental_joint_layout(
+                            physical,
+                            self.circuit,
+                            net_groups,
+                            net_colors,
+                            positions,
+                            safe_wire_span=self.safe_wire_span,
+                            options=attempt_options,
+                        )
+                    except ValueError as joint_error:
+                        if not _retryable_layout_error(joint_error):
+                            raise
+                        report_progress(
+                            self.progress,
+                            "fallback-routing",
+                            detail=(
+                                "joint bootstrap unavailable at fixed geometry; "
+                                "using constructive routing on the anchored placement seed"
+                            ),
+                        )
+                        self._materialize_connections(
+                            physical,
+                            net_colors,
+                            net_groups,
+                            positions,
+                        )
+                        routing = route_wires(
+                            physical,
+                            positions,
+                            safe_span=self.safe_wire_span,
+                            relay_forbidden_areas=placement.relay_forbidden_areas,
+                            progress=self.progress,
+                        )
+                    else:
+                        positions = joint.positions
+                        routing = joint.routing
+                        self._materialize_connections(
+                            physical,
+                            net_colors,
+                            net_groups,
+                            positions,
+                        )
                     report_progress(
                         self.progress,
                         "routing",

@@ -211,28 +211,48 @@ All D acceptance requirements are satisfied:
 
 ## Milestone E — Oracle/device/layout unification
 
-**Status: current.**
+**Status: complete.**
 
 **Goal:** let oracle providers and reusable external components participate in one physical composition story.
 
-The oracle provider insertion point runs before signal allocation, wire-color assignment, placement, and routing. Providers may now materialize ordinary free/anchored helper entities or validated reusable rigid components while using the same typed device and physical-layout contracts.
+The oracle provider insertion point runs before signal allocation, wire-color assignment, placement, and routing. Providers can materialize ordinary free/anchored helper entities or validated reusable rigid components while using the same typed device and physical-layout contracts.
 
 Standalone device generation remains useful for manual probes; compiler integration reuses the same device protocol and D1 physical component boundary rather than inventing a second device representation.
 
 ### E implementation sequence
 
 1. **E1 — typed provider physical products [complete].** Provider materialization records ordinary helper entities as typed products and can carry a validated `ProviderRigidComponentProduct` containing an `ExternalDeviceBlueprint`, explicit prototype geometry, D1 regions/access points/legal origins, internal wire envelope, and device-port-to-abstract-net bindings. Binding helpers validate direction, Level modality, and scalar/vector shape. `lower_to_abstract_physical(...)` exposes the complete product set.
-2. **E2 — unified pre-placement composition [complete].** Full `compile()` now consumes rigid provider products before final routing. Component-local ids are rebased into compiler-global ids; typed device ports constrain their bound abstract nets to the required red/green wire color; scalar device signals precolor the ordinary DSATUR interference allocator; and exact opaque entity extents remain authoritative. Temporary connector proxies participate only in placement/electrical construction, then ordinary implementation is legalized away from component-owned geometry, routing is rebuilt with those regions excluded from relay workspace, and every proxy is replaced by the exact opaque device connector before D1/exact validation and opaque-aware serialization. Contradictory fixed-signal and wire-color constraints reject deterministically. Rigid providers currently remain at their declared geometry during this compiler path; D2 automatic origin search is not yet invoked. The focused E2 suite is included in the ordinary gate, which reached `579 passed, 33 skipped, 16 deselected` before final documentation-only changes.
-3. **E3 — mixed integration benchmark [current].** Compile one small program that simultaneously uses ordinary logic, a freely placeable provider helper, an anchored sensor/provider endpoint, and a rigid reusable device. Require one exact serialized artifact and validate its pins, component geometry, electrical connectivity, and opaque payload preservation.
+2. **E2 — unified pre-placement composition [complete].** Full `compile()` consumes rigid provider products before final routing. Component-local ids are rebased into compiler-global ids; typed device ports constrain their bound abstract nets to the required red/green wire color; scalar device signals precolor the ordinary DSATUR interference allocator; and exact opaque entity extents remain authoritative. Temporary connector proxies participate only in placement/electrical construction, then ordinary implementation is legalized away from component-owned geometry, routing is rebuilt with those regions excluded from relay workspace, and every proxy is replaced by the exact opaque device connector before D1/exact validation and opaque-aware serialization. Contradictory fixed-signal and wire-color constraints reject deterministically. Rigid providers currently remain at their declared geometry during this compiler path; D2 automatic origin search is not yet invoked.
+3. **E3 — mixed integration benchmark [complete].** `examples/oracle_provider_mixed_probe.py` compiles one program containing ordinary scalar arithmetic, a freely placeable constant-oracle helper, a symbolically anchored constant-oracle endpoint at `(-12.5, -4.5)`, and the real 25-entity `AssemblerDevice` as a rigid provider component. A deterministic `recipe` vector is bound to the device's GREEN `recipe` port and the device's RED `ingredients` output realizes a vector oracle. The acceptance test checks all 25 opaque members, exact assembler/requester geometry, exact anchored-provider placement, ordinary arithmetic coexistence, required GREEN/RED net colors and connector ids, absence of E2 proxies, preserved assembler control payload, and one serialized Factorio blueprint.
 
-The durable E2 construction/validation contract is documented in `provider-composition.md`.
+E3 also exposed one feasibility gap: an explicit world anchor can lie outside the finite relay lattice used by the incremental joint annealer. Annealed vector synthesis now treats a retryable joint-bootstrap failure as an optimization failure and falls back to the ordinary constructive router on the same exact anchored placement seed. The constructive path searches world-space half-tile relay positions, preserves the anchor, and still validates the conservative external wire span. A small distant-anchor regression remains in routine CI; optimizing such off-lattice relay corridors inside the joint annealer remains optional future work.
+
+### E automated evidence
+
+The complete mixed E3 scenario passed once in the ordinary suite before being moved to the existing opt-in `acceptance` tier:
+
+```text
+581 passed, 33 skipped, 16 deselected in 124.92 s
+Ruff lint: clean
+Ruff format: 359 files already formatted
+mypy: Success: no issues found in 139 source files
+```
+
+The durable E2/E3 construction and fallback contract is documented in `provider-composition.md`.
 
 ### E acceptance
 
-- One compiler run can jointly realize ordinary logic, freely placeable provider helpers, anchored sensors, and rigid device components.
-- The final serialized layout validates exact pins, anchors, footprints, and wires.
+All E acceptance requirements are satisfied:
+
+- one compiler run jointly realizes ordinary logic, freely placeable provider helpers, an exact symbolic world anchor, and a real rigid reusable device component;
+- typed device ports constrain the same abstract net-color/signal allocation used by ordinary compiler logic;
+- final routing is performed before opaque serialization, with exact device endpoints restored and construction proxies removed;
+- the serialized layout preserves component geometry, fixed anchors, conservative external wire reach, and opaque Factorio payloads;
+- failure of an optional joint-annealing bootstrap no longer prevents a valid anchored constructive realization.
 
 ## Milestone F — Useful peripheral set
+
+**Status: current.**
 
 **Goal:** expand devices in an order that exercises new compiler capabilities.
 
@@ -302,20 +322,12 @@ A. layout reliability corpus [complete]
     -> B. annealer observability [complete]
     -> C. annealing v2 / multilevel placement [complete]
     -> D. physical ABI placement integration [complete]
-    -> E1. typed provider physical products [complete]
-    -> E2. unified pre-placement composition [complete]
-    -> E3. mixed integration benchmark [current]
-```
-
-Then:
-
-```text
-E. oracle/device/layout unification
-    -> F. additional useful peripherals
+    -> E. oracle/device/layout unification [complete]
+    -> F. useful peripheral set [current]
 ```
 
 Milestone G should begin as soon as a small useful random-program generator exists and then grow continuously. H is optional optimization beyond the accepted C baseline and can proceed when a concrete application justifies it. I becomes especially valuable as D/E introduce richer rigid components and more serialized physical contracts.
 
 ## Current step
 
-Proceed with **E3 — mixed integration benchmark**. Compile one artifact that exercises ordinary logic, a freely placeable provider helper, an anchored provider entity resolved through `physical_anchors`, and a rigid reusable provider component together. Validate the exact serialized pins, component geometry, red/green connectivity, fixed scalar identities where applicable, and opaque device payloads. Keep the benchmark small enough for routine CI unless its physical layout cost proves otherwise.
+Proceed with **F1 — programmable speaker output**. Define a typed external-device protocol for alert/alarm playback that is small enough to compose through the completed E boundary, preserve exact speaker control payloads through opaque serialization, and use the implementation as the first Milestone F integration probe.
