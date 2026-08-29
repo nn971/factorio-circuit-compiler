@@ -19,7 +19,9 @@ from factorio_circuit.synthesis.blueprint_component import (
     import_blueprint_layout,
 )
 from factorio_circuit.synthesis.component_geometry import ComponentAccessPoint, ComponentRegion
-from factorio_circuit.synthesis.imported_component_geometry import imported_layout_as_rigid_component
+from factorio_circuit.synthesis.imported_component_geometry import (
+    imported_layout_as_rigid_component,
+)
 from factorio_circuit.synthesis.placement import Position
 
 if TYPE_CHECKING:
