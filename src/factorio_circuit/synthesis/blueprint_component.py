@@ -113,6 +113,7 @@ def import_blueprint_layout(
         preserved.pop("position", None)
         preserved.pop("name", None)
         position = (float(x), float(y))
+        entity: OpaqueSingleConnectorEntity | OpaqueDualConnectorEntity
         if spec.connector_shape is BlueprintConnectorShape.SINGLE:
             entity = OpaqueSingleConnectorEntity(
                 entity_id,
