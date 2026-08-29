@@ -13,6 +13,7 @@ from factorio_circuit.blueprint.opaque_layout_encode import (
     encode_layout_blueprint_string_with_opaque,
     layout_to_blueprint_json_with_opaque,
 )
+from factorio_circuit.blueprint.routing import VANILLA_COMBINATOR_WIRE_REACH
 from factorio_circuit.devices import AssemblerDevice
 from factorio_circuit.ir.physical import (
     Connector,
@@ -74,11 +75,12 @@ ASSEMBLER_PROTOTYPE_SPECS = {
 
 
 def _routing_lattice() -> LegalPlacementLattice:
-    # Half-tile coverage deliberately spans both the original device and both distant D3 anchors.
+    # Keep the benchmark workspace bounded to the real device/anchor neighborhood. D3 constructs
+    # its own deterministic interface corridors; this lattice is only the residual relay workspace.
     sites = tuple(
         (x_steps / 2.0, y_steps / 2.0)
-        for y_steps in range(-12, 49)
-        for x_steps in range(-40, 141)
+        for y_steps in range(0, 41)
+        for x_steps in range(-34, 127)
     )
     return LegalPlacementLattice(unit_sites=sites, wide_sites=sites)
 
@@ -149,7 +151,10 @@ def build_assembler_physical_abi_problem() -> ComponentLayoutOptimizationProblem
     base_problem = LayoutOptimizationProblem(
         layout,
         _routing_lattice(),
-        safe_wire_span=7.0,
+        # The imported assembler is an already-materialized Factorio blueprint and contains one
+        # legitimate 8.322-tile device-internal circuit span. Validate/reroute it against the actual
+        # vanilla 9-tile envelope instead of the compiler's conservative 7-tile construction default.
+        safe_wire_span=VANILLA_COMBINATOR_WIRE_REACH,
     )
     component = imported_layout_as_rigid_component(
         imported,
