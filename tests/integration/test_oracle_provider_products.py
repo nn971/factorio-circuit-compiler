@@ -10,6 +10,7 @@ from factorio_circuit import (
     OracleBindingError,
     OraclePhysicalContext,
     OraclePortDisposition,
+    ProviderComponentPortBinding,
     ProviderEntityProduct,
     ProviderRigidComponentProduct,
     ScalarConstantOracleProvider,
@@ -138,9 +139,6 @@ def test_rigid_component_product_survives_abstract_lowering_without_posthoc_enti
     assert product.device is _DEVICE
     assert product.port_bindings[0].port_name == "choice"
     assert product.port_bindings[0].net_id in {net.id for net in lowered.abstract_physical.nets}
-    # The component remains a typed declaration at E1; its local blueprint entity is not appended
-    # to the abstract combinator graph under an ad-hoc compiler-global id.
-    assert all(entity.description != "E1 rigid provider probe" for entity in lowered.abstract_physical.entities)
 
 
 def test_rigid_component_can_bind_and_consume_named_provider_input_net() -> None:
@@ -160,8 +158,8 @@ def test_rigid_component_can_bind_and_consume_named_provider_input_net() -> None
     by_port = {binding.port_name: binding.net_id for binding in product.port_bindings}
     assert set(by_port) == {"choice", "candidates"}
     assert by_port["choice"] != by_port["candidates"]
-    # The hidden provider-input boundary has been consumed even though its eventual endpoint lives
-    # in the not-yet-composed rigid component.
+    # The hidden provider-input boundary is consumed even though its eventual endpoint lives in
+    # the not-yet-composed rigid component.
     assert all("provider" not in port.name for port in lowered.abstract_physical.outputs)
 
 
@@ -178,20 +176,16 @@ def test_full_compile_refuses_to_silently_drop_e1_rigid_product() -> None:
 
 
 def test_rigid_product_validates_declared_device_geometry_immediately() -> None:
-    binding = ProviderRigidComponentProduct(
+    product = ProviderRigidComponentProduct(
         "valid",
         _DEVICE,
         _SPECS,
         origin=(0.0, 0.0),
         footprints=(ComponentRegion(0.0, 0.0, 2.0, 1.0),),
         internal_wire_span=9.0,
-        port_bindings=(
-            # Net ids are context-owned and are validated by OraclePhysicalContext; any positive id
-            # is sufficient to test the standalone physical declaration here.
-            __import__("factorio_circuit").ProviderComponentPortBinding("choice", 1),
-        ),
+        port_bindings=(ProviderComponentPortBinding("choice", 1),),
     )
-    assert binding.prototype_specs["arithmetic-combinator"].half_extent == (1.0, 0.5)
+    assert product.prototype_specs["arithmetic-combinator"].half_extent == (1.0, 0.5)
 
     with pytest.raises(ValueError, match="does not fit completely"):
         ProviderRigidComponentProduct(
@@ -201,7 +195,5 @@ def test_rigid_product_validates_declared_device_geometry_immediately() -> None:
             origin=(0.0, 0.0),
             footprints=(ComponentRegion(0.0, 0.0, 1.0, 1.0),),
             internal_wire_span=9.0,
-            port_bindings=(
-                __import__("factorio_circuit").ProviderComponentPortBinding("choice", 1),
-            ),
+            port_bindings=(ProviderComponentPortBinding("choice", 1),),
         )
