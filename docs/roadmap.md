@@ -150,13 +150,13 @@ The detailed historical acceptance and results documents retain the benchmark de
 
 ## Milestone D — Physical ABI completion and placement integration
 
-**Status: implementation complete; one manual in-game D4 smoke check remains.**
+**Status: complete.**
 
 **Goal:** finish the reusable physical-module boundary and make layout consume component geometry and interface constraints directly.
 
 ### What landed
 
-Milestone D now has a complete generic implementation path:
+Milestone D has a complete generic implementation path:
 
 1. **D1 — authoritative component geometry constraints.** `RigidComponentConstraint` makes owned footprints, keepouts, reserved adapter regions, legal poses, and named boundary access points part of the physical optimization problem. Component members are validated against the same exact layout boundary used by placement and routing.
 2. **D2 — rigid macro participation.** Multi-entity components can translate as one rigid body through a transactional move that discards the old relay scaffold, reroutes from scratch, exact-validates the candidate, and returns the original problem unchanged on failure. A bounded coordinate-descent driver can evaluate finite declared origins without breaking rigid geometry.
@@ -169,7 +169,7 @@ The imported assembler contains one legitimate 8.322-tile device-internal circui
 
 ### D4 automated evidence
 
-The end-to-end D4 acceptance scenario has passed with the ordinary suite enabled:
+The end-to-end D4 acceptance scenario passed with the ordinary suite enabled:
 
 ```text
 567 passed, 33 skipped, 15 deselected
@@ -188,37 +188,41 @@ It checks:
 
 The scenario is marked `acceptance` after this full pass so the heavyweight path remains opt-in. Routine CI continues to run the generic importer/geometry regressions and the final D4 head passed pytest, Ruff lint, Ruff format, and strict mypy.
 
+### D4 in-game acceptance
+
+The exact generated D4 probe was imported into Factorio and exercised manually. It behaved as designed:
+
+- the complete assembler/device body remained rigid after translation;
+- the distant green `recipe` interface changed the assembler recipe;
+- the distant red `ingredients` interface reported the corresponding sanitized ingredient vector;
+- the routed external seams were intact and usable in the real game.
+
+The probe deliberately does not expose `enable` or `requester_demand`, so actual crafting is not part of D4 acceptance. The observed recipe/ingredient behavior is the intended end-to-end electrical smoke test.
+
 ### D acceptance
 
-The automated engineering requirements are satisfied:
+All D acceptance requirements are satisfied:
 
 - a rigid multi-entity component participates in final placement/routing without losing internal geometry;
 - hard component-owned, keepout, and adapter regions are enforced by the physical feasibility boundary;
 - distant explicit public anchors receive validated relay workspace before routing;
-- a real reusable device passes an end-to-end serialized integration test with exact payload preservation.
-
-The only remaining D checklist item is the literal in-game smoke check requested by the D4 sequence. This roadmap does not claim that the newly generated D4 artifact has been imported into Factorio yet. Generate it with:
-
-```bash
-uv run python examples/assembler_physical_abi_probe.py
-```
-
-Once that artifact imports with the expected rigid assembler/device body and external routed seams intact, Milestone D can be marked fully complete without further D implementation work.
+- a real reusable device passes an end-to-end serialized integration test with exact payload preservation;
+- the resulting serialized artifact has been imported and exercised successfully in Factorio.
 
 ## Milestone E — Oracle/device/layout unification
 
-**Status: next implementation target.**
+**Status: current.**
 
 **Goal:** let oracle providers and reusable external components participate in one physical composition story.
 
 The oracle provider insertion point already runs before signal allocation, wire-color assignment, placement, and routing. Extend the boundary so providers can materialize reusable physical components or ABI seams where appropriate while retaining existing per-entity free/anchored placement for simple providers.
 
-Standalone device generation should remain useful for manual probes; compiler integration should reuse the same typed boundary rather than inventing a second device protocol.
+Standalone device generation remains useful for manual probes; compiler integration reuses the same typed device and D1-D3 physical contracts rather than inventing a second device protocol.
 
-### Suggested E implementation sequence
+### E implementation sequence
 
-1. **E1 — typed provider physical products.** Extend the provider result boundary so a provider can contribute ordinary freely-placeable helper entities, anchored terminals, or one reusable rigid component without encoding those cases as ad-hoc post-synthesis edits.
-2. **E2 — unified pre-placement composition.** Combine provider products, compiled ordinary logic, and reusable device/component constraints into one physical optimization problem before final placement/routing.
+1. **E1 — typed provider physical products [complete].** Provider materialization now records ordinary helper entities as typed products and can carry a validated `ProviderRigidComponentProduct` containing an `ExternalDeviceBlueprint`, explicit prototype geometry, D1 regions/access points/legal origins, internal wire envelope, and device-port-to-abstract-net bindings. Binding helpers validate direction, Level modality, and scalar/vector shape. `lower_to_abstract_physical(...)` exposes the complete product set. Until E2 consumes rigid products, full `compile()` rejects them explicitly rather than silently omitting them.
+2. **E2 — unified pre-placement composition [current].** Combine provider products, compiled ordinary logic, and reusable device/component constraints into one physical optimization problem before final placement/routing. Rebase component-local ids, preserve abstract net identities through signal/color assignment, materialize typed device-port bindings, and feed the combined geometry through the D1-D3 physical boundary.
 3. **E3 — mixed integration benchmark.** Compile one small program that simultaneously uses ordinary logic, a freely placeable provider helper, an anchored sensor/provider endpoint, and a rigid reusable device. Require one exact serialized artifact and validate its pins, component geometry, and electrical connectivity.
 
 ### E acceptance
@@ -295,8 +299,8 @@ The immediate sequence is now:
 A. layout reliability corpus [complete]
     -> B. annealer observability [complete]
     -> C. annealing v2 / multilevel placement [complete]
-    -> D. physical ABI placement integration [implementation complete; in-game smoke pending]
-    -> E. oracle/device/layout unification [next]
+    -> D. physical ABI placement integration [complete]
+    -> E. oracle/device/layout unification [current]
 ```
 
 Then:
@@ -310,4 +314,4 @@ Milestone G should begin as soon as a small useful random-program generator exis
 
 ## Current step
 
-Run the D4 assembler physical-ABI probe once in Factorio to close the manual smoke-check item. No further D implementation work is currently planned. In parallel, begin **E1 — typed provider physical products** by inspecting the existing oracle-provider result boundary and teaching it to carry reusable rigid components through the same pre-placement physical composition path used by D.
+Proceed with **E2 — unified pre-placement composition**. Preserve abstract provider net identities through concrete signal and wire-color decisions, rebase validated rigid-provider components into the compiler-wide physical id space, attach typed device ports before placement, and run the combined artifact through the same D1-D3 geometry/routing contracts. Do not append provider devices to a finished layout.

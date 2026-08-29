@@ -112,10 +112,43 @@ placement does not: every `ANCHORED` entity must have a coordinate before placem
 Low-level entity-id anchors in `PlacementOptions.anchors` may coexist with symbolic anchors only when
 they resolve to the same position.
 
-Placement is attached per physical entity rather than per oracle provider. A future multi-entity
-provider can therefore anchor only its world-facing sensor while leaving helper combinators free for
-the net-aware placer to optimize around the fixed site. This is the intended model for assemblers,
-roboports, train stops, and larger generated devices.
+Placement is attached per physical entity rather than per oracle provider. A multi-entity provider
+may therefore anchor only its world-facing sensor while leaving helper combinators free for the
+ordinary placer to optimize around the fixed site.
+
+## Typed provider physical products
+
+Milestone E1 makes provider materialization an explicit typed boundary. Provider-created ordinary
+entities still enter `AbstractPhysicalCircuit` exactly as before, but each is also recorded as a
+`ProviderEntityProduct` carrying its placement contract. `lower_to_abstract_physical(...)` returns
+all such products in `provider_materialization`.
+
+A provider may instead declare one reusable rigid device as a `ProviderRigidComponentProduct`. The
+product carries:
+
+- the existing `ExternalDeviceBlueprint` and its typed ports;
+- explicit caller-supplied prototype collision geometry;
+- D1 footprint, keepout, adapter-region, access-point, and legal-origin contracts;
+- the known-valid internal circuit-wire reach of the imported component;
+- bindings from named device ports to abstract physical net ids.
+
+The declaration is validated immediately through the same blueprint importer and rigid-geometry
+bridge used by the D4 assembler benchmark. Source collision boxes must fit the declared component
+geometry, declared internal wires must fit the component's wire envelope, bound ports must exist,
+and the provider context checks port direction, scalar/vector payload shape, and Level modality.
+
+Two context helpers construct the electrical bindings without inventing temporary component
+entities in the abstract graph:
+
+- `component_output_binding(device, port_name)` binds a compatible device output to the oracle net;
+- `component_input_binding(name, device, port_name)` consumes a named deterministic provider-input
+  tap and binds that net to a compatible device input.
+
+Signal allocation, final red/green realization, component-local entity-id rebasing, placement, and
+routing remain later physical decisions. E1 therefore does **not** append a rigid component after
+synthesis. Until E2 performs unified pre-placement composition, full `compile()` rejects a rigid
+provider product explicitly rather than silently generating a blueprint that omits it. The stable
+inspection point for E1 products is `lower_to_abstract_physical(...)`.
 
 ## Deterministic provider inputs
 
@@ -137,7 +170,9 @@ provider, and removes the temporary marker before final signal allocation/layout
 
 A provider retrieves and consumes the net through `OraclePhysicalContext.consume_input(...)`. This
 allows one provider to have several named deterministic inputs without baking those inputs into the
-meaning of `Oracle` itself.
+meaning of `Oracle` itself. Rigid providers use `component_input_binding(...)` for the same hidden
+net when the eventual consumer is a reusable-device port rather than an abstract combinator
+endpoint.
 
 The built-in `RandomSignalOracleProvider` consumes a whole-vector `candidates` input and inserts a
 freely placeable selector combinator configured for Random Input mode:
