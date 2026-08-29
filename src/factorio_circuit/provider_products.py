@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from math import hypot
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from factorio_circuit.synthesis.blueprint_component import (
@@ -22,6 +24,8 @@ from factorio_circuit.synthesis.placement import Position
 
 if TYPE_CHECKING:
     from factorio_circuit.devices.protocol import ExternalDeviceBlueprint
+
+_EPSILON = 1e-9
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,15 +87,25 @@ class ProviderRigidComponentProduct:
                     f"provider rigid component binds unknown device port {binding.port_name!r}"
                 ) from exc
 
-        # Freeze a caller-owned mutable mapping and establish the full D4 import/geometry invariant
-        # at declaration time. E2 may safely rebase ids and translate this already-validated body.
-        specs = dict(self.prototype_specs)
+        # Detach caller-owned mutable state and establish the full D4 import/geometry invariant at
+        # declaration time. E2 may safely rebase ids and translate this validated body.
+        specs = MappingProxyType(dict(self.prototype_specs))
         object.__setattr__(self, "prototype_specs", specs)
         imported = import_blueprint_layout(
             self.device.blueprint,
             prototype_specs=specs,
             name=self.name,
         )
+        for wire in imported.layout.wires:
+            left = imported.layout.positions[wire.source_entity]
+            right = imported.layout.positions[wire.target_entity]
+            distance = hypot(left[0] - right[0], left[1] - right[1])
+            if distance > self.internal_wire_span + _EPSILON:
+                raise ValueError(
+                    f"provider rigid component wire {wire.source_entity}->{wire.target_entity} "
+                    f"spans {distance:.3f}, exceeding internal_wire_span "
+                    f"{self.internal_wire_span:.3f}"
+                )
         imported_layout_as_rigid_component(
             imported,
             self.name,
