@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
+from factorio_circuit.devices.protocol import DevicePortDirection, ExternalDeviceBlueprint
 from factorio_circuit.ir.abstract_physical import (
     AbstractEntity,
     AbstractNet,
@@ -35,6 +36,10 @@ from factorio_circuit.ir.oracle import (
 )
 from factorio_circuit.ir.physical import SignalId
 from factorio_circuit.ir.semantic import CircuitModule
+from factorio_circuit.provider_products import (
+    ProviderComponentPortBinding,
+    ProviderRigidComponentProduct,
+)
 
 
 class OracleBindingError(ValueError):
@@ -69,6 +74,34 @@ FREE_PLACEMENT = FreePlacement()
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderEntityProduct:
+    """One abstract provider entity together with its explicit placement contract."""
+
+    entity_id: int
+    placement: ProviderPlacement
+
+
+ProviderPhysicalProduct = ProviderEntityProduct | ProviderRigidComponentProduct
+
+
+@dataclass(frozen=True, slots=True)
+class OracleProviderMaterialization:
+    """Typed physical products emitted by all providers during abstract lowering."""
+
+    products: tuple[ProviderPhysicalProduct, ...] = ()
+
+    @property
+    def entity_products(self) -> tuple[ProviderEntityProduct, ...]:
+        return tuple(product for product in self.products if isinstance(product, ProviderEntityProduct))
+
+    @property
+    def rigid_components(self) -> tuple[ProviderRigidComponentProduct, ...]:
+        return tuple(
+            product for product in self.products if isinstance(product, ProviderRigidComponentProduct)
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class OracleProviderInput:
     """One deterministic physical net exposed as an input to an oracle provider."""
 
@@ -83,9 +116,8 @@ class OraclePhysicalContext:
     """Mutable, target-level context exposed to an oracle provider.
 
     Providers operate on an already-lowered :class:`AbstractPhysicalCircuit`, but before physical
-    synthesis. Entity ids, oracle-net edits, provider-input taps, and placement constraints
-    therefore
-    participate in the ordinary joint synthesis/layout pass.
+    synthesis. Entity ids, oracle-net edits, provider-input taps, placement constraints, and typed
+    reusable-component products therefore all cross one authoritative provider boundary.
     """
 
     circuit: AbstractPhysicalCircuit
@@ -94,6 +126,7 @@ class OraclePhysicalContext:
     net_id: int
     _next_entity_id: int
     _consumed_provider_inputs: set[str]
+    _products: list[ProviderPhysicalProduct]
 
     @property
     def is_vector(self) -> bool:
@@ -109,6 +142,10 @@ class OraclePhysicalContext:
     def net(self) -> AbstractNet:
         return self.circuit.net_by_id(self.net_id)
 
+    @property
+    def products(self) -> tuple[ProviderPhysicalProduct, ...]:
+        return tuple(self._products)
+
     def new_entity_id(self) -> int:
         entity_id = self._next_entity_id
         self._next_entity_id += 1
@@ -119,8 +156,8 @@ class OraclePhysicalContext:
         entity: AbstractEntity,
         *,
         placement: ProviderPlacement = FREE_PLACEMENT,
-    ) -> None:
-        """Add one provider entity plus its physical placement contract."""
+    ) -> ProviderEntityProduct:
+        """Add one provider entity and record its typed physical product."""
 
         if not isinstance(placement, (FreePlacement, AnchoredPlacement)):
             raise OracleBindingError(
@@ -136,6 +173,9 @@ class OraclePhysicalContext:
         else:
             constraint = EntityPlacementConstraint(entity=entity.id)
         self.circuit.placement_constraints.append(constraint)
+        product = ProviderEntityProduct(entity.id, placement)
+        self._products.append(product)
+        return product
 
     def attach(self, endpoint: Endpoint) -> None:
         """Attach a provider endpoint to the oracle's output net."""
@@ -174,6 +214,74 @@ class OraclePhysicalContext:
             self._replace_net(replace(net, endpoints=(*net.endpoints, endpoint)))
         self._consumed_provider_inputs.add(provider_input_port_name(self.source.name, name))
         return provider_input
+
+    def component_output_binding(
+        self,
+        device: ExternalDeviceBlueprint,
+        port_name: str,
+    ) -> ProviderComponentPortBinding:
+        """Bind one device output port to this oracle's observed output net."""
+
+        try:
+            port = device.port(port_name)
+        except KeyError as exc:
+            raise OracleBindingError(f"device has no port {port_name!r}") from exc
+        if port.spec.direction is not DevicePortDirection.OUTPUT:
+            raise OracleBindingError(
+                f"device port {port_name!r} must be an output to provide oracle {self.source.name!r}"
+            )
+        return ProviderComponentPortBinding(port_name, self.net_id)
+
+    def component_input_binding(
+        self,
+        name: str,
+        device: ExternalDeviceBlueprint,
+        port_name: str,
+    ) -> ProviderComponentPortBinding:
+        """Consume one deterministic provider-input tap as a reusable-device input binding."""
+
+        try:
+            port = device.port(port_name)
+        except KeyError as exc:
+            raise OracleBindingError(f"device has no port {port_name!r}") from exc
+        if port.spec.direction is not DevicePortDirection.INPUT:
+            raise OracleBindingError(
+                f"device port {port_name!r} must be an input for provider input {name!r}"
+            )
+        provider_input = self.provider_input(name)
+        self._consumed_provider_inputs.add(provider_input_port_name(self.source.name, name))
+        return ProviderComponentPortBinding(port_name, provider_input.net_id)
+
+    def add_rigid_component(
+        self,
+        product: ProviderRigidComponentProduct,
+    ) -> ProviderRigidComponentProduct:
+        """Record one validated reusable rigid component for later E2 composition."""
+
+        if not isinstance(product, ProviderRigidComponentProduct):
+            raise OracleBindingError("provider rigid component product has an invalid type")
+        if any(isinstance(existing, ProviderRigidComponentProduct) for existing in self._products):
+            raise OracleBindingError(
+                f"oracle provider {self.source.name!r} may declare at most one rigid component"
+            )
+        net_ids = {net.id for net in self.circuit.nets}
+        for binding in product.port_bindings:
+            if binding.net_id not in net_ids:
+                raise OracleBindingError(
+                    f"provider component {product.name!r} binds unknown abstract net {binding.net_id}"
+                )
+        provides_oracle = any(
+            binding.net_id == self.net_id
+            and product.device.port(binding.port_name).spec.direction is DevicePortDirection.OUTPUT
+            for binding in product.port_bindings
+        )
+        if not provides_oracle:
+            raise OracleBindingError(
+                f"provider component {product.name!r} does not bind an output port to oracle "
+                f"{self.source.name!r}"
+            )
+        self._products.append(product)
+        return product
 
     def add_fixed_signals(self, *signals: SignalId) -> None:
         """Declare concrete signal lanes additionally carried by a vector provider."""
@@ -377,17 +485,18 @@ def materialize_oracle_providers(
     module: CircuitModule,
     circuit: AbstractPhysicalCircuit,
     providers: Mapping[str, OracleProvider] | None,
-) -> None:
-    """Bind all semantic oracles into the abstract physical graph in place."""
+) -> OracleProviderMaterialization:
+    """Bind semantic oracles and return the complete typed provider product set."""
 
     bindings = validate_oracle_provider_bindings(module, providers)
     if not bindings:
-        return
+        return OracleProviderMaterialization()
 
     ports = {port.name: port for port in circuit.inputs}
     next_entity_id = max((entity.id for entity in circuit.entities), default=0) + 1
     consumed_oracle_ports: list[InputPort] = []
     consumed_provider_inputs: set[str] = set()
+    products: list[ProviderPhysicalProduct] = []
 
     for source in oracle_sources(module):
         try:
@@ -408,6 +517,7 @@ def materialize_oracle_providers(
             net_id=matching_nets[0].id,
             _next_entity_id=next_entity_id,
             _consumed_provider_inputs=consumed_provider_inputs,
+            _products=[],
         )
         disposition = bindings[source.name].materialize(context)
         next_entity_id = context._next_entity_id
@@ -415,6 +525,7 @@ def materialize_oracle_providers(
             raise OracleBindingError(
                 f"provider for oracle {source.name!r} returned an invalid port disposition"
             )
+        products.extend(context.products)
         if disposition is OraclePortDisposition.CONSUMED:
             consumed_oracle_ports.append(port)
 
@@ -441,3 +552,4 @@ def materialize_oracle_providers(
             _remove_annotation_marker(circuit, hidden_port.endpoint.entity)
 
     circuit.validate()
+    return OracleProviderMaterialization(tuple(products))
