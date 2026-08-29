@@ -15,12 +15,20 @@ from factorio_circuit.blueprint.layout_encode import (
     encode_layout_blueprint_string,
     layout_to_blueprint_json,
 )
+from factorio_circuit.blueprint.opaque_layout_encode import (
+    encode_layout_blueprint_string_with_opaque,
+    layout_to_blueprint_json_with_opaque,
+)
 from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
 from factorio_circuit.frontend.symbolic import Circuit
 from factorio_circuit.ir.abstract_physical import AbstractPhysicalCircuit
 from factorio_circuit.ir.oracle import oracle_sources
 from factorio_circuit.ir.output import preserve_output_materializations
-from factorio_circuit.ir.physical import PhysicalCircuit
+from factorio_circuit.ir.physical import (
+    OpaqueDualConnectorEntity,
+    OpaqueSingleConnectorEntity,
+    PhysicalCircuit,
+)
 from factorio_circuit.ir.semantic import (
     CircuitModule,
     ReturnValue,
@@ -45,6 +53,7 @@ from factorio_circuit.sampling import SamplingPolicy
 from factorio_circuit.synthesis.layout import Layout
 from factorio_circuit.synthesis.open_vector import synthesize_vector_layout
 from factorio_circuit.synthesis.placement import PlacementOptions, Position
+from factorio_circuit.synthesis.provider_composition import synthesize_provider_component_layout
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,8 +121,19 @@ def _synthesize(
     safe_wire_span: float,
     placement: PlacementOptions | None,
     physical_anchors: Mapping[str, Position] | None,
+    provider_materialization: OracleProviderMaterialization,
     progress: ProgressCallback | None,
 ) -> Layout:
+    rigid = provider_materialization.rigid_components
+    if rigid:
+        return synthesize_provider_component_layout(
+            circuit,
+            rigid,
+            safe_wire_span=safe_wire_span,
+            placement=placement,
+            anchor_positions=physical_anchors,
+            progress=progress,
+        )
     return synthesize_vector_layout(
         circuit,
         safe_wire_span=safe_wire_span,
@@ -140,7 +160,8 @@ def lower_to_abstract_physical(
     Semantic oracles require exact physical-provider coverage. Providers are materialized before
     this function returns. Ordinary provider entities are inserted into the abstract graph and all
     provider contributions are also returned as typed physical products. Rigid reusable components
-    deliberately remain declarations at E1; E2 will compose them into the final physical problem.
+    remain typed declarations here and are consumed by unified physical composition during full
+    compilation.
 
     ``sampling_policy`` controls when phase-zero external Level inputs and oracles are physically
     observed inside one logical occurrence. The compatibility default snapshots them at the
@@ -232,14 +253,14 @@ def compile_circuit(
     remain disabled until those transforms carry explicit clock proofs.
 
     Oracle providers are target-side bindings: they are absent from deterministic semantic
-    evaluation and are inserted into the abstract physical graph before joint physical synthesis.
+    evaluation and are inserted before final physical synthesis. Ordinary provider helpers remain in
+    the abstract graph. Reusable rigid products are imported, rebased, placed as authoritative D1
+    geometry, connected to their abstract nets, and fresh-routed with ordinary logic in the same E2
+    composition path before the mixed blueprint is serialized.
+
     ``physical_anchors`` resolves symbolic placement sites declared by providers. Abstract lowering
     may leave those sites unresolved, but final placement requires a coordinate for every anchored
     entity.
-
-    E1 can also return typed reusable rigid-component products. Full compilation rejects such a
-    declaration explicitly until E2 composes it into the same physical optimization problem; it is
-    never silently omitted from a generated blueprint.
 
     ``sampling_policy`` is a target-side observation policy. ``BEGINNING_OF_STEP`` preserves the
     historical snapshot behavior. ``ALAP`` lets every phase-zero external Level input/oracle remain
@@ -257,20 +278,12 @@ def compile_circuit(
         oracle_providers=oracle_providers,
         sampling_policy=sampling_policy,
     )
-    if lowered.provider_materialization.rigid_components:
-        names = ", ".join(
-            repr(component.name) for component in lowered.provider_materialization.rigid_components
-        )
-        raise OracleBindingError(
-            "rigid oracle provider component product(s) require E2 unified physical composition: "
-            + names
-        )
-
     layout = _synthesize(
         lowered.abstract_physical,
         safe_wire_span=blueprint_safe_wire_span,
         placement=placement,
         physical_anchors=physical_anchors,
+        provider_materialization=lowered.provider_materialization,
         progress=progress,
     )
 
@@ -290,7 +303,7 @@ def compile_circuit(
             state_timing=lowered.state_timing,
             sampling_policy=sampling_policy,
         )
-        materialize_oracle_providers(
+        naive_materialization = materialize_oracle_providers(
             lowered.optimized_ir,
             naive_abstract,
             validate_oracle_provider_bindings(lowered.optimized_ir, oracle_providers),
@@ -300,14 +313,23 @@ def compile_circuit(
             safe_wire_span=blueprint_safe_wire_span,
             placement=placement,
             physical_anchors=physical_anchors,
+            provider_materialization=naive_materialization,
             progress=progress,
         ).circuit
     else:
         naive_physical = layout.circuit
 
     report_progress(progress, "blueprint", detail="encoding final Factorio blueprint")
-    blueprint_json = layout_to_blueprint_json(layout)
-    blueprint_string = encode_layout_blueprint_string(layout)
+    has_opaque = any(
+        isinstance(entity, (OpaqueSingleConnectorEntity, OpaqueDualConnectorEntity))
+        for entity in layout.circuit.entities
+    )
+    if has_opaque:
+        blueprint_json = layout_to_blueprint_json_with_opaque(layout)
+        blueprint_string = encode_layout_blueprint_string_with_opaque(layout)
+    else:
+        blueprint_json = layout_to_blueprint_json(layout)
+        blueprint_string = encode_layout_blueprint_string(layout)
     report_progress(progress, "done", completed=1, total=1, detail="compilation complete")
     return CompilationResult(
         semantic_ir=lowered.semantic_ir,

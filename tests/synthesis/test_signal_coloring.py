@@ -85,3 +85,44 @@ def test_abstract_lanes_sharing_one_carrier_must_use_distinct_signals() -> None:
     )
 
     assert allocation[1] != allocation[2]
+
+
+def test_fixed_signal_assignment_precolors_interference_graph() -> None:
+    circuit = AbstractPhysicalCircuit(
+        "fixed_signal_precolor",
+        signals=[AbstractSignal(1, "fixed"), AbstractSignal(2, "neighbor")],
+        nets=[AbstractNet(1, (1, 2), (), label="shared carrier")],
+    )
+    fixed = SignalId("virtual", "signal-fixed")
+    alternate = SignalId("virtual", "signal-alternate")
+
+    allocation = allocate_abstract_signals_dsat(
+        circuit,
+        {1: 1},
+        signal_pool=(fixed, alternate),
+        reserved=set(),
+        alias_roots={1: 1, 2: 2},
+        fixed_allocations={1: fixed},
+    )
+
+    assert allocation[1] == fixed
+    assert allocation[2] == alternate
+
+
+def test_conflicting_fixed_signal_assignments_are_rejected() -> None:
+    circuit = AbstractPhysicalCircuit(
+        "fixed_signal_conflict",
+        signals=[AbstractSignal(1, "left"), AbstractSignal(2, "right")],
+        nets=[AbstractNet(1, (1, 2), (), label="shared carrier")],
+    )
+    fixed = SignalId("virtual", "signal-fixed")
+
+    with pytest.raises(ValueError, match="fixed signal assignments"):
+        allocate_abstract_signals_dsat(
+            circuit,
+            {1: 1},
+            signal_pool=(fixed,),
+            reserved=set(),
+            alias_roots={1: 1, 2: 2},
+            fixed_allocations={1: fixed, 2: fixed},
+        )

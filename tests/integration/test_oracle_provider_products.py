@@ -234,18 +234,6 @@ def test_component_output_binding_rejects_event_port_for_level_oracle() -> None:
         )
 
 
-def test_full_compile_refuses_to_silently_drop_e1_rigid_product() -> None:
-    circuit = Circuit("e1_compile_guard")
-    choice = circuit.oracle_signals("choice")
-    circuit.output("choice", choice)
-
-    with pytest.raises(OracleBindingError, match="E2 unified physical composition"):
-        circuit.compile(
-            optimize=False,
-            oracle_providers={"choice": _RigidVectorProvider()},
-        )
-
-
 def test_rigid_product_validates_declared_device_geometry_immediately() -> None:
     product = ProviderRigidComponentProduct(
         "valid",

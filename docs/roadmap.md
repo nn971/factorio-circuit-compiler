@@ -215,15 +215,17 @@ All D acceptance requirements are satisfied:
 
 **Goal:** let oracle providers and reusable external components participate in one physical composition story.
 
-The oracle provider insertion point already runs before signal allocation, wire-color assignment, placement, and routing. Extend the boundary so providers can materialize reusable physical components or ABI seams where appropriate while retaining existing per-entity free/anchored placement for simple providers.
+The oracle provider insertion point runs before signal allocation, wire-color assignment, placement, and routing. Providers may now materialize ordinary free/anchored helper entities or validated reusable rigid components while using the same typed device and physical-layout contracts.
 
-Standalone device generation remains useful for manual probes; compiler integration reuses the same typed device and D1-D3 physical contracts rather than inventing a second device protocol.
+Standalone device generation remains useful for manual probes; compiler integration reuses the same device protocol and D1 physical component boundary rather than inventing a second device representation.
 
 ### E implementation sequence
 
-1. **E1 — typed provider physical products [complete].** Provider materialization now records ordinary helper entities as typed products and can carry a validated `ProviderRigidComponentProduct` containing an `ExternalDeviceBlueprint`, explicit prototype geometry, D1 regions/access points/legal origins, internal wire envelope, and device-port-to-abstract-net bindings. Binding helpers validate direction, Level modality, and scalar/vector shape. `lower_to_abstract_physical(...)` exposes the complete product set. Until E2 consumes rigid products, full `compile()` rejects them explicitly rather than silently omitting them.
-2. **E2 — unified pre-placement composition [current].** Combine provider products, compiled ordinary logic, and reusable device/component constraints into one physical optimization problem before final placement/routing. Rebase component-local ids, preserve abstract net identities through signal/color assignment, materialize typed device-port bindings, and feed the combined geometry through the D1-D3 physical boundary.
-3. **E3 — mixed integration benchmark.** Compile one small program that simultaneously uses ordinary logic, a freely placeable provider helper, an anchored sensor/provider endpoint, and a rigid reusable device. Require one exact serialized artifact and validate its pins, component geometry, and electrical connectivity.
+1. **E1 — typed provider physical products [complete].** Provider materialization records ordinary helper entities as typed products and can carry a validated `ProviderRigidComponentProduct` containing an `ExternalDeviceBlueprint`, explicit prototype geometry, D1 regions/access points/legal origins, internal wire envelope, and device-port-to-abstract-net bindings. Binding helpers validate direction, Level modality, and scalar/vector shape. `lower_to_abstract_physical(...)` exposes the complete product set.
+2. **E2 — unified pre-placement composition [complete].** Full `compile()` now consumes rigid provider products before final routing. Component-local ids are rebased into compiler-global ids; typed device ports constrain their bound abstract nets to the required red/green wire color; scalar device signals precolor the ordinary DSATUR interference allocator; and exact opaque entity extents remain authoritative. Temporary connector proxies participate only in placement/electrical construction, then ordinary implementation is legalized away from component-owned geometry, routing is rebuilt with those regions excluded from relay workspace, and every proxy is replaced by the exact opaque device connector before D1/exact validation and opaque-aware serialization. Contradictory fixed-signal and wire-color constraints reject deterministically. Rigid providers currently remain at their declared geometry during this compiler path; D2 automatic origin search is not yet invoked. The focused E2 suite is included in the ordinary gate, which reached `579 passed, 33 skipped, 16 deselected` before final documentation-only changes.
+3. **E3 — mixed integration benchmark [current].** Compile one small program that simultaneously uses ordinary logic, a freely placeable provider helper, an anchored sensor/provider endpoint, and a rigid reusable device. Require one exact serialized artifact and validate its pins, component geometry, electrical connectivity, and opaque payload preservation.
+
+The durable E2 construction/validation contract is documented in `provider-composition.md`.
 
 ### E acceptance
 
@@ -300,7 +302,9 @@ A. layout reliability corpus [complete]
     -> B. annealer observability [complete]
     -> C. annealing v2 / multilevel placement [complete]
     -> D. physical ABI placement integration [complete]
-    -> E. oracle/device/layout unification [current]
+    -> E1. typed provider physical products [complete]
+    -> E2. unified pre-placement composition [complete]
+    -> E3. mixed integration benchmark [current]
 ```
 
 Then:
@@ -314,4 +318,4 @@ Milestone G should begin as soon as a small useful random-program generator exis
 
 ## Current step
 
-Proceed with **E2 — unified pre-placement composition**. Preserve abstract provider net identities through concrete signal and wire-color decisions, rebase validated rigid-provider components into the compiler-wide physical id space, attach typed device ports before placement, and run the combined artifact through the same D1-D3 geometry/routing contracts. Do not append provider devices to a finished layout.
+Proceed with **E3 — mixed integration benchmark**. Compile one artifact that exercises ordinary logic, a freely placeable provider helper, an anchored provider entity resolved through `physical_anchors`, and a rigid reusable provider component together. Validate the exact serialized pins, component geometry, red/green connectivity, fixed scalar identities where applicable, and opaque device payloads. Keep the benchmark small enough for routine CI unless its physical layout cost proves otherwise.

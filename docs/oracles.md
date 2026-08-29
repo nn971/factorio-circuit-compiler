@@ -144,11 +144,24 @@ entities in the abstract graph:
 - `component_input_binding(name, device, port_name)` consumes a named deterministic provider-input
   tap and binds that net to a compatible device input.
 
-Signal allocation, final red/green realization, component-local entity-id rebasing, placement, and
-routing remain later physical decisions. E1 therefore does **not** append a rigid component after
-synthesis. Until E2 performs unified pre-placement composition, full `compile()` rejects a rigid
-provider product explicitly rather than silently generating a blueprint that omits it. The stable
-inspection point for E1 products is `lower_to_abstract_physical(...)`.
+Milestone E2 consumes these rigid products during full `compile()`. The composer rebases the imported
+device entities into compiler-global ids, constrains bound abstract nets to the device port's required
+wire color, and feeds scalar device signals into the shared DSATUR allocator as fixed/precolored
+abstract lanes. Temporary annotation proxies let the ordinary placement/routing machinery reason
+about component ports before opaque device entities are inserted; those proxies are discarded before
+the final `Layout` is validated or serialized.
+
+After ordinary implementation placement, compiler entities are legalized away from the component's
+footprint, keepouts, and reserved adapter regions. Routing is rebuilt with those regions excluded from
+relay workspace, then proxy endpoints are replaced by the exact opaque entity/connector ids and the
+component's imported internal wires are restored. The resulting mixed artifact is validated through
+the D1 component-geometry boundary and encoded with the opaque-aware serializer.
+
+Successful E2 compilation therefore validates the same mixed physical object that is serialized; it
+does not append a device to an already-routed blueprint. See `provider-composition.md` for the full
+composition sequence and current limitations. In particular, rigid providers currently remain at
+their declared geometry during full compilation; D2 automatic origin search is not yet invoked for
+provider components.
 
 ## Deterministic provider inputs
 
