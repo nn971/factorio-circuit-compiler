@@ -1,3 +1,5 @@
+import pytest
+
 from examples.assembler_physical_abi_probe import (
     INGREDIENTS_ANCHOR,
     INGREDIENTS_MARKER_ID,
@@ -27,6 +29,7 @@ def _source_positions() -> dict[int, tuple[float, float]]:
     }
 
 
+@pytest.mark.acceptance
 def test_real_assembler_device_passes_d1_d2_d3_and_serialization() -> None:
     initial = build_assembler_physical_abi_problem()
     validate_component_layout_problem(initial)
