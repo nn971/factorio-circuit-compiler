@@ -46,11 +46,14 @@ from .oracles import (
     OraclePhysicalContext,
     OraclePortDisposition,
     OracleProvider,
+    OracleProviderMaterialization,
+    ProviderEntityProduct,
     RandomSignalOracleProvider,
     ScalarConstantOracleProvider,
     VectorConstantOracleProvider,
 )
 from .progress import CompileProgress, ProgressCallback
+from .provider_products import ProviderComponentPortBinding, ProviderRigidComponentProduct
 from .sampling import SamplingPolicy
 from .simulate.clocked_events import simulate_events
 from .simulate.events import (
@@ -104,11 +107,15 @@ __all__ = [
     "OraclePhysicalContext",
     "OraclePortDisposition",
     "OracleProvider",
+    "OracleProviderMaterialization",
     "OutputMaterialization",
     "OutputMaterializationPolicy",
     "PlacementMetrics",
     "PlacementOptions",
     "ProgressCallback",
+    "ProviderComponentPortBinding",
+    "ProviderEntityProduct",
+    "ProviderRigidComponentProduct",
     "RandomSignalOracleProvider",
     "SamplingPolicy",
     "ScalarConstantOracleProvider",
