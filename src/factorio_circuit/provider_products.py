@@ -1,17 +1,17 @@
 """Typed physical products emitted by oracle providers before final placement.
 
-E1 deliberately stops short of composing rigid products into the final compiler layout.  The
+E1 deliberately stops short of composing rigid products into the final compiler layout. The
 important boundary is that providers can now describe reusable physical components explicitly,
 using the same device/geometry vocabulary established by Milestone D, instead of relying on
-post-synthesis edits.  E2 consumes these declarations during unified physical composition.
+post-synthesis edits. E2 consumes these declarations during unified physical composition.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from factorio_circuit.devices.protocol import ExternalDeviceBlueprint
 from factorio_circuit.synthesis.blueprint_component import (
     BlueprintEntityPhysicalSpec,
     import_blueprint_layout,
@@ -20,13 +20,16 @@ from factorio_circuit.synthesis.component_geometry import ComponentAccessPoint, 
 from factorio_circuit.synthesis.imported_component_geometry import imported_layout_as_rigid_component
 from factorio_circuit.synthesis.placement import Position
 
+if TYPE_CHECKING:
+    from factorio_circuit.devices.protocol import ExternalDeviceBlueprint
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderComponentPortBinding:
     """Bind one reusable-device port to an abstract physical net.
 
     The binding is intentionally expressed in net ids rather than concrete wire colors or signal
-    identities.  Those remain late physical decisions for the unified E2 composition pass.
+    identities. Those remain late physical decisions for the unified E2 composition pass.
     """
 
     port_name: str
@@ -43,9 +46,9 @@ class ProviderComponentPortBinding:
 class ProviderRigidComponentProduct:
     """One reusable rigid device contributed by an oracle provider.
 
-    Entity numbers inside ``device`` remain component-local at E1.  E2 is responsible for rebasing
+    Entity numbers inside ``device`` remain component-local at E1. E2 is responsible for rebasing
     them into the compiler-wide physical id space, connecting ``port_bindings``, and running D1-D3
-    placement/routing.  The declaration nevertheless validates its source blueprint and complete
+    placement/routing. The declaration nevertheless validates its source blueprint and complete
     prototype-aware rigid geometry immediately, so an invalid component cannot cross the provider
     boundary.
     """
@@ -81,7 +84,7 @@ class ProviderRigidComponentProduct:
                 ) from exc
 
         # Freeze a caller-owned mutable mapping and establish the full D4 import/geometry invariant
-        # at declaration time.  E2 may safely rebase ids and translate this already-validated body.
+        # at declaration time. E2 may safely rebase ids and translate this already-validated body.
         specs = dict(self.prototype_specs)
         object.__setattr__(self, "prototype_specs", specs)
         imported = import_blueprint_layout(
