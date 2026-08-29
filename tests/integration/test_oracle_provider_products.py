@@ -288,9 +288,7 @@ def test_rigid_product_rejects_internal_wire_beyond_declared_envelope() -> None:
             ],
             "wires": [[1, 1, 2, 1]],
         },
-        (
-            BoundDevicePort(_OUTPUT, DeviceEndpoint(1, 1, WireColor.RED, (0.5, 0.5))),
-        ),
+        (BoundDevicePort(_OUTPUT, DeviceEndpoint(1, 1, WireColor.RED, (0.5, 0.5))),),
     )
     with pytest.raises(ValueError, match="exceeding internal_wire_span"):
         ProviderRigidComponentProduct(
