@@ -1,3 +1,12 @@
+from examples.assembler_physical_abi_probe import (
+    INGREDIENTS_ANCHOR,
+    INGREDIENTS_MARKER_ID,
+    RECIPE_ANCHOR,
+    RECIPE_MARKER_ID,
+    TRANSLATED_DEVICE_ORIGIN,
+    build_assembler_physical_abi_problem,
+    route_assembler_physical_abi_probe,
+)
 from factorio_circuit.blueprint.opaque_layout_encode import (
     encode_layout_blueprint_string_with_opaque,
 )
@@ -8,16 +17,6 @@ from factorio_circuit.synthesis.anchored_interface_routing import (
     validate_anchored_interface_routing,
 )
 from factorio_circuit.synthesis.component_geometry import validate_component_layout_problem
-
-from examples.assembler_physical_abi_probe import (
-    INGREDIENTS_ANCHOR,
-    INGREDIENTS_MARKER_ID,
-    RECIPE_ANCHOR,
-    RECIPE_MARKER_ID,
-    TRANSLATED_DEVICE_ORIGIN,
-    build_assembler_physical_abi_problem,
-    route_assembler_physical_abi_probe,
-)
 
 
 def _source_positions() -> dict[int, tuple[float, float]]:
@@ -57,8 +56,9 @@ def test_real_assembler_device_passes_d1_d2_d3_and_serialization() -> None:
     encoded = encode_layout_blueprint_string_with_opaque(layout)
     decoded = decode_blueprint(encoded)
     entities = {entity["entity_number"]: entity for entity in decoded["entities"]}
+    source_blueprint_entities = AssemblerDevice().build().blueprint["entities"]
     source_entities = {
-        entity["entity_number"]: entity for entity in AssemblerDevice().build().blueprint["entities"]
+        entity["entity_number"]: entity for entity in source_blueprint_entities
     }
 
     # The real machine moved rigidly while its assembler-specific control behavior survived exactly.
