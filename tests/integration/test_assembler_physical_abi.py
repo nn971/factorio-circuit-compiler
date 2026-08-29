@@ -57,9 +57,7 @@ def test_real_assembler_device_passes_d1_d2_d3_and_serialization() -> None:
     decoded = decode_blueprint(encoded)
     entities = {entity["entity_number"]: entity for entity in decoded["entities"]}
     source_blueprint_entities = AssemblerDevice().build().blueprint["entities"]
-    source_entities = {
-        entity["entity_number"]: entity for entity in source_blueprint_entities
-    }
+    source_entities = {entity["entity_number"]: entity for entity in source_blueprint_entities}
 
     # The real machine moved rigidly while its assembler-specific control behavior survived exactly.
     assert entities[5]["name"] == "assembling-machine-3"
