@@ -45,7 +45,10 @@ from factorio_circuit.synthesis.imported_component_geometry import (
     imported_layout_as_rigid_component,
 )
 from factorio_circuit.synthesis.layout import Layout, LayoutWire
-from factorio_circuit.synthesis.layout_optimizer import LayoutOptimizationProblem, LegalPlacementLattice
+from factorio_circuit.synthesis.layout_optimizer import (
+    LayoutOptimizationProblem,
+    LegalPlacementLattice,
+)
 from factorio_circuit.synthesis.rigid_component_translation import (
     RigidComponentTranslationResult,
     translate_rigid_component_transactionally,
@@ -61,7 +64,8 @@ INGREDIENTS_MARKER_ID = 27
 ASSEMBLER_PROTOTYPE_SPECS = {
     "constant-combinator": BlueprintEntityPhysicalSpec((0.5, 0.5)),
     "arithmetic-combinator": BlueprintEntityPhysicalSpec(
-        (1.0, 0.5), BlueprintConnectorShape.INPUT_OUTPUT
+        (1.0, 0.5),
+        BlueprintConnectorShape.INPUT_OUTPUT,
     ),
     "assembling-machine-3": BlueprintEntityPhysicalSpec((1.5, 1.5)),
     "requester-chest": BlueprintEntityPhysicalSpec((0.5, 0.5)),
@@ -91,10 +95,14 @@ def build_assembler_physical_abi_problem() -> ComponentLayoutOptimizationProblem
     ingredients = device.port("ingredients")
 
     recipe_marker = ConstantCombinator(
-        RECIPE_MARKER_ID, description="D4 external recipe marker", annotation_only=True
+        RECIPE_MARKER_ID,
+        description="D4 external recipe marker",
+        annotation_only=True,
     )
     ingredients_marker = ConstantCombinator(
-        INGREDIENTS_MARKER_ID, description="D4 external ingredients marker", annotation_only=True
+        INGREDIENTS_MARKER_ID,
+        description="D4 external ingredients marker",
+        annotation_only=True,
     )
     circuit = PhysicalCircuit(
         base_layout.circuit.name,
@@ -152,6 +160,8 @@ def build_assembler_physical_abi_problem() -> ComponentLayoutOptimizationProblem
         "assembler-device",
         origin=DEVICE_ORIGIN,
         footprints=(ComponentRegion(1.0, 4.0, 20.5, 18.0),),
+        # Real reserved geometry outside the owned body. These exercise D1 exclusion during both
+        # translation and D3 rerouting without interfering with the two active west/east seams.
         keepouts=(ComponentRegion(7.0, 1.0, 10.0, 4.0),),
         adapter_regions=(ComponentRegion(11.0, 1.0, 13.0, 4.0),),
         access_points=(
@@ -167,7 +177,9 @@ def build_assembler_physical_abi_problem() -> ComponentLayoutOptimizationProblem
 
 def translate_assembler_physical_abi_probe() -> RigidComponentTranslationResult:
     return translate_rigid_component_transactionally(
-        build_assembler_physical_abi_problem(), "assembler-device", TRANSLATED_DEVICE_ORIGIN
+        build_assembler_physical_abi_problem(),
+        "assembler-device",
+        TRANSLATED_DEVICE_ORIGIN,
     )
 
 
@@ -205,7 +217,9 @@ def build_assembler_physical_abi_probe() -> dict[str, object]:
     routed = route_assembler_physical_abi_probe()
     if not routed.succeeded:
         raise ValueError(f"D4 anchored routing failed: {routed.failure}")
-    result = layout_to_blueprint_json_with_opaque(routed.problem.component_problem.layout_problem.layout)
+    result = layout_to_blueprint_json_with_opaque(
+        routed.problem.component_problem.layout_problem.layout
+    )
     return result["blueprint"]
 
 
