@@ -34,7 +34,7 @@ from factorio_circuit.ir.oracle import (
     provider_input_port_name,
 )
 from factorio_circuit.ir.physical import SignalId
-from factorio_circuit.ir.semantic import CircuitModule
+from factorio_circuit.ir.semantic import CircuitModule, PayloadShape, TemporalModality
 from factorio_circuit.provider_products import (
     ProviderComponentPortBinding,
     ProviderRigidComponentProduct,
@@ -219,12 +219,31 @@ class OraclePhysicalContext:
         self._consumed_provider_inputs.add(provider_input_port_name(self.source.name, name))
         return provider_input
 
+    @staticmethod
+    def _validate_component_port_type(
+        *,
+        port_name: str,
+        payload_shape: PayloadShape,
+        modality: TemporalModality,
+        expected_shape: PayloadShape,
+        role: str,
+    ) -> None:
+        if modality is not TemporalModality.LEVEL:
+            raise OracleBindingError(
+                f"device port {port_name!r} must be Level for oracle provider {role}"
+            )
+        if payload_shape is not expected_shape:
+            raise OracleBindingError(
+                f"device port {port_name!r} has {payload_shape.value} payload; "
+                f"oracle provider {role} requires {expected_shape.value}"
+            )
+
     def component_output_binding(
         self,
         device: ExternalDeviceBlueprint,
         port_name: str,
     ) -> ProviderComponentPortBinding:
-        """Bind one device output port to this oracle's observed output net."""
+        """Bind one compatible device output port to this oracle's observed output net."""
 
         try:
             port = device.port(port_name)
@@ -234,6 +253,14 @@ class OraclePhysicalContext:
             raise OracleBindingError(
                 f"device port {port_name!r} must be an output to provide oracle {self.source.name!r}"
             )
+        expected_shape = PayloadShape.VECTOR if self.is_vector else PayloadShape.SCALAR
+        self._validate_component_port_type(
+            port_name=port_name,
+            payload_shape=port.spec.payload_shape,
+            modality=port.spec.modality,
+            expected_shape=expected_shape,
+            role=repr(self.source.name),
+        )
         return ProviderComponentPortBinding(port_name, self.net_id)
 
     def component_input_binding(
@@ -242,7 +269,7 @@ class OraclePhysicalContext:
         device: ExternalDeviceBlueprint,
         port_name: str,
     ) -> ProviderComponentPortBinding:
-        """Consume one deterministic provider-input tap as a reusable-device input binding."""
+        """Consume one deterministic provider-input tap as a compatible device input binding."""
 
         try:
             port = device.port(port_name)
@@ -253,6 +280,16 @@ class OraclePhysicalContext:
                 f"device port {port_name!r} must be an input for provider input {name!r}"
             )
         provider_input = self.provider_input(name)
+        expected_shape = (
+            PayloadShape.VECTOR if provider_input.signal is None else PayloadShape.SCALAR
+        )
+        self._validate_component_port_type(
+            port_name=port_name,
+            payload_shape=port.spec.payload_shape,
+            modality=port.spec.modality,
+            expected_shape=expected_shape,
+            role=f"input {name!r}",
+        )
         self._consumed_provider_inputs.add(provider_input_port_name(self.source.name, name))
         return ProviderComponentPortBinding(port_name, provider_input.net_id)
 
