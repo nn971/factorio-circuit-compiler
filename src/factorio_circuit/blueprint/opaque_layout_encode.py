@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import base64
-from copy import deepcopy
 import json
 import zlib
+from copy import deepcopy
 from typing import Any
 
 from factorio_circuit.blueprint.layout_encode import layout_to_blueprint_json
