@@ -14,7 +14,6 @@ from factorio_circuit import (
     ProviderEntityProduct,
     ProviderRigidComponentProduct,
     ScalarConstantOracleProvider,
-    SignalId,
     lower_to_abstract_physical,
 )
 from factorio_circuit.devices.protocol import (
@@ -25,7 +24,7 @@ from factorio_circuit.devices.protocol import (
     DeviceProtocol,
     ExternalDeviceBlueprint,
 )
-from factorio_circuit.ir.physical import WireColor
+from factorio_circuit.ir.physical import SignalId, WireColor
 from factorio_circuit.ir.semantic import PayloadShape, TemporalModality
 from factorio_circuit.synthesis import (
     BlueprintConnectorShape,
