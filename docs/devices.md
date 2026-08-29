@@ -90,6 +90,40 @@ combinator to the left of the top row is labelled `DISPLAY INPUT: 16x16 packed-R
 only the wire color used by the compiled `OUTPUT framebuffer` port; the unused parallel color remains
 empty, so RGB counts are not doubled.
 
+## Programmable speaker output
+
+`ProgrammableSpeakerDevice` is the first Milestone F output peripheral. Its stable typed boundary is a
+single GREEN Level-scalar input named `trigger` on fixed `signal-A`. The speaker's circuit condition is
+`signal-A > 0`; thresholding, hysteresis, debouncing, pulse shaping, and application alarm policy belong
+in compiled logic rather than inside the reusable device.
+
+The physical device consists of a constant-combinator input dock and one programmable speaker. The dock
+is the exact-overlap anchor, so a compiled output can be normalized to the stable GREEN `signal-A` ABI
+without treating the speaker prototype itself as a special compiler anchor.
+
+The generator exposes the current Factorio 2.1 speaker configuration directly: playback volume,
+`local`/`surface`/`global` playback mode, polyphony, optional signal-controlled volume, optional
+signal-value-as-pitch, stop-playing-sounds behavior, numeric instrument/note ids, and GUI/map alert
+settings. Instrument/note ids deliberately remain numeric because their semantic catalogue is owned by
+Factorio and may change across game versions.
+
+Generate the standalone speaker with:
+
+```bash
+uv run python -m factorio_circuit.devices.programmable_speaker
+```
+
+Generate the compiled integration probe with:
+
+```bash
+uv run python examples/programmable_speaker_probe.py
+```
+
+The integration probe compiles an ordinary scalar signal, adapts the public output to GREEN `signal-A`,
+and exact-overlap composes it with the speaker in one importable blueprint. The current compiled-anchor
+boundary supports Level ports only, so F1 does not falsely advertise an Event input. Extending reusable
+peripheral composition to Event ports belongs with the later pulse-reader/Event integration work.
+
 ## Assembler device
 
 `AssemblerDevice` is a reusable assembler plus logistic requester/provider I/O. It deliberately stops
