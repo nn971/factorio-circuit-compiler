@@ -142,9 +142,9 @@ class OpaqueSingleConnectorEntity(ConstantCombinator):
     for component-level prototype-aware validation.
     """
 
-    prototype: str
-    blueprint_fields: dict[str, object]
-    physical_half_extent: tuple[float, float]
+    prototype: str = ""
+    blueprint_fields: dict[str, object] = field(default_factory=dict)
+    physical_half_extent: tuple[float, float] = (0.5, 0.5)
 
     def __init__(
         self,
@@ -176,9 +176,9 @@ class OpaqueSingleConnectorEntity(ConstantCombinator):
 class OpaqueDualConnectorEntity(ArithmeticCombinator):
     """Serialized Factorio entity with distinct input and output circuit connectors."""
 
-    prototype: str
-    blueprint_fields: dict[str, object]
-    physical_half_extent: tuple[float, float]
+    prototype: str = ""
+    blueprint_fields: dict[str, object] = field(default_factory=dict)
+    physical_half_extent: tuple[float, float] = (0.5, 0.5)
 
     def __init__(
         self,
