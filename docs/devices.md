@@ -120,9 +120,9 @@ uv run python examples/programmable_speaker_probe.py
 ```
 
 The integration probe compiles an ordinary scalar signal, adapts the public output to GREEN `signal-A`,
-and exact-overlap composes it with the speaker in one importable blueprint. The current compiled-anchor
-boundary supports Level ports only, so F1 does not falsely advertise an Event input. Extending reusable
-peripheral composition to Event ports belongs with the later pulse-reader/Event integration work.
+and exact-overlap composes it with the speaker in one importable blueprint. The generic
+`CompiledAnchorBinding` remains a Level boundary; semantic Event inputs use the paired Event adapter
+described below instead of weakening that Level contract.
 
 ## Roboport logistic-stock reader
 
@@ -156,6 +156,44 @@ The integration probe realizes `oracle_signals("stock")` through a rigid provide
 compiler therefore sees the stock observation as an ordinary Level-vector oracle while preserving the
 roboport's exact 4x4 geometry, RED connector contract, and raw Factorio control behavior through final
 opaque-aware serialization.
+
+## Belt and inserter Event pulse readers
+
+`TransportBeltPulseReaderDevice` and `InserterPulseReaderDevice` are the first reusable peripherals that
+bind directly to the compiler's semantic Event ABI. Factorio's pulse read modes emit transferred item
+counts for exactly one game tick: belts pulse when items enter the observed segment, while inserters
+pulse when they pick items up.
+
+A compiler Event input is physically represented by two circuit lanes rather than by one magic wire:
+
+- RED `payload`: the whole item vector for the occurrence;
+- GREEN `valid`: fixed `signal-A = 1` for exactly the matching occurrence tick.
+
+The raw belt/inserter pulse is available immediately, while deriving `valid` through a decider takes one
+combinator tick. Each reader therefore also delays the payload through `each + 0`. Both exported ports
+have exactly one combinator stage of latency, so the payload and activation token remain aligned. If
+several item signals are emitted on the same game tick they form one vector Event occurrence, matching
+`Circuit.signal_event(...)` semantics.
+
+The devices serialize Factorio's pulse mode as `0`, configure the physical reader to emit on both red
+and green, and split those colors internally before the two typed output docks. The protocol marks both
+ports as `TemporalModality.EVENT`; `payload` is an open vector and `valid` reserves `signal-A`.
+
+`CompiledEventAnchorBinding` and `compiled_event_inputs_as_anchored_blueprint(...)` adapt a compiled
+semantic Event input to those two docks. The helper first proves the named source exists in
+`CompilationResult.semantic_ir.event_inputs` and that the declared payload shape matches; only then does
+it reuse the ordinary compiled-anchor isolation/routing machinery for the lowered `<name>` and
+`<name>__valid` physical ports. This prevents arbitrary Level inputs from being relabelled Event.
+
+Generate the end-to-end belt integration probe with:
+
+```bash
+uv run python examples/event_pulse_reader_probe.py
+```
+
+The probe compiles a real vector Event accumulator and exact-overlap composes a transport-belt pulse
+reader onto its `transfers` / `transfers__valid` boundary. The inserter reader implements the same typed
+Event protocol and can replace the belt reader when pickup events are the desired source.
 
 ## Assembler device
 
