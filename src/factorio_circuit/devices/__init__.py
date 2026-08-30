@@ -66,6 +66,13 @@ from factorio_circuit.devices.protocol import (
     DeviceSide,
     ExternalDeviceBlueprint,
 )
+from factorio_circuit.devices.roboport_stock_reader import (
+    ROBOPORT_READ_LOGISTICS,
+    ROBOPORT_STOCK_READER_PROTOCOL,
+    RoboportStockReaderDevice,
+    build_roboport_stock_reader_blueprint,
+    generate_roboport_stock_reader_blueprint_string,
+)
 
 __all__ = [
     "ASSEMBLER_DEVICE_PROTOCOL",
@@ -73,6 +80,8 @@ __all__ = [
     "ASSEMBLER_FINISHED_SIGNAL",
     "ASSEMBLER_WORKING_SIGNAL",
     "PROGRAMMABLE_SPEAKER_PROTOCOL",
+    "ROBOPORT_READ_LOGISTICS",
+    "ROBOPORT_STOCK_READER_PROTOCOL",
     "SPEAKER_TRIGGER_SIGNAL",
     "AnchorBinding",
     "AnchoredBlueprint",
@@ -99,6 +108,7 @@ __all__ = [
     "ExternalDeviceBlueprint",
     "PIXEL_SIGNALS",
     "ProgrammableSpeakerDevice",
+    "RoboportStockReaderDevice",
     "SCREEN_HEIGHT",
     "SCREEN_WIDTH",
     "SpeakerPlaybackMode",
@@ -107,6 +117,7 @@ __all__ = [
     "build_lamp_screen_blueprint",
     "build_player_movement_detector_blueprint",
     "build_programmable_speaker_blueprint",
+    "build_roboport_stock_reader_blueprint",
     "compiled_module_as_anchored_blueprint",
     "compose_anchored_blueprints",
     "compose_component_seams",
@@ -115,6 +126,7 @@ __all__ = [
     "generate_lamp_screen_blueprint_string",
     "generate_player_movement_detector_blueprint_string",
     "generate_programmable_speaker_blueprint_string",
+    "generate_roboport_stock_reader_blueprint_string",
     "pixel_signal",
     "require_all_anchors_bound",
     "rgb",

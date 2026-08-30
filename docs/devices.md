@@ -124,6 +124,39 @@ and exact-overlap composes it with the speaker in one importable blueprint. The 
 boundary supports Level ports only, so F1 does not falsely advertise an Event input. Extending reusable
 peripheral composition to Event ports belongs with the later pulse-reader/Event integration work.
 
+## Roboport logistic-stock reader
+
+`RoboportStockReaderDevice` exposes one roboport's logistic-network item contents as a persistent
+Level-vector output. Its stable typed boundary is a single RED output named `stock`; because it is an
+open vector, the device does not reserve one fixed scalar signal identity.
+
+The physical device uses the real 4x4 roboport plus a one-tile constant-combinator output dock placed
+flush against its east side. The roboport is configured to emit only on RED and to read logistic-network
+contents. In Factorio's current roboport control enum, the serialized logistics mode is
+`read_items_mode = 1` (`none / logistics / missing_requests` are 0 / 1 / 2).
+
+Robot statistics are deliberately disabled in this device. Available/total logistic robots,
+available/total construction robots, and roboport count are scalar metadata with distinct meanings;
+putting them on the same unrestricted vector would mix status lanes into an item-stock bus. They can be
+added later as separate typed scalar ports if an application needs them.
+
+Generate the standalone reader with:
+
+```bash
+uv run python -m factorio_circuit.devices.roboport_stock_reader
+```
+
+Generate the compiler-integration probe with:
+
+```bash
+uv run python examples/roboport_stock_reader_probe.py
+```
+
+The integration probe realizes `oracle_signals("stock")` through a rigid provider component. The
+compiler therefore sees the stock observation as an ordinary Level-vector oracle while preserving the
+roboport's exact 4x4 geometry, RED connector contract, and raw Factorio control behavior through final
+opaque-aware serialization.
+
 ## Assembler device
 
 `AssemblerDevice` is a reusable assembler plus logistic requester/provider I/O. It deliberately stops
