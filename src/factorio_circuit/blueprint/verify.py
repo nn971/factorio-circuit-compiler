@@ -82,8 +82,11 @@ def compiler_prototype_specs() -> dict[str, BlueprintPrototypeSpec]:
     """Return the explicit physical catalogue for entities emitted directly by the compiler."""
 
     single = BlueprintPrototypeSpec((0.5, 0.5), frozenset({1, 2}))
+    # Factorio defines the native arithmetic/decider combinator selection footprint as 1x2 in
+    # direction 0 (north). The compiler serializes these entities facing east (direction 4), which
+    # rotates that canonical footprint to the horizontal 2x1 geometry used by synthesis placement.
     input_output = BlueprintPrototypeSpec(
-        (1.0, 0.5),
+        (0.5, 1.0),
         frozenset({1, 2, 3, 4}),
         rotates_half_extent=True,
     )

@@ -2,6 +2,8 @@
 
 Milestone I verifies the serialized Factorio artifact independently of physical synthesis. The verifier is intentionally downstream of placement, routing, opaque-device composition, and serialization: compiler layouts may be used to *produce test fixtures*, but verifier decisions must not consult synthesis `Layout`, routed-net assignments, placement occupancy, or other mutable construction state.
 
+**Milestone I status: complete.**
+
 ## I1 — serialized structural verifier
 
 **Status: complete.**
@@ -14,12 +16,14 @@ Milestone I verifies the serialized Factorio artifact independently of physical 
 
 Verification also receives an explicit prototype catalogue. Each `BlueprintPrototypeSpec` declares only the physical facts needed by I1:
 
-- collision half-extents;
+- collision half-extents in the prototype's direction-0 orientation;
 - whether those half-extents rotate with Factorio cardinal `direction`;
 - legal Factorio circuit connector ids;
 - conservative maximum centre-to-centre wire span.
 
 `compiler_prototype_specs()` provides the small explicit catalogue for compiler-native constant, arithmetic, decider, and selector combinators. Opaque, modded, or reusable-device prototypes are not guessed: callers extend the catalogue explicitly. This preserves the same no-hidden-prototype-database principle used by imported devices while keeping the verifier independent from synthesis.
+
+For arithmetic/decider/selector combinators the canonical direction-0 selection footprint is 1x2, represented by half-extent `(0.5, 1.0)`. The compiler serializes its ordinary horizontal combinators with `direction: 4`, so I1 rotates that canonical footprint to the 2x1 horizontal geometry used by placement. I4 exposed and corrected an earlier reversed canonical declaration.
 
 ### I1 checks
 
@@ -83,7 +87,7 @@ I3 separates geometry contracts that have different semantics:
 2. **Boundary seams.** `BlueprintSeamExpectation` groups exact anchors on a declared boundary rectangle. This matches reusable seam composition, where boundary anchor centres may sit exactly on the footprint boundary and therefore are not treated as D1 owned-region members.
 3. **Rigid components.** `BlueprintRigidComponentExpectation` declares an origin, quarter-turn pose, member-local offsets, owned footprints, keepouts, and adapter regions. Members must remain at their rigid offsets and fit inside owned footprints; outsiders may not enter owned/keepout geometry; adapter regions must remain empty even of component members.
 
-All collision-region checks use the orientation-aware serialized half-extent from the I1 prototype catalogue. This matters for compiler-native arithmetic/decider/selector combinators, which serialize with cardinal direction 4 and therefore cannot be audited using an orientation-blind 2x1 box.
+All collision-region checks use the orientation-aware serialized half-extent from the I1 prototype catalogue.
 
 ### I3 mutation coverage
 
@@ -99,12 +103,52 @@ The routine I3 regressions exercise:
 - quarter-turn reconstruction without synthesis state;
 - rotated native wide-combinator footprint overlap and legal boundary touching.
 
-## Remaining Milestone I work
+## I4 — opaque-provider end-to-end acceptance
 
-I1-I3 cover local structural validity, electrical reconstruction, public ports, exact ABI anchors, seam positions, and explicit rigid-region geometry. The remaining acceptance work should emphasize independent end-to-end contracts rather than add another synthesis-shaped object model:
+**Status: complete.**
 
-1. exercise I1-I3 against richer opaque provider/device artifacts using expectations captured independently of final `Layout`;
-2. compare intended physical electrical equivalence across those reusable-device fixtures where practical;
-3. decide whether the resulting verifier set is sufficient to close Milestone I or whether blueprint-book/container-level verification warrants a separate follow-on milestone.
+I4 exercises I1-I3 against real reusable-device/provider artifacts using verifier-side expectations rather than the synthesis state being audited.
 
-Expectation data should be supplied independently by the caller or benchmark fixture. The verifier must never recover expected geometry or connectivity by reading the final synthesis `Layout` it is supposed to audit.
+### Routine opaque-device contract
+
+`tests/blueprint/test_opaque_device_verifier_contract.py` verifies the standalone 25-entity `AssemblerDevice` blueprint directly. Its contract is a static description of the serialized device ABI:
+
+- all 25 member ids, prototypes, and fixed positions;
+- the owned footprint, keepout, and adapter regions used by the provider integration;
+- all 23 root-level wires;
+- 13 intended physical electrical components, including isolated recipe/enable/requester commands, the merged machine-command network, raw assembler status fanout, sanitized ingredient merge, working/finished outputs, and requester/provider observation lanes.
+
+The test passes the device blueprint itself to I1-I3. It does not reconstruct expectations from a synthesis `Layout`, `RigidComponentConstraint`, or routed-net table.
+
+### Full mixed-provider acceptance
+
+`tests/integration/test_i4_e3_serialized_verification.py` compiles the existing E3 mixed-provider benchmark containing ordinary logic, a free provider, a world-anchored provider, and the real opaque assembler device. After compilation, the verification path consumes only `result.blueprint_string`.
+
+Static verifier-side facts identify the assembler members from their serialized stable descriptions and assert:
+
+- I1 structural validity for the exact import string;
+- complete public marker names/directions for `x`, `recipe`, `logic`, and `ingredients`;
+- serialized GREEN electrical equivalence between the public recipe marker and assembler recipe dock;
+- serialized RED electrical equivalence between the assembler ingredient dock and public ingredients marker;
+- exact position/prototype of the anchored world sensor;
+- all 25 opaque assembler member offsets and its owned/keepout/adapter geometry.
+
+The test deliberately does not read `CompilationResult.layout`, `abstract_physical` net ids, assigned net colours, or `physical_circuit` entity/net state to establish those expectations. It passed once in ordinary CI as the I4 acceptance gate and is retained behind `@pytest.mark.acceptance` so routine feedback remains lean.
+
+### I4 orientation correction
+
+The first I4 run usefully rejected both the standalone assembler and mixed E3 artifact because I1's native wide-combinator catalogue had the direction-0 half-extent reversed. Checking the serialized direction against Factorio's native prototype orientation showed that the compiler/serializer geometry was internally consistent and the independent verifier was wrong. Correcting the canonical direction-0 footprint made both artifacts pass without weakening geometry checks or changing synthesis.
+
+## Milestone I closure
+
+I1-I4 now cover the intended independent post-serialization contract:
+
+- local entity/connector/wire structural validity;
+- red/green electrical reconstruction and separation;
+- public serialized ports;
+- exact ABI anchors and seams;
+- rigid member, footprint, keepout, and adapter geometry;
+- intended electrical equivalence across a real opaque provider boundary;
+- a full mixed compiler/provider import string checked without reusing final synthesis state.
+
+That is sufficient to close Milestone I. Ordinary blueprint books and other container-level formats remain outside the verifier's current input contract; if those formats become compiler outputs that need independent validation, they should be handled as a separate follow-on format/container milestone rather than keeping this physical-artifact milestone open.

@@ -110,7 +110,7 @@ def test_invalid_connector_and_cross_colour_wire_are_rejected() -> None:
 def test_declared_footprint_overlap_is_rejected_but_touching_is_allowed() -> None:
     artifact = _valid_blueprint()
     entities = artifact["blueprint"]["entities"]
-    entities[1]["position"] = {"x": 1.4, "y": 0.0}
+    entities[1]["position"] = {"x": 0.9, "y": 0.0}
     with pytest.raises(BlueprintVerificationError, match="entities 1 and 2 overlap"):
         verify_blueprint_structure(artifact, prototype_specs=compiler_prototype_specs())
 

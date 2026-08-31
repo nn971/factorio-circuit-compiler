@@ -313,21 +313,26 @@ The core multilevel architecture is no longer speculative: relay-blind hypergrap
 
 ## Milestone I — Independent blueprint-level verifier
 
-**Status: current.**
+**Status: complete.**
 
 **Goal:** verify the exact serialized artifact independently of synthesis internals.
 
-Reconstruct from the final blueprint/layout:
+The completed verifier stack reconstructs from the final serialized blueprint artifact:
 
-- entity footprints and overlaps;
+- entity footprints, orientation, and overlaps;
 - connector identities;
-- red/green connectivity;
+- red/green connectivity and physical-net separation;
 - wire reach;
-- public ports;
-- ABI anchors, seams, and component regions;
-- intended electrical-net equivalence where practical.
+- public serialized ports;
+- ABI anchors and seams;
+- rigid member offsets, owned footprints, keepouts, and adapter regions;
+- intended electrical-net equivalence across real opaque-provider boundaries where practical.
 
-This verifier should share as little mutable synthesis state as practical so that it can catch serialization/materialization mistakes rather than merely repeat them.
+I1-I3 provide independent structural, connectivity/public-port, and geometry verification. I4 closes the milestone with two real opaque-device acceptance layers: a routine 25-entity `AssemblerDevice` serialized contract and a full E3 mixed-provider import string checked using only static verifier-side expectations plus the encoded artifact. The E3 acceptance path deliberately does not read the final synthesis `Layout`, abstract net ids, assigned net colours, or `PhysicalCircuit` state to establish expected geometry/electrical equivalence.
+
+I4 also exposed and corrected a reversed native wide-combinator direction-0 footprint in the independent prototype catalogue. The compiler/serializer geometry remained unchanged; after the verifier's canonical orientation was corrected, both the standalone opaque device and full mixed-provider artifact passed the same strict serialized checks.
+
+The detailed contract and acceptance evidence are recorded in `docs/blueprint-verification.md`. Blueprint books and other container formats remain outside the current ordinary-blueprint verifier input contract; if compiler output expands to those formats, they should be handled as a separate follow-on container-format milestone rather than keeping I open.
 
 ## Implementation order
 
@@ -341,11 +346,11 @@ A. layout reliability corpus [complete]
     -> E. oracle/device/layout unification [complete]
     -> F. useful peripheral set [complete]
     -> G. differential compiler fuzzing [complete]
-    -> I. independent blueprint-level verifier [current]
+    -> I. independent blueprint-level verifier [complete]
 ```
 
-H remains optional optimization beyond the accepted C baseline and should proceed when a concrete application justifies it. I is the active correctness milestone because D/E/F now produce richer opaque entities, rigid components, external ports, and serialized physical contracts that benefit from an independent post-serialization check.
+H remains optional optimization beyond the accepted C baseline and should proceed only when a concrete application demonstrates a quality/work need. The A-G/I correctness and physical-ABI roadmap is otherwise complete.
 
 ## Current step
 
-Proceed with **I1 — independent serialized structural verifier**. Parse only the emitted blueprint artifact plus a small explicit prototype/connector geometry catalogue supplied to the verifier. Reconstruct entity ids, positions, footprints, connector endpoints, red/green wires, and wire reach without consulting the synthesis `Layout`; reject dangling connectors, duplicate entity ids, footprint overlap, and over-reach wires. Use compiler-produced blueprints only as fixtures, not as verifier state.
+No blocking compiler-roadmap milestone remains. Choose the next step from concrete application needs: resume **H — further multilevel/global physical optimization** when density/work is the limiting factor, or start a new application/compiler milestone with its own acceptance contract. Blueprint-book/container verification should be opened separately if those formats become compiler outputs that need independent auditing.
