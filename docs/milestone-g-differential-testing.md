@@ -1,5 +1,7 @@
 # Milestone G differential testing
 
+**Status: complete.**
+
 Milestone G grows the compiler's differential verification surface in small typed layers. Each layer generates deterministic programs inside a supported semantic subset, compiles them through the ordinary production pipeline, and compares semantic execution with physical simulation at declared physical phases or Event materialization points.
 
 The random generators are test inputs, not alternative semantics. The semantic simulators remain the reference behavior and the physical simulator remains the independent realization under comparison. Every randomized layer uses fixed seeds and a structure-aware reducer so a mismatch can be reproduced and minimized instead of being reported only as an opaque random seed.
@@ -52,7 +54,7 @@ G5 landed as commit `7330f94503f804a1df753f41e4bc14d7b869681a` through PR #92.
 
 ## G6 — stateful Event bridges
 
-**Status: current.**
+**Status: complete.**
 
 G6 applies one shared randomized source/target Event schedule to both cross-clock vector bridges:
 
@@ -61,6 +63,39 @@ G6 applies one shared randomized source/target Event schedule to both cross-cloc
 
 Each case also includes a target before the first source and a later target, uses sparse signed-32-bit vector payloads, and is compiled with optimization disabled and enabled. Semantic VALID materialization is compared against physical payload/valid outputs at every timestamp. The reducer removes source/target occurrences and individual vector lanes.
 
-## Remaining Milestone G layers
+G6 landed as commit `7bbd65c1a47bcf86d4274f2dd870386aedefd344` through PR #93.
 
-After G6, the highest-value missing surface is broader output materialization (`ZERO` and `HOLD`, including default-policy behavior) and then more complex clock compositions or heterogeneous state domains where the current uniform-period stream mapping is intentionally insufficient. The generator should continue to reject unsupported shapes explicitly rather than weakening the oracle or silently treating them as covered.
+## G7 — output materialization
+
+**Status: complete.**
+
+G7 randomizes irregular scalar Event outputs under explicit `ZERO` and `HOLD` policies. Generated traces include a present zero-valued occurrence so Event presence cannot be confused with payload truthiness. Semantic `materialize_output_trace` results are compared with the single physical payload output at the compiler-declared phase for every timestamp, with optimization disabled and enabled.
+
+The same slice checks that additive `sum_into` outputs default to `ZERO` materialization when no explicit policy is supplied. The reducer removes Event occurrences and simplifies the affine output transform.
+
+G7 landed as commit `12f273f351c58609d16f7d32e396154ecb369e0f` through PR #94.
+
+## G8 — acceptance closure and clock-shape filtering
+
+**Status: complete.**
+
+G8 makes the fuzz-harness boundary executable rather than implicit. The uniform-period periodic oracle classifies compiler timing before comparison:
+
+- a compiler-supported independent period-1 / period-3 state-domain program has `uniform_period=None` and is explicitly filtered with a deterministic reason;
+- connecting those domains through one same-index expression unifies them to period 3 and makes the shape eligible for the uniform-period oracle;
+- Event-clock timing is routed to the Event differential harness rather than being misinterpreted as periodic timing.
+
+G8 also adds a clock-structure reducer that can remove derived-clock stages while preserving a failure predicate, and acceptance checks that representative crossing, Event-bridge, and output-materialization generators reproduce identical cases for identical seeds.
+
+This is intentionally a harness classification boundary, not a claim that heterogeneous periodic domains are compiler errors. A future per-domain logical-to-physical comparator can broaden the fuzz surface without changing the current acceptance result.
+
+## Milestone G acceptance
+
+The roadmap acceptance requirements are satisfied:
+
+- seeded random cases are deterministic and reproducible;
+- expression reducers cover scalar/vector DAGs, state reducers cover periodic/Event state and Event bridges, and the G8 reducer covers clock topology;
+- supported scalar/vector arithmetic, periodic state, Event state, `sample_on`, `gate_clock`, `event_merge`, `sum_into`, `hold_into`, and VALID/ZERO/HOLD output materialization all have semantic-vs-physical differential coverage;
+- shapes that do not fit a specific oracle are classified explicitly instead of silently compared under an invalid timing assumption.
+
+Milestone G is therefore complete. Further expansion of the random language or a per-domain heterogeneous-period comparator is future verification work, not a prerequisite for the accepted differential-testing baseline.
