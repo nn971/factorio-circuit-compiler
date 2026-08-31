@@ -42,12 +42,40 @@ On success, `BlueprintVerificationReport` records entity count, wire count, and 
 
 The ordinary tests include one compiler-produced blueprint as a fixture and then mutate standalone serialized objects to exercise failure classes. The verifier itself imports neither synthesis `Layout` nor routing validation helpers. Consequently, a serializer bug that produces duplicate ids, wrong connector ids, overlap, or over-reach wiring cannot be hidden by reusing the object graph that created the artifact.
 
+## I2 — serialized electrical connectivity and public ports
+
+**Status: complete.**
+
+`factorio_circuit.blueprint.connectivity_verify` first invokes I1 and then independently rebuilds the serialized electrical graph from root-level Factorio wire tuples. A graph node is an exact `(entity_number, connector_id)` pair. Red and green remain separate because Factorio connector-id parity is part of the serialized endpoint identity; the verifier does not import synthesis net colours or net-group assignments.
+
+I2 adds three post-serialization contracts:
+
+1. **Physical electrical equivalence.** `BlueprintNetExpectation` lists endpoints that must belong to one reconstructed connected component.
+2. **Electrical separation.** Distinct expected physical nets must not reconstruct to the same component. Expectations therefore describe already-coalesced *physical* groups, not abstract logical nets that synthesis is explicitly allowed to share safely.
+3. **Public marker identity/connectivity.** Compiler marker annotations are parsed from the serialized `player_description` form `[FCC #N | marker] INPUT/OUTPUT ...`. The embedded id must match the serialized entity number, public names/directions must match the complete supplied contract when one is provided, a public marker may use at most one wire colour, and optional declared peer endpoints must be reachable on that reconstructed component.
+
+`BlueprintConnectivityReport` records the number of wire-bearing reconstructed components, the verified physical-net names, and every serialized public port discovered from the artifact.
+
+### I2 mutation coverage
+
+Routine regressions deliberately mutate serialized fixtures to detect:
+
+- a missing wire that breaks an expected physical net;
+- an extra wire that shorts two expected physical nets;
+- contradictory expectations that assign one endpoint to multiple intended physical groups;
+- a renamed/extra public marker;
+- a public marker disconnected from its declared peer;
+- a public marker connected to both red and green networks;
+- a marker annotation whose embedded FCC entity id disagrees with the serialized entity number.
+
+A real compiler-produced import string is also checked for public input/output discovery without consulting `CompilationResult.layout` or `PhysicalCircuit.inputs/outputs` during verification.
+
 ## Remaining Milestone I work
 
-I1 establishes local serialized structural validity. Later slices should build on the independently parsed entity/connector graph to verify broader contracts without falling back to synthesis state:
+I1 and I2 establish local structural validity plus independent serialized electrical reconstruction. The next slices should keep using explicit post-serialization expectations rather than reaching back into synthesis state:
 
-1. reconstruct red and green connected components and check declared public/device endpoint connectivity;
-2. verify ABI anchors, seams, rigid-component regions, and other externally declared geometry from explicit expectations;
-3. compare intended electrical-net equivalence against independently reconstructed serialized networks where practical.
+1. verify ABI anchors and exact public/device endpoint positions;
+2. verify seams, owned/keepout/adapter regions, and rigid-component membership from explicit geometry contracts;
+3. extend electrical-equivalence expectations across richer opaque-provider/device acceptance fixtures where useful.
 
-Those checks require explicit post-serialization expectations; they should not be inferred by reaching back into the final `Layout`.
+These geometry contracts should be supplied independently by the caller or benchmark fixture. The verifier should never recover them by reading the final synthesis `Layout` it is supposed to audit.
