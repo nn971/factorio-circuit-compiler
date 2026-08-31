@@ -252,20 +252,32 @@ All E acceptance requirements are satisfied:
 
 ## Milestone F — Useful peripheral set
 
-**Status: current.**
+**Status: complete.**
 
 **Goal:** expand devices in an order that exercises new compiler capabilities.
 
-Current main already contains the movement detector, packed-RGB lamp screen, and reusable assembler device. Suggested next additions are:
+Milestone F now contains the intended cross-section of reusable peripherals and, more importantly, uses them as integration tests for the compiler boundaries built in D/E:
 
-1. programmable speaker output;
-2. roboport/logistic-stock vector reader;
-3. belt/inserter pulse readers for Event integration;
-4. richer machine/train interfaces after anchored macro placement is robust.
+1. **F1 — programmable speaker output [complete].** `ProgrammableSpeakerDevice` exposes a GREEN fixed-`signal-A` Level-scalar trigger, preserves the real Factorio 2.1 speaker control payload, and exact-overlap composes with an ordinary compiled output. Landed as `77d984b29de38d29c05df2f3c1364de2c3df195c` through PR #83.
+2. **F2 — roboport logistic-stock reader [complete].** `RoboportStockReaderDevice` exposes RED `Level[Vector]` logistic contents and realizes `oracle_signals("stock")` through a rigid provider while preserving the real 4x4 roboport geometry and control behavior. Landed as `4346a825a68b2d43d3239b0d2b55958efa52248c` through PR #84.
+3. **F3 — belt/inserter Event pulse readers [complete].** `TransportBeltPulseReaderDevice` and `InserterPulseReaderDevice` exercise the canonical Event payload + `__valid` ABI, add Event oracle-provider materialization, and preserve equal-latency RED payload / GREEN validity paths. Landed as `2960a838abe568dff90c8d9963be1a24a4417e37` through PR #86.
+4. **F4 — richer machine/train interfaces [complete].** The existing reusable assembler covers the machine side; `TrainStopDevice` adds the train side with electrically separated GREEN command and RED status Level-vector buses, fixed train metadata signals, rigid provider composition, and exact opaque serialization. Landed as `619a3f622fe85661bcc1946723eb2b77a55a9a64` through PR #87.
 
-Prefer devices that double as integration benchmarks for the ABI, Event semantics, or anchored layout.
+### F acceptance
+
+The useful-peripheral baseline is accepted because it now exercises all of the intended reusable-device dimensions:
+
+- compiled Level output into a real actuator;
+- persistent open-vector observation through an oracle provider;
+- irregular Event input through synchronized payload/valid physical lanes;
+- bidirectional external-device composition with distinct command/status networks;
+- exact preservation of opaque Factorio entity geometry and control payloads through final serialization.
+
+Application policy remains outside these devices. Speakers do not own alarm policy, roboports do not own inventory policy, pulse readers do not own Event consumers, and train stops do not own dispatch algorithms.
 
 ## Milestone G — Differential compiler fuzzing
+
+**Status: complete.**
 
 **Goal:** compare reference semantics with compiled physical simulation automatically.
 
@@ -276,6 +288,8 @@ Generate random programs inside the currently supported semantic subset, includi
 - Seeded failures are reproducible.
 - The shrinker can reduce common expression/state/clock mismatches.
 - Unsupported language shapes are filtered or expected to reject explicitly.
+
+G1-G8 satisfy this acceptance baseline. `docs/milestone-g-differential-testing.md` records the landed layers, fixed-seed coverage, reducer dimensions, and the explicit non-uniform-period harness boundary.
 
 ## Milestone H — Further multilevel/global physical optimization
 
@@ -299,6 +313,8 @@ The core multilevel architecture is no longer speculative: relay-blind hypergrap
 
 ## Milestone I — Independent blueprint-level verifier
 
+**Status: current.**
+
 **Goal:** verify the exact serialized artifact independently of synthesis internals.
 
 Reconstruct from the final blueprint/layout:
@@ -315,7 +331,7 @@ This verifier should share as little mutable synthesis state as practical so tha
 
 ## Implementation order
 
-The immediate sequence is now:
+The completed core sequence is now:
 
 ```text
 A. layout reliability corpus [complete]
@@ -323,11 +339,13 @@ A. layout reliability corpus [complete]
     -> C. annealing v2 / multilevel placement [complete]
     -> D. physical ABI placement integration [complete]
     -> E. oracle/device/layout unification [complete]
-    -> F. useful peripheral set [current]
+    -> F. useful peripheral set [complete]
+    -> G. differential compiler fuzzing [complete]
+    -> I. independent blueprint-level verifier [current]
 ```
 
-Milestone G should begin as soon as a small useful random-program generator exists and then grow continuously. H is optional optimization beyond the accepted C baseline and can proceed when a concrete application justifies it. I becomes especially valuable as D/E introduce richer rigid components and more serialized physical contracts.
+H remains optional optimization beyond the accepted C baseline and should proceed when a concrete application justifies it. I is the active correctness milestone because D/E/F now produce richer opaque entities, rigid components, external ports, and serialized physical contracts that benefit from an independent post-serialization check.
 
 ## Current step
 
-Proceed with **F1 — programmable speaker output**. Define a typed external-device protocol for alert/alarm playback that is small enough to compose through the completed E boundary, preserve exact speaker control payloads through opaque serialization, and use the implementation as the first Milestone F integration probe.
+Proceed with **I1 — independent serialized structural verifier**. Parse only the emitted blueprint artifact plus a small explicit prototype/connector geometry catalogue supplied to the verifier. Reconstruct entity ids, positions, footprints, connector endpoints, red/green wires, and wire reach without consulting the synthesis `Layout`; reject dangling connectors, duplicate entity ids, footprint overlap, and over-reach wires. Use compiler-produced blueprints only as fixtures, not as verifier state.
