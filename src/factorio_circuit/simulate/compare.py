@@ -28,19 +28,50 @@ def assert_same_stream(
     physical: PhysicalCircuit,
     input_stream: list[dict[str, object]],
 ) -> None:
-    """Compare logical stream values against physical outputs at each declared phase."""
+    """Compare one-physical-tick logical streams at each declared output phase."""
 
-    observations = simulate_stream(physical, input_stream)
+    _assert_stream_with_period(semantic, physical, input_stream, period=1)
+
+
+def assert_same_periodic_stream(
+    semantic: CircuitModule,
+    physical: PhysicalCircuit,
+    input_stream: list[dict[str, object]],
+    *,
+    period: int,
+) -> None:
+    """Compare logical streams whose state clock advances every ``period`` physical ticks.
+
+    Each logical input row is held constant for one complete physical clock period.  Logical output
+    tick ``n`` is compared at physical tick ``n * period + output.phase``.  This preserves the
+    compiler's explicit distinction between logical state boundaries and Factorio combinator ticks.
+    """
+
+    if isinstance(period, bool) or not isinstance(period, int) or period <= 0:
+        raise ValueError("period must be a positive integer")
+    _assert_stream_with_period(semantic, physical, input_stream, period=period)
+
+
+def _assert_stream_with_period(
+    semantic: CircuitModule,
+    physical: PhysicalCircuit,
+    input_stream: list[dict[str, object]],
+    *,
+    period: int,
+) -> None:
+    physical_inputs = [dict(row) for row in input_stream for _ in range(period)]
+    observations = simulate_stream(physical, physical_inputs)
     expected = simulate_semantic_stream(semantic, input_stream)
     for logical_tick, expected_tick in enumerate(expected):
         for output_index, port in enumerate(physical.outputs):
-            physical_tick = logical_tick + port.phase
+            physical_tick = logical_tick * period + port.phase
             actual = observations[physical_tick][output_index]
             wanted = expected_tick[output_index]
             if actual != wanted:
                 raise AssertionError(
                     "stream mismatch: "
-                    f"logical_tick={logical_tick}, output={port.name}, phase={port.phase}, "
+                    f"logical_tick={logical_tick}, physical_tick={physical_tick}, "
+                    f"output={port.name}, phase={port.phase}, period={period}, "
                     f"expected={wanted}, actual={actual}"
                 )
 
