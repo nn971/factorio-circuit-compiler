@@ -18,6 +18,7 @@ from typing import cast
 
 _EPSILON = 1e-9
 _DEFAULT_COMPILER_WIRE_SPAN = 7.0
+_CARDINAL_DIRECTIONS = frozenset({0, 4, 8, 12})
 
 
 class BlueprintVerificationError(ValueError):
@@ -31,6 +32,7 @@ class BlueprintPrototypeSpec:
     half_extent: tuple[float, float]
     connector_ids: frozenset[int]
     maximum_wire_span: float = _DEFAULT_COMPILER_WIRE_SPAN
+    rotates_half_extent: bool = False
 
     def __post_init__(self) -> None:
         half_x, half_y = self.half_extent
@@ -43,6 +45,19 @@ class BlueprintPrototypeSpec:
             raise ValueError("prototype connector ids must be positive integers")
         if not isfinite(self.maximum_wire_span) or self.maximum_wire_span <= 0.0:
             raise ValueError("prototype maximum wire span must be finite and positive")
+        if type(self.rotates_half_extent) is not bool:
+            raise TypeError("prototype rotates_half_extent must be bool")
+
+    def half_extent_for_direction(self, direction: int) -> tuple[float, float]:
+        """Return serialized collision half-extents for one Factorio cardinal direction."""
+
+        if not self.rotates_half_extent:
+            return self.half_extent
+        if direction not in _CARDINAL_DIRECTIONS:
+            raise ValueError("rotating prototype direction must be one of 0, 4, 8, 12")
+        if direction in {4, 12}:
+            return (self.half_extent[1], self.half_extent[0])
+        return self.half_extent
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,13 +75,18 @@ class _VerifiedEntity:
     prototype: str
     position: tuple[float, float]
     spec: BlueprintPrototypeSpec
+    half_extent: tuple[float, float]
 
 
 def compiler_prototype_specs() -> dict[str, BlueprintPrototypeSpec]:
     """Return the explicit physical catalogue for entities emitted directly by the compiler."""
 
     single = BlueprintPrototypeSpec((0.5, 0.5), frozenset({1, 2}))
-    input_output = BlueprintPrototypeSpec((1.0, 0.5), frozenset({1, 2, 3, 4}))
+    input_output = BlueprintPrototypeSpec(
+        (1.0, 0.5),
+        frozenset({1, 2, 3, 4}),
+        rotates_half_extent=True,
+    )
     return {
         "constant-combinator": single,
         "arithmetic-combinator": input_output,
@@ -157,7 +177,25 @@ def _parse_entities(
         )
         x = _finite_number(raw_position.get("x"), f"blueprint entity {entity_id} x position")
         y = _finite_number(raw_position.get("y"), f"blueprint entity {entity_id} y position")
-        entities[entity_id] = _VerifiedEntity(entity_id, prototype, (x, y), spec)
+        direction = entity.get("direction", 0)
+        if type(direction) is not int:
+            raise BlueprintVerificationError(
+                f"blueprint entity {entity_id} direction must be an integer"
+            )
+        try:
+            half_extent = spec.half_extent_for_direction(direction)
+        except ValueError as exc:
+            raise BlueprintVerificationError(
+                f"blueprint entity {entity_id} prototype {prototype!r} has unsupported "
+                f"direction {direction} for verifier geometry"
+            ) from exc
+        entities[entity_id] = _VerifiedEntity(
+            entity_id,
+            prototype,
+            (x, y),
+            spec,
+            half_extent,
+        )
     return entities
 
 
@@ -175,8 +213,8 @@ def _validate_footprints(entities: Mapping[int, _VerifiedEntity]) -> None:
 
 
 def _footprints_overlap(left: _VerifiedEntity, right: _VerifiedEntity) -> bool:
-    left_half = left.spec.half_extent
-    right_half = right.spec.half_extent
+    left_half = left.half_extent
+    right_half = right.half_extent
     return (
         abs(left.position[0] - right.position[0]) < left_half[0] + right_half[0] - _EPSILON
         and abs(left.position[1] - right.position[1]) < left_half[1] + right_half[1] - _EPSILON

@@ -15,6 +15,7 @@ Milestone I verifies the serialized Factorio artifact independently of physical 
 Verification also receives an explicit prototype catalogue. Each `BlueprintPrototypeSpec` declares only the physical facts needed by I1:
 
 - collision half-extents;
+- whether those half-extents rotate with Factorio cardinal `direction`;
 - legal Factorio circuit connector ids;
 - conservative maximum centre-to-centre wire span.
 
@@ -27,7 +28,7 @@ The verifier rejects serialized artifacts containing:
 - malformed, non-positive, or duplicate entity numbers;
 - missing prototype names or prototypes absent from the supplied catalogue;
 - missing, non-numeric, or non-finite entity positions;
-- overlapping declared collision footprints;
+- overlapping declared collision footprints after applying serialized cardinal orientation;
 - malformed root-level wire tuples;
 - wires referring to absent entity numbers;
 - connector ids not exposed by the endpoint prototype;
@@ -70,12 +71,40 @@ Routine regressions deliberately mutate serialized fixtures to detect:
 
 A real compiler-produced import string is also checked for public input/output discovery without consulting `CompilationResult.layout` or `PhysicalCircuit.inputs/outputs` during verification.
 
+## I3 — serialized ABI and rigid geometry
+
+**Status: complete.**
+
+`factorio_circuit.blueprint.geometry_verify` invokes I1 and then checks only explicit post-serialization geometry expectations. It imports no synthesis `Layout`, `RigidComponentConstraint`, anchor-binding object, or seam-composition object.
+
+I3 separates geometry contracts that have different semantics:
+
+1. **Exact ABI anchors.** `BlueprintAnchorExpectation` names one serialized entity/connector, exact entity-centre position, and optional prototype. A moved endpoint, wrong connector, wrong entity id, or wrong prototype rejects.
+2. **Boundary seams.** `BlueprintSeamExpectation` groups exact anchors on a declared boundary rectangle. This matches reusable seam composition, where boundary anchor centres may sit exactly on the footprint boundary and therefore are not treated as D1 owned-region members.
+3. **Rigid components.** `BlueprintRigidComponentExpectation` declares an origin, quarter-turn pose, member-local offsets, owned footprints, keepouts, and adapter regions. Members must remain at their rigid offsets and fit inside owned footprints; outsiders may not enter owned/keepout geometry; adapter regions must remain empty even of component members.
+
+All collision-region checks use the orientation-aware serialized half-extent from the I1 prototype catalogue. This matters for compiler-native arithmetic/decider/selector combinators, which serialize with cardinal direction 4 and therefore cannot be audited using an orientation-blind 2x1 box.
+
+### I3 mutation coverage
+
+The routine I3 regressions exercise:
+
+- moved serialized ABI anchors;
+- invalid anchor connectors and prototype mismatches;
+- seam-anchor drift;
+- rigid-member drift;
+- external incursions into owned and keepout geometry;
+- occupation of reserved adapter regions;
+- duplicate rigid-component member ownership;
+- quarter-turn reconstruction without synthesis state;
+- rotated native wide-combinator footprint overlap and legal boundary touching.
+
 ## Remaining Milestone I work
 
-I1 and I2 establish local structural validity plus independent serialized electrical reconstruction. The next slices should keep using explicit post-serialization expectations rather than reaching back into synthesis state:
+I1-I3 cover local structural validity, electrical reconstruction, public ports, exact ABI anchors, seam positions, and explicit rigid-region geometry. The remaining acceptance work should emphasize independent end-to-end contracts rather than add another synthesis-shaped object model:
 
-1. verify ABI anchors and exact public/device endpoint positions;
-2. verify seams, owned/keepout/adapter regions, and rigid-component membership from explicit geometry contracts;
-3. extend electrical-equivalence expectations across richer opaque-provider/device acceptance fixtures where useful.
+1. exercise I1-I3 against richer opaque provider/device artifacts using expectations captured independently of final `Layout`;
+2. compare intended physical electrical equivalence across those reusable-device fixtures where practical;
+3. decide whether the resulting verifier set is sufficient to close Milestone I or whether blueprint-book/container-level verification warrants a separate follow-on milestone.
 
-These geometry contracts should be supplied independently by the caller or benchmark fixture. The verifier should never recover them by reading the final synthesis `Layout` it is supposed to audit.
+Expectation data should be supplied independently by the caller or benchmark fixture. The verifier must never recover expected geometry or connectivity by reading the final synthesis `Layout` it is supposed to audit.
