@@ -8,15 +8,23 @@ from typing import TYPE_CHECKING
 
 from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
 from factorio_circuit.ir.oracle import (
+    EventOracleInput,
     OracleInput,
     VectorOracleInput,
     provider_input_port_name,
 )
-from factorio_circuit.ir.semantic import CircuitModule, OutputValue, ReturnValue
+from factorio_circuit.ir.semantic import (
+    CircuitModule,
+    Clock,
+    ClockProvenance,
+    OutputValue,
+    PayloadShape,
+    ReturnValue,
+)
 from factorio_circuit.sampling import SamplingPolicy
 
 from .clock_bridges import Circuit as _Circuit
-from .vector_circuit import Expr, Input, SignalsInput
+from .vector_circuit import Expr, Input, ScalarEvent, SignalsInput, VectorEvent
 from .vector_expr import SignalsExpr
 
 if TYPE_CHECKING:
@@ -69,6 +77,47 @@ class Circuit(_Circuit):
         self._vector_inputs.append(source)
         return SignalsOracle(self, source)
 
+    def _declare_oracle_event(
+        self,
+        name: str,
+        payload_shape: PayloadShape,
+        guaranteed_min_separation: int,
+    ) -> EventOracleInput:
+        self._claim_name(name, "event oracle")
+        clock = Clock(
+            identity=f"{self.name}:{name}:{payload_shape.value}:event",
+            provenance=ClockProvenance.EXTERNAL_EVENT,
+            guaranteed_min_separation=guaranteed_min_separation,
+        )
+        source = EventOracleInput(name, payload_shape, clock)
+        self._event_inputs.append(source)
+        return source
+
+    def oracle_event(self, name: str, *, guaranteed_min_separation: int) -> ScalarEvent:
+        """Declare a scalar Event supplied by a target-side oracle provider."""
+
+        source = self._declare_oracle_event(
+            name,
+            PayloadShape.SCALAR,
+            guaranteed_min_separation,
+        )
+        return ScalarEvent(self, source)
+
+    def oracle_signal_event(
+        self,
+        name: str,
+        *,
+        guaranteed_min_separation: int,
+    ) -> VectorEvent:
+        """Declare a whole-vector Event supplied by a target-side oracle provider."""
+
+        source = self._declare_oracle_event(
+            name,
+            PayloadShape.VECTOR,
+            guaranteed_min_separation,
+        )
+        return VectorEvent(self, source)
+
     def bind_oracle_input(
         self,
         oracle: Oracle | SignalsOracle,
@@ -83,7 +132,9 @@ class Circuit(_Circuit):
         """
 
         if not isinstance(oracle, (Oracle, SignalsOracle)) or oracle._circuit is not self:
-            raise ValueError("oracle provider inputs require an oracle declared by this Circuit")
+            raise ValueError(
+                "oracle provider inputs require a Level oracle declared by this Circuit"
+            )
         if not isinstance(name, str) or not name:
             raise ValueError("oracle provider input name must be non-empty")
         if not isinstance(value, (Expr, SignalsExpr)):

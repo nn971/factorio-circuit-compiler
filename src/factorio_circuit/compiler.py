@@ -20,9 +20,9 @@ from factorio_circuit.blueprint.opaque_layout_encode import (
     layout_to_blueprint_json_with_opaque,
 )
 from factorio_circuit.blueprint.routing import DEFAULT_SAFE_WIRE_SPAN
+from factorio_circuit.event_oracles import materialize_clocked_oracle_providers
 from factorio_circuit.frontend.symbolic import Circuit
 from factorio_circuit.ir.abstract_physical import AbstractPhysicalCircuit
-from factorio_circuit.ir.oracle import oracle_sources
 from factorio_circuit.ir.output import preserve_output_materializations
 from factorio_circuit.ir.physical import (
     OpaqueDualConnectorEntity,
@@ -35,14 +35,11 @@ from factorio_circuit.ir.semantic import (
     contains_event_semantics,
     is_vector_expression,
 )
-from factorio_circuit.lowering.event_accumulator_physical import (
-    lower_event_accumulator_physical,
-)
 from factorio_circuit.lowering.frontend_to_ir import lower_frontend
 from factorio_circuit.lowering.open_vector_pipeline import lower_normalized_vectors
+from factorio_circuit.lowering.provider_event_physical import lower_provider_event_physical
 from factorio_circuit.optimize.pipeline import optimize_normalized_semantic
 from factorio_circuit.oracles import (
-    OracleBindingError,
     OracleProvider,
     OracleProviderMaterialization,
     materialize_oracle_providers,
@@ -161,7 +158,8 @@ def lower_to_abstract_physical(
     this function returns. Ordinary provider entities are inserted into the abstract graph and all
     provider contributions are also returned as typed physical products. Rigid reusable components
     remain typed declarations here and are consumed by unified physical composition during full
-    compilation.
+    compilation. Event oracles reuse the normal physical Event ABI: one payload net plus a separate
+    one-tick valid net.
 
     ``sampling_policy`` controls when phase-zero external Level inputs and oracles are physically
     observed inside one logical occurrence. The compatibility default snapshots them at the
@@ -181,18 +179,19 @@ def lower_to_abstract_physical(
     if clocked:
         if sampling_policy is not SamplingPolicy.BEGINNING_OF_STEP:
             raise ValueError("ALAP external sampling is currently supported for Level modules only")
-        if oracle_sources(semantic):
-            raise OracleBindingError(
-                "physical oracle providers are currently supported for Level modules only"
-            )
         optimized_semantic = semantic
         report_progress(progress, "timing", detail="analyzing clocked timing and throughput")
         state_timing = analyze_clocked_timing(optimized_semantic)
         validate_event_throughput(state_timing)
         report_progress(progress, "physical-lowering", detail="lowering Event/state semantics")
-        abstract_physical = lower_event_accumulator_physical(
+        abstract_physical = lower_provider_event_physical(
             optimized_semantic,
             state_timing=state_timing,
+        )
+        provider_materialization = materialize_clocked_oracle_providers(
+            optimized_semantic,
+            abstract_physical,
+            providers,
         )
     else:
         skip_scalar_optimizer = _contains_vector_output(semantic)
@@ -256,7 +255,8 @@ def compile_circuit(
     evaluation and are inserted before final physical synthesis. Ordinary provider helpers remain in
     the abstract graph. Reusable rigid products are imported, rebased, placed as authoritative D1
     geometry, connected to their abstract nets, and fresh-routed with ordinary logic in the same E2
-    composition path before the mixed blueprint is serialized.
+    composition path before the mixed blueprint is serialized. Event oracle providers bind directly
+    to the existing payload/valid Event input pair produced by clocked physical lowering.
 
     ``physical_anchors`` resolves symbolic placement sites declared by providers. Abstract lowering
     may leave those sites unresolved, but final placement requires a coordinate for every anchored

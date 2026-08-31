@@ -157,6 +157,39 @@ compiler therefore sees the stock observation as an ordinary Level-vector oracle
 roboport's exact 4x4 geometry, RED connector contract, and raw Factorio control behavior through final
 opaque-aware serialization.
 
+## Belt and inserter Event pulse readers
+
+`TransportBeltPulseReaderDevice` and `InserterPulseReaderDevice` are the Milestone F3 Event-input
+peripherals. They turn Factorio's native one-tick item-read pulse into the compiler's existing physical
+Event boundary rather than treating a transient pulse as a persistent Level.
+
+The compiler represents one external vector Event physically as two synchronized nets: an open-vector
+payload and a scalar `__valid` lane. The reusable reader therefore exposes two typed ports:
+
+- RED `items`: Event vector payload;
+- GREEN `valid`: Level scalar on fixed `signal-V`, used as the one-tick physical occurrence token.
+
+A native belt/inserter pulse is duplicated onto RED and GREEN inside the reader. RED passes through an
+arithmetic `each + 0` combinator; GREEN passes through a decider `anything > 0 => signal-V = 1`.
+Both paths incur exactly one combinator tick, so payload and valid reach the compiler on the same
+physical tick. This phase alignment is part of the device contract.
+
+The Event frontend declarations are `Circuit.oracle_event(...)` for scalar payloads and
+`Circuit.oracle_signal_event(...)` for vector payloads. A target provider receives an
+`EventOraclePhysicalContext` and may bind a typed rigid device directly onto the already-lowered
+`<name>` / `<name>__valid` abstract nets. The provider consumes those temporary external markers before
+final placement; the opaque device endpoints are restored during the ordinary E2 composition path.
+
+Generate the integrated F3 probe with:
+
+```bash
+uv run python examples/pulse_reader_event_probe.py
+```
+
+The probe accumulates the item Event vector into ordinary compiler state and can be built with either a
+transport-belt or inserter reader. The resulting blueprint contains the real pulse sensor, the aligned
+payload/valid conditioning pair, and the compiled Event accumulator in one routed artifact.
+
 ## Assembler device
 
 `AssemblerDevice` is a reusable assembler plus logistic requester/provider I/O. It deliberately stops

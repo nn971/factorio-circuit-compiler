@@ -1,20 +1,19 @@
 """Semantic oracle sources.
 
-An oracle is an observable Level source whose value is not computed by the
-deterministic semantic model. Reference simulation supplies oracle traces
-explicitly, while physical compilation binds each oracle to a target provider.
+An oracle is an observable source whose value is not computed by the deterministic semantic model.
+Reference simulation supplies Level oracle traces explicitly and Event oracle occurrences through
+the ordinary Event schedule. Physical compilation binds each oracle to an explicit target provider.
 
-Oracle sources deliberately subclass the ordinary compatibility input records.
-This keeps the existing clock normalization and expression algebra unchanged
-while preserving enough identity to keep external ports and compiler-owned
-physical observations distinct at module boundaries.
+Level oracle sources deliberately subclass the ordinary compatibility input records. Event oracle
+sources subclass the canonical external :class:`EventInput`, so they reuse the existing payload plus
+one-tick-valid physical ABI without inventing a second Event representation.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from factorio_circuit.ir.semantic import Input, VectorInput
+from factorio_circuit.ir.semantic import EventInput, Input, VectorInput
 
 if TYPE_CHECKING:
     from factorio_circuit.ir.semantic import CircuitModule
@@ -35,15 +34,22 @@ class VectorOracleInput(VectorInput):
     __slots__ = ()
 
 
-OracleSource = OracleInput | VectorOracleInput
+class EventOracleInput(EventInput):
+    """Scalar or vector Event oracle source using the ordinary Event clock/payload ABI."""
+
+    __slots__ = ()
+
+
+OracleSource = OracleInput | VectorOracleInput | EventOracleInput
 
 
 def oracle_sources(module: CircuitModule) -> tuple[OracleSource, ...]:
-    """Return declared scalar/vector oracles in a stable scalar-then-vector order."""
+    """Return declared oracle sources in stable Level-then-Event declaration order."""
 
     return (
         *(item for item in module.inputs if isinstance(item, OracleInput)),
         *(item for item in module.vector_inputs if isinstance(item, VectorOracleInput)),
+        *(item for item in module.event_inputs if isinstance(item, EventOracleInput)),
     )
 
 
