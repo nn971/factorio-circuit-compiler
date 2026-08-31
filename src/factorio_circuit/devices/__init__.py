@@ -84,6 +84,16 @@ from factorio_circuit.devices.roboport_stock_reader import (
     build_roboport_stock_reader_blueprint,
     generate_roboport_stock_reader_blueprint_string,
 )
+from factorio_circuit.devices.train_stop import (
+    TRAIN_PRIORITY_SIGNAL,
+    TRAIN_STOP_PROTOCOL,
+    TRAIN_STOPPED_SIGNAL,
+    TRAINS_COUNT_SIGNAL,
+    TRAINS_LIMIT_SIGNAL,
+    TrainStopDevice,
+    build_train_stop_blueprint,
+    generate_train_stop_blueprint_string,
+)
 
 __all__ = [
     "ASSEMBLER_DEVICE_PROTOCOL",
@@ -97,6 +107,11 @@ __all__ = [
     "ROBOPORT_READ_LOGISTICS",
     "ROBOPORT_STOCK_READER_PROTOCOL",
     "SPEAKER_TRIGGER_SIGNAL",
+    "TRAIN_PRIORITY_SIGNAL",
+    "TRAIN_STOP_PROTOCOL",
+    "TRAIN_STOPPED_SIGNAL",
+    "TRAINS_COUNT_SIGNAL",
+    "TRAINS_LIMIT_SIGNAL",
     "AnchorBinding",
     "AnchoredBlueprint",
     "AnchorSpec",
@@ -127,6 +142,7 @@ __all__ = [
     "SCREEN_HEIGHT",
     "SCREEN_WIDTH",
     "SpeakerPlaybackMode",
+    "TrainStopDevice",
     "TransportBeltPulseReaderDevice",
     "boundary_anchor",
     "build_assembler_device_blueprint",
@@ -135,6 +151,7 @@ __all__ = [
     "build_player_movement_detector_blueprint",
     "build_programmable_speaker_blueprint",
     "build_roboport_stock_reader_blueprint",
+    "build_train_stop_blueprint",
     "build_transport_belt_pulse_reader_blueprint",
     "compiled_module_as_anchored_blueprint",
     "compose_anchored_blueprints",
@@ -146,6 +163,7 @@ __all__ = [
     "generate_player_movement_detector_blueprint_string",
     "generate_programmable_speaker_blueprint_string",
     "generate_roboport_stock_reader_blueprint_string",
+    "generate_train_stop_blueprint_string",
     "generate_transport_belt_pulse_reader_blueprint_string",
     "pixel_signal",
     "require_all_anchors_bound",
