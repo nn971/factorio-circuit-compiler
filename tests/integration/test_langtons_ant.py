@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from benchmarks.langtons_ant.model import (
     ANT_COLOR,
     ARROW_SIGNALS,
@@ -38,6 +40,21 @@ def test_langtons_ant_reference_first_steps() -> None:
     assert board[8 * SCREEN_WIDTH + 9] == 1
 
 
+def test_langtons_ant_circuit_builds_expected_wide_state_interface() -> None:
+    module = build_langtons_ant_circuit(render_framebuffer=False).build()
+    assert module.output.names == (
+        "board",
+        "ant_x",
+        "ant_y",
+        "direction",
+        "running",
+        "steps",
+    )
+    assert tuple(vector_input.name for vector_input in module.vector_inputs) == ("movement",)
+
+
+@pytest.mark.slow
+@pytest.mark.acceptance
 def test_langtons_ant_interactive_trace_and_framebuffer() -> None:
     module = build_langtons_ant_circuit(render_framebuffer=True).build()
     movements = [
