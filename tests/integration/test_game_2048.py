@@ -6,10 +6,12 @@ from benchmarks.game_2048.model import (
     ARROW_SIGNALS,
     BOARD_SIGNALS,
     DEFAULT_INITIAL_BOARD,
+    _move_line,
     apply_move_reference,
     build_2048_circuit,
     move_board_reference,
 )
+from factorio_circuit import Circuit
 from factorio_circuit.simulate.semantic import LogicalOutput, simulate_stream
 
 
@@ -103,6 +105,28 @@ def test_reference_spawn_is_deterministic_and_tenth_move_uses_four() -> None:
     assert ordinary_score == tenth_score == 4
 
 
+def test_symbolic_line_kernel_matches_reference_pairing() -> None:
+    circuit = Circuit("game_2048_line_kernel")
+    inputs = tuple(circuit.input(f"cell_{index}") for index in range(4))
+    moved, score = _move_line(inputs)
+    for index, value in enumerate(moved):
+        circuit.output(f"cell_{index}", value)
+    circuit.output("score", score)
+
+    rows = simulate_stream(
+        circuit.build(),
+        [
+            {"cell_0": 2, "cell_1": 2, "cell_2": 2, "cell_3": 2},
+            {"cell_0": 2, "cell_1": 4, "cell_2": 4, "cell_3": 4},
+        ],
+    )
+
+    assert rows[0] == (4, 4, 0, 0, 8)
+    assert rows[1] == (2, 8, 4, 0, 8)
+
+
+@pytest.mark.slow
+@pytest.mark.acceptance
 def test_2048_circuit_builds_expected_interactive_outputs() -> None:
     module = build_2048_circuit(render_framebuffer=False).build()
     assert module.output.names == ("board", "score", "moves", "max_tile", "game_over")
