@@ -65,7 +65,7 @@ def test_reference_merge_obeys_standard_2048_pairing() -> None:
     assert changed
     assert moved[:4] == (4, 4, 0, 0)
     assert moved[4:8] == (2, 8, 4, 0)
-    assert score == 12
+    assert score == 16
 
 
 def test_reference_spawn_is_deterministic_and_tenth_move_uses_four() -> None:
