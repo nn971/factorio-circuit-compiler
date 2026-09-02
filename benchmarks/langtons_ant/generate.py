@@ -46,7 +46,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    placement = safe_crossbar_options() if args.linear_safe_layout else safe_folded_crossbar_options()
+    placement = (
+        safe_crossbar_options()
+        if args.linear_safe_layout
+        else safe_folded_crossbar_options()
+    )
     result = build_langtons_ant_circuit().compile(optimize=args.optimize, placement=placement)
 
     movement_port = next(port for port in result.physical_circuit.inputs if port.name == "movement")
