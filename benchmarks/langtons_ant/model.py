@@ -17,10 +17,17 @@ read/modify/write behavior on a 256-lane state vector, complementing Snake's den
 
 from __future__ import annotations
 
-from typing import Final, Sequence
+from collections.abc import Sequence
+from typing import Final
 
 from factorio_circuit import Circuit, Expr, SignalId, SignalsExpr
-from factorio_circuit.devices import DIRECTION_SIGNALS, SCREEN_HEIGHT, SCREEN_WIDTH, pixel_signal, rgb
+from factorio_circuit.devices import (
+    DIRECTION_SIGNALS,
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+    pixel_signal,
+    rgb,
+)
 
 CELL_COUNT: Final = SCREEN_WIDTH * SCREEN_HEIGHT
 ORIGIN_X: Final = SCREEN_WIDTH // 2
