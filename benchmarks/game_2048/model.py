@@ -18,10 +18,16 @@ can replace this deterministic source with an oracle without changing the moveme
 
 from __future__ import annotations
 
-from typing import Final, Literal, Sequence
+from collections.abc import Sequence
+from typing import Final, Literal
 
 from factorio_circuit import Circuit, Expr, SignalId, SignalsExpr
-from factorio_circuit.devices import DIRECTION_SIGNALS, DISPLAY_VIRTUAL_SIGNAL_POOL, pixel_signal, rgb
+from factorio_circuit.devices import (
+    DIRECTION_SIGNALS,
+    DISPLAY_VIRTUAL_SIGNAL_POOL,
+    pixel_signal,
+    rgb,
+)
 
 BOARD_WIDTH: Final = 4
 BOARD_HEIGHT: Final = 4
@@ -384,12 +390,7 @@ def build_2048_circuit(
     board_changed = _or_all(
         [new_cell != old_cell for new_cell, old_cell in zip(selected_cells, old_cells, strict=True)]
     )
-    valid_move = (
-        move_command
-        * board_changed
-        * boot.logical_not()
-        * reset_command.logical_not()
-    )
+    valid_move = move_command * board_changed * boot.logical_not() * reset_command.logical_not()
 
     spawn_value = ((old_moves + 1) % 10 == 0).select(4, 2)
     spawned_cells = _spawn_first_empty(selected_cells, spawn_value)
