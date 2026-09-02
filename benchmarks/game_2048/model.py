@@ -265,11 +265,7 @@ def _move_line(line: Sequence[Expr]) -> tuple[tuple[Expr, Expr, Expr, Expr], Exp
         merge_bc.select(0, merge_cd.select(c * 2, c)),
         merge_cd.select(0, d),
     )
-    score_delta = (
-        merge_ab.select(a * 2, 0)
-        + merge_bc.select(b * 2, 0)
-        + merge_cd.select(c * 2, 0)
-    )
+    score_delta = merge_ab.select(a * 2, 0) + merge_bc.select(b * 2, 0) + merge_cd.select(c * 2, 0)
     return _compact_line(merged), score_delta
 
 
