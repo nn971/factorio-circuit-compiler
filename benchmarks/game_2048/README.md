@@ -73,3 +73,32 @@ uv run python -m factorio_circuit.devices.lamp_screen
 
 The generator prints the synthesized red/green wire colors required to connect `INPUT movement` and
 `OUTPUT framebuffer`.
+
+## Joint temporal mapping diagnostic
+
+`analyze_mapping` sends the full phase-neutral 2048 recurrence through the accepted temporal
+technology mapper. It does not import the compatibility `StateTimingPlan`: operation implementations,
+operation phases, state-cell phases, source observations, exact transport, optional wire sums, and
+optional shared scalar delay buses are joint mapping decisions.
+
+The current mapper still takes the logical period `P` as an external cadence constraint. Start with
+extraction only so graph/candidate growth can be inspected without OR-Tools:
+
+```bash
+uv run python -m benchmarks.game_2048.analyze_mapping --period 112 --extract-only
+```
+
+`112` is only the period inferred by the compatibility lowerer and is useful as a comparison point;
+it is not assumed optimal by the mapper architecture.
+
+Attempt one full recurrence solve with the optional CP-SAT dependency:
+
+```bash
+uv run --with 'ortools>=9.14,<10' \
+  python -m benchmarks.game_2048.analyze_mapping \
+  --period 112 --time-limit 60 --workers 8
+```
+
+The framebuffer is omitted by default. Add `--with-framebuffer` only after the game recurrence itself
+has a tractable mapped solve. `--compare-private` additionally solves the same problem with shared
+delay buses disabled so transport savings can be measured independently.
